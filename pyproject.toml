@@ -9,7 +9,7 @@ description = "Enterprise AWS Governance & Multi-Account Landing Zone CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Platform Governance Team" }
+    { name = "Nicholas Christian", email = "nicholasdchristian@gmail.com" }
 ]
 license = "Apache-2.0"
 license-files = ["LICENSE"]

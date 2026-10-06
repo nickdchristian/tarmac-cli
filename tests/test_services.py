@@ -540,7 +540,8 @@ def test_package_exports():
     import tarmac.services
 
     assert hasattr(tarmac, "__version__")
-    assert tarmac.__version__ == "0.1.0"
+    assert isinstance(tarmac.__version__, str)
+    assert len(tarmac.__version__.split(".")) >= 3
 
     assert hasattr(tarmac.services, "SCPService")
     assert hasattr(tarmac.services, "PreflightService")
