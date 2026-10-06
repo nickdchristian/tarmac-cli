@@ -14,9 +14,9 @@ jobs:
     name: Release Please
     runs-on: ubuntu-latest
     outputs:
-      releases_created: ${{ steps.release.outputs.releases_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
+      release_created: ${{ steps.release.outputs.release_created || steps.release.outputs.releases_created || steps.release.outputs['--release_created'] }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.release.outputs['--tag_name'] }}
+      version: ${{ steps.release.outputs.version || steps.release.outputs['--version'] }}
     steps:
       - name: Run Release Please
         uses: googleapis/release-please-action@v4
@@ -28,7 +28,7 @@ jobs:
   publish:
     name: Build & Publish Release to PyPI
     needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' || needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: pypi
