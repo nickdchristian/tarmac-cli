@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.2...v0.1.3) (2026-10-06)
+
+
+### Bug Fixes
+
+* resolve pypi release pipeline skipping and sync package metadata ([#5](https://github.com/nickdchristian/tarmac-cli/issues/5)) ([fbf5901](https://github.com/nickdchristian/tarmac-cli/commit/fbf590163ee8d13c4c5c5a84cb76a96192aebae6))
+
 ## [0.1.2](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.1...v0.1.2) (2026-10-06)
 
 
