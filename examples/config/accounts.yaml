@@ -1,0 +1,137 @@
+# =============================================================================
+# AWS Governance Configuration: Account Factory Catalog
+# =============================================================================
+# Declarative manifest for all AWS Member Accounts in the Organization.
+# The Account Factory ensures each account is created, placed in the correct OU,
+# and baselined according to the declared specification.
+#
+# FinOps Best Practice: Budget & Cost Anomaly Alerts
+# -----------------------------------------------------------------------------
+# - Dynamic Subscriber Lists: 'notification_emails' accepts a dynamic list of
+#   1 to 10 recipient emails (the AWS Budgets API maximum limit).
+# - Shared Team Mailboxes: In enterprise multi-account environments, always route
+#   budget alerts and anomaly notifications to shared team distribution lists
+#   (e.g. finops-alerts@company.com, cloudops@company.com) or SNS topics rather
+#   than individual personal employee inboxes. This ensures business continuity
+#   and avoids dropped alerts during on-call rotations or personnel turnover.
+#
+# Multi-Tier Tagging Hierarchy
+# -----------------------------------------------------------------------------
+# - Catalog-Level Tags: Top-level 'tags:' sets shared defaults across all accounts.
+# - Account-Level Tags: 'accounts[].tags' specifies or overrides tags for that account.
+# - Precedence: Default System Tags -> Org Tags -> Catalog Tags -> Account Tags -> Stack/CLI Tags.
+# - CloudFormation Merging: Tags automatically propagate down to all resources in stacks
+#   (CloudTrail, S3 Log Archive, Audit Hardening, Budgets, and Terraform Backend).
+# =============================================================================
+
+accounts:
+  # ---------------------------------------------------------------------------
+  # Core Infrastructure Accounts
+  # ---------------------------------------------------------------------------
+  - name: "deployment"
+    email: "aws-deployment@example.com"
+    ou: "Infrastructure"
+    tags:
+      Environment: "Infrastructure"
+      Purpose: "CI/CD and Terraform State Backend"
+      ManagedBy: "tarmac"
+    baseline:
+      delete_default_vpc: true
+      budget:
+        monthly_limit_usd: 50.0
+        alert_threshold_percent: 80.0
+        notification_emails: ["aws-deployment@example.com"]
+
+  - name: "network-central"
+    email: "aws-network@example.com"
+    ou: "Infrastructure"
+    tags:
+      Environment: "Infrastructure"
+      Purpose: "Transit Gateway and Centralized VPC Routing"
+      ManagedBy: "tarmac"
+    baseline:
+      delete_default_vpc: true
+      budget:
+        monthly_limit_usd: 50.0
+        alert_threshold_percent: 85.0
+        notification_emails: ["aws-network@example.com"]
+
+  # ---------------------------------------------------------------------------
+  # Security Accounts
+  # ---------------------------------------------------------------------------
+  - name: "log-archive"
+    email: "aws-log-archive@example.com"
+    ou: "Security"
+    tags:
+      Environment: "Security"
+      Purpose: "Centralized Immutable CloudTrail and Config Logs"
+      ManagedBy: "tarmac"
+    baseline:
+      delete_default_vpc: true
+      budget:
+        monthly_limit_usd: 50.0
+        alert_threshold_percent: 80.0
+        notification_emails: ["aws-log-archive@example.com"]
+
+  - name: "audit"
+    email: "aws-audit@example.com"
+    ou: "Security"
+    tags:
+      Environment: "Security"
+      Purpose: "Security Auditing - Config Aggregator - Alerts"
+      ManagedBy: "tarmac"
+    baseline:
+      delete_default_vpc: true
+      budget:
+        monthly_limit_usd: 250.0
+        alert_threshold_percent: 80.0
+        notification_emails: ["finops-alerts@example.com", "security-operations@example.com"]
+
+  # ---------------------------------------------------------------------------
+  # Workload Accounts
+  # ---------------------------------------------------------------------------
+  - name: "prod-app"
+    email: "aws-prod@example.com"
+    ou: "Production"
+    tags:
+      Environment: "Production"
+      Workload: "Core"
+      ManagedBy: "tarmac"
+    baseline:
+      delete_default_vpc: true
+      budget:
+        monthly_limit_usd: 50.0
+        alert_threshold_percent: 80.0
+        notification_emails: ["aws-prod@example.com"]
+      anomaly_detection:
+        enabled: true
+        threshold_usd: 100.0
+        notification_emails: ["aws-prod@example.com"]
+
+  - name: "stage-app"
+    email: "aws-stage@example.com"
+    ou: "NonProduction"
+    tags:
+      Environment: "Stage"
+      Workload: "Core"
+      ManagedBy: "tarmac"
+    baseline:
+      delete_default_vpc: true
+      budget:
+        monthly_limit_usd: 50.0
+        alert_threshold_percent: 80.0
+        notification_emails: ["aws-stage@example.com"]
+
+  - name: "dev-app"
+    email: "aws-dev@example.com"
+    ou: "NonProduction"
+    tags:
+      Environment: "Development"
+      Workload: "Core"
+      ManagedBy: "tarmac"
+    baseline:
+      delete_default_vpc: true
+      budget:
+        monthly_limit_usd: 50.0
+        alert_threshold_percent: 85.0
+        notification_emails: ["aws-dev@example.com"]

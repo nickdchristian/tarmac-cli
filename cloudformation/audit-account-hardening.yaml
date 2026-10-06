@@ -1,0 +1,310 @@
+# =============================================================================
+# AWS Governance: Audit Account Hardening Reference Template
+# =============================================================================
+# Architecture & Security Design Note:
+# -----------------------------------------------------------------------------
+# 1. Separation of Duties (Hardened KMS Key Policy):
+#    AWS's default KMS policy grants 'kms:*' to 'arn:aws:iam::<account-id>:root'.
+#    While convenient, that allows any identity with broad IAM privileges to
+#    encrypt/decrypt sensitive audit data.
+#    This template enforces strict Separation of Duties:
+#    - Key Administrators (the account root principal) are restricted to key
+#      lifecycle management (create, update, rotate, delete) and CANNOT encrypt/decrypt.
+#    - Cryptographic usage is restricted exclusively to authorized service
+#      principals (sns.amazonaws.com, events.amazonaws.com, config.amazonaws.com)
+#      guarded by strict condition keys (aws:SourceAccount, aws:SourceArn, aws:SourceOrgID).
+#
+# 2. KMS "Resource: *" Syntax:
+#    In AWS KMS key policies, 'Resource: "*"' is syntactically required by AWS to
+#    mean "this specific KMS key". It does NOT grant access to all AWS resources.
+#
+# 3. Operational Guidance: When to Expand This Policy:
+#    Depending on your organization's operational workflow, you may need to add
+#    an explicit 'KeyUsers' statement to 'KeyPolicy':
+#    - Manual Testing: If security analysts need to publish test alerts via the
+#      AWS Management Console or AWS CLI, grant 'kms:GenerateDataKey' to their role.
+#    - Downstream Alert Consumers: If you attach an AWS Lambda function, SQS queue,
+#      SIEM forwarder (e.g. Datadog/Splunk), or AWS Chatbot to the SNS topic,
+#      you must grant 'kms:Decrypt' to the consumer's execution role so it can
+#      read the encrypted notification payload.
+# =============================================================================
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Audit account hardening — Config aggregator, SNS alerting, and KMS encryption
+
+Parameters:
+  OrgName:
+    Type: String
+    Description: Organization name prefix for resource naming
+
+  OrganizationId:
+    Type: String
+    Description: AWS Organization ID (e.g., o-xxxxx)
+    AllowedPattern: '^o-[a-z0-9]{10,32}$'
+
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: (Optional) Email address for security alert notifications
+
+  IncidentResponseWebhookUrl:
+    Type: String
+    Default: ''
+    Description: (Optional) HTTPS Webhook URL for security incident response / SIEM (e.g. PagerDuty, Opsgenie, Datadog)
+    AllowedPattern: '^(https://.*)?$'
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+  HasWebhookEndpoint: !Not [!Equals [!Ref IncidentResponseWebhookUrl, '']]
+
+Resources:
+  AuditKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts Audit account resources (SNS, Config)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowKeyAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Create*
+              - kms:Describe*
+              - kms:Enable*
+              - kms:List*
+              - kms:Put*
+              - kms:Update*
+              - kms:Revoke*
+              - kms:Disable*
+              - kms:Get*
+              - kms:Delete*
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:ScheduleKeyDeletion
+              - kms:CancelKeyDeletion
+            Resource: '*'
+          - Sid: AllowSNSEncrypt
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+          - Sid: AllowEventBridgeEncrypt
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${OrgName}-*'
+          - Sid: AllowConfigEncrypt
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceOrgID: !Ref OrganizationId
+      Tags:
+        - Key: Purpose
+          Value: Audit Account Encryption
+
+  AuditKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${OrgName}-audit'
+      TargetKeyId: !Ref AuditKmsKey
+
+  ConfigAggregator:
+    Type: AWS::Config::ConfigurationAggregator
+    Properties:
+      ConfigurationAggregatorName: !Sub '${OrgName}-org-aggregator'
+      OrganizationAggregationSource:
+        RoleArn: !GetAtt ConfigAggregatorRole.Arn
+        AllAwsRegions: true
+      Tags:
+        - Key: Purpose
+          Value: Organization Config Aggregator
+
+  ConfigAggregatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${OrgName}-config-aggregator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSConfigRoleForOrganizations
+      Tags:
+        - Key: Purpose
+          Value: Config Aggregator Role
+
+  SecurityAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${OrgName}-security-alerts'
+      KmsMasterKeyId: !Ref AuditKmsKey
+      Tags:
+        - Key: Purpose
+          Value: Security Alert Notifications
+
+  SecurityAlertsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref SecurityAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  SecurityWebhookSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasWebhookEndpoint
+    Properties:
+      TopicArn: !Ref SecurityAlertsTopic
+      Protocol: https
+      Endpoint: !Ref IncidentResponseWebhookUrl
+
+  SecurityAlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref SecurityAlertsTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventsPublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref SecurityAlertsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${OrgName}-*'
+          - Sid: AllowConfigPublish
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref SecurityAlertsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+
+  ConfigComplianceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${OrgName}-config-compliance-changes'
+      Description: Alert on non-compliant Config rule evaluations
+      EventPattern:
+        source:
+          - aws.config
+        detail-type:
+          - Config Rules Compliance Change
+        detail:
+          newEvaluationResult:
+            complianceType:
+              - NON_COMPLIANT
+      Targets:
+        - Arn: !Ref SecurityAlertsTopic
+          Id: ConfigComplianceSNS
+
+  GuardDutyFindingsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${OrgName}-guardduty-findings'
+      Description: Alert on GuardDuty findings with medium or higher severity
+      EventPattern:
+        source:
+          - aws.guardduty
+        detail-type:
+          - GuardDuty Finding
+        detail:
+          severity:
+            - numeric:
+                - '>='
+                - 4
+      Targets:
+        - Arn: !Ref SecurityAlertsTopic
+          Id: GuardDutySNS
+
+  SecurityHubFindingsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${OrgName}-securityhub-findings'
+      Description: Alert on Security Hub findings with high or critical severity
+      EventPattern:
+        source:
+          - aws.securityhub
+        detail-type:
+          - Security Hub Findings - Imported
+        detail:
+          findings:
+            Severity:
+              Label:
+                - HIGH
+                - CRITICAL
+      Targets:
+        - Arn: !Ref SecurityAlertsTopic
+          Id: SecurityHubSNS
+
+  RootActivityRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${OrgName}-root-activity-alert'
+      Description: Alert when root user credentials or sessions are used in any account
+      EventPattern:
+        detail-type:
+          - AWS Console Sign In via CloudTrail
+          - AWS API Call via CloudTrail
+        detail:
+          userIdentity:
+            type:
+              - Root
+      Targets:
+        - Arn: !Ref SecurityAlertsTopic
+          Id: RootAlertSNS
+
+Outputs:
+  KmsKeyArn:
+    Description: Audit KMS key ARN
+    Value: !GetAtt AuditKmsKey.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-KmsKeyArn'
+
+  ConfigAggregatorName:
+    Description: Config aggregator name
+    Value: !Ref ConfigAggregator
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigAggregator'
+
+  SecurityAlertsTopicArn:
+    Description: SNS topic ARN for security alerts
+    Value: !Ref SecurityAlertsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-AlertsTopicArn'

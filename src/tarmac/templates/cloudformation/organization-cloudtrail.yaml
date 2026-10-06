@@ -1,0 +1,112 @@
+# CloudTrail is deployed to the Management account and acts as an organization-
+# wide trail across all accounts.
+#
+# Real-time event activity streams to the Security Tooling account to scan and
+# notify on anomalies, while the actual log files are delivered directly to an
+# S3 bucket in the Log Archive account for audit purposes.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Organization-wide CloudTrail — multi-account trail orchestration with SRA Log Archive support
+
+Parameters:
+  OrgName:
+    Type: String
+    Description: Organization name prefix for resource naming
+
+  LogArchiveAccountId:
+    Type: String
+    Description: 12-digit AWS Account ID of the Log Archive account
+    AllowedPattern: '^([0-9]{12})?$'
+
+  TrailName:
+    Type: String
+    Default: organization-trail
+    Description: Name of the CloudTrail trail
+
+  DestinationBucketName:
+    Type: String
+    Default: ''
+    Description: (Optional) Custom override for Log Archive S3 bucket name. Leave empty to use '<OrgName>-org-cloudtrail-logs-<LogArchiveAccountId>'
+
+  LogArchiveKmsKeyArn:
+    Type: String
+    Default: ''
+    Description: (Optional) Custom override for Log Archive KMS Key ARN or Alias. Leave empty to use 'alias/<OrgName>-log-archive'
+
+  EnableKmsEncryption:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Enable KMS CMK encryption for CloudTrail logs. Set to 'false' to use SSE-S3 (AES256) to eliminate KMS key and API charges.
+
+Conditions:
+  UseKmsEncryption: !Equals [!Ref EnableKmsEncryption, 'true']
+  UseCustomBucket: !Not [!Equals [!Ref DestinationBucketName, '']]
+  UseCustomKmsKey: !Not [!Equals [!Ref LogArchiveKmsKeyArn, '']]
+
+Resources:
+  OrganizationTrail:
+    Type: AWS::CloudTrail::Trail
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_35
+            comment: "KMS CMK is enabled by default, but SSE-S3 is optionally allowed when EnableKmsEncryption is false to reduce costs."
+    Properties:
+      TrailName: !Ref TrailName
+      S3BucketName: !If
+        - UseCustomBucket
+        - !Ref DestinationBucketName
+        - !Sub '${OrgName}-org-cloudtrail-logs-${LogArchiveAccountId}'
+      KMSKeyId: !If
+        - UseKmsEncryption
+        - !If
+          - UseCustomKmsKey
+          - !Ref LogArchiveKmsKeyArn
+          - !Sub 'arn:aws:kms:${AWS::Region}:${LogArchiveAccountId}:alias/${OrgName}-log-archive'
+        - !Ref 'AWS::NoValue'
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      IsOrganizationTrail: true
+      EnableLogFileValidation: true
+      Tags:
+        - Key: Purpose
+          Value: Organization Trail
+
+Outputs:
+  TrailArn:
+    Description: ARN of the CloudTrail trail
+    Value: !GetAtt OrganizationTrail.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TrailArn'
+
+  BucketName:
+    Description: Name of the S3 bucket for CloudTrail logs in Log Archive
+    Value: !If
+      - UseCustomBucket
+      - !Ref DestinationBucketName
+      - !Sub '${OrgName}-org-cloudtrail-logs-${LogArchiveAccountId}'
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+
+  BucketArn:
+    Description: ARN of the S3 bucket for CloudTrail logs in Log Archive
+    Value: !If
+      - UseCustomBucket
+      - !Sub 'arn:aws:s3:::${DestinationBucketName}'
+      - !Sub 'arn:aws:s3:::${OrgName}-org-cloudtrail-logs-${LogArchiveAccountId}'
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketArn'
+
+  KmsKeyArn:
+    Condition: UseKmsEncryption
+    Description: ARN or Alias of the KMS key used for CloudTrail encryption
+    Value: !If
+      - UseCustomKmsKey
+      - !Ref LogArchiveKmsKeyArn
+      - !Sub 'arn:aws:kms:${AWS::Region}:${LogArchiveAccountId}:alias/${OrgName}-log-archive'
+    Export:
+      Name: !Sub '${AWS::StackName}-KmsKeyArn'

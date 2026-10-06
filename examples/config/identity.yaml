@@ -1,0 +1,97 @@
+# =============================================================================
+# AWS Governance Configuration: IAM Identity Center (SSO)
+# =============================================================================
+
+identity_center:
+  region: "us-east-1"
+  admin_user:
+    username: "admin"
+    email: "admin@example.com"
+    first_name: "Admin"
+    last_name: "User"
+
+  breakglass_user:
+    username: "breakglass"
+    email: "breakglass@example.com"
+    first_name: "Break"
+    last_name: "Glass"
+
+  additional_users: []
+
+  # Permission Sets defined with managed and/or inline policies
+  permission_sets:
+    - name: "OrganizationAdmin"
+      description: "Full AWS Administrator access across organization accounts"
+      session_duration: "PT8H"
+      managed_policies:
+        - "arn:aws:iam::aws:policy/AdministratorAccess"
+
+    - name: "AdministratorAccess"
+      description: "Full AWS Administrator access"
+      session_duration: "PT4H"
+      managed_policies:
+        - "arn:aws:iam::aws:policy/AdministratorAccess"
+
+    - name: "SecurityAudit"
+      description: "Security and compliance audit read-only access"
+      session_duration: "PT8H"
+      managed_policies:
+        - "arn:aws:iam::aws:policy/SecurityAudit"
+        - "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
+
+    - name: "NetworkAdmin"
+      description: "Network and VPC infrastructure administration"
+      session_duration: "PT4H"
+      managed_policies:
+        - "arn:aws:iam::aws:policy/job-function/NetworkAdministrator"
+
+    - name: "BillingAccess"
+      description: "Financial and billing console access"
+      session_duration: "PT8H"
+      managed_policies:
+        - "arn:aws:iam::aws:policy/job-function/Billing"
+
+    - name: "PowerUserAccess"
+      description: "Application developers with power user access"
+      session_duration: "PT4H"
+      managed_policies:
+        - "arn:aws:iam::aws:policy/PowerUserAccess"
+
+  # Groups, their members, and account assignments
+  groups:
+    - name: "OrganizationAdmins"
+      description: "Platform Administrators with access across all accounts"
+      members:
+        - "admin"
+      assignments:
+        - permission_set: "OrganizationAdmin"
+          accounts: ["all"]
+
+    - name: "AWS-Administrators"
+      description: "Cloud Platform Administrators with access across all accounts"
+      members:
+        - "admin"
+      assignments:
+        - permission_set: "AdministratorAccess"
+          accounts: ["all"]
+
+    - name: "AWS-SecurityTeam"
+      description: "Security Operations & Audit Team"
+      members: []
+      assignments:
+        - permission_set: "SecurityAudit"
+          accounts: ["all"]
+
+    - name: "AWS-NetworkEngineers"
+      description: "Network Central Engineers"
+      members: []
+      assignments:
+        - permission_set: "NetworkAdmin"
+          accounts: ["network-central"]
+
+    - name: "AWS-Developers"
+      description: "Workload Developers"
+      members: []
+      assignments:
+        - permission_set: "PowerUserAccess"
+          accounts: ["dev-app", "stage-app"]

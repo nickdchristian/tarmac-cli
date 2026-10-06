@@ -1,0 +1,114 @@
+# Budget alerts should always be configured to be published
+# to a shared team distribution list or an SNS topic.
+# An SNS topic can be directed towards a distribution list
+# or incident response tooling.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Governance - Member Account Monthly Budget with SNS Alerting
+
+Parameters:
+  AccountName:
+    Type: String
+    Description: Logical name of the account for budget identification
+  MonthlyLimitUSD:
+    Type: Number
+    Description: Monthly budget limit in USD
+    MinValue: 1
+  AlertThresholdPercent:
+    Type: Number
+    Default: 80
+    MinValue: 1
+    MaxValue: 100
+    Description: Percentage threshold to trigger alert
+  NotificationEmail:
+    Type: String
+    Default: ''
+    Description: (Optional) Team distribution email for budget alert notifications (e.g. finops-alerts@company.com)
+  IncidentResponseWebhookUrl:
+    Type: String
+    Default: ''
+    Description: (Optional) HTTPS Webhook URL for incident response tooling (e.g. PagerDuty, Opsgenie, Datadog)
+    AllowedPattern: '^(https://.*)?$'
+
+Conditions:
+  HasNotificationEmail: !Not [!Equals [!Ref NotificationEmail, '']]
+  HasWebhookEndpoint: !Not [!Equals [!Ref IncidentResponseWebhookUrl, '']]
+
+Resources:
+  BudgetAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AccountName}-budget-alerts'
+      Tags:
+        - Key: Purpose
+          Value: FinOps Budget Alert Notifications
+
+  BudgetAlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref BudgetAlertsTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAWSBudgetsToPublish
+            Effect: Allow
+            Principal:
+              Service: budgets.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref BudgetAlertsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:budgets::${AWS::AccountId}:*'
+
+  BudgetEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasNotificationEmail
+    Properties:
+      TopicArn: !Ref BudgetAlertsTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  BudgetWebhookSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasWebhookEndpoint
+    Properties:
+      TopicArn: !Ref BudgetAlertsTopic
+      Protocol: https
+      Endpoint: !Ref IncidentResponseWebhookUrl
+
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    DependsOn: BudgetAlertsTopicPolicy
+    Properties:
+      Budget:
+        BudgetName: !Sub '${AccountName}-monthly-budget'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyLimitUSD
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: !Ref AlertThresholdPercent
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref BudgetAlertsTopic
+
+Outputs:
+  BudgetName:
+    Description: Name of the provisioned budget
+    Value: !Ref MonthlyBudget
+    Export:
+      Name: !Sub '${AWS::StackName}-BudgetName'
+
+  BudgetTopicArn:
+    Description: ARN of the SNS topic receiving budget alerts
+    Value: !Ref BudgetAlertsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-BudgetTopicArn'

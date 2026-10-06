@@ -1,0 +1,106 @@
+# =============================================================================
+# AWS Governance Configuration: Organization & Core Settings
+# =============================================================================
+
+organization:
+  name: "myorg"                          # Lowercase prefix for resource naming and S3 buckets
+  domain: "example.com"
+  primary_region: "us-east-2"
+  additional_regions: []                 # Additional regions for multi-region security services (GuardDuty, Security Hub)
+  delete_default_vpc: true               # Purge default VPCs across all enabled AWS regions in the management account
+  # Organization-wide Governance Tags
+  # Automatically merged into all provisioned member accounts and CloudFormation stacks.
+  # Precedence: Default System Tags -> Organization Tags -> Account Tags -> Stack/CLI Tags.
+  tags:
+    Environment: "Production"
+    CostCenter: "1040"
+    Owner: "CloudPlatform"
+
+# Alternate contacts for the AWS Management Account
+contacts:
+  billing:
+    name: "Billing Team"
+    title: "Billing Administrator"
+    email: "billing@example.com"
+    phone: "+1-555-000-0001"
+  operations:
+    name: "Operations Team"
+    title: "Operations Lead"
+    email: "ops@example.com"
+    phone: "+1-555-000-0002"
+  security:
+    name: "Security Team"
+    title: "Security Operations"
+    email: "security@example.com"
+    phone: "+1-555-000-0003"
+
+# =============================================================================
+# Centralized Root Access Management
+# =============================================================================
+# AWS Organizations native root governance (eliminates individual member root passwords):
+# - enable_root_credentials_management: Centrally manages and recovers member account root
+#   credentials (passwords, MFA) from the organization level without requiring member console login.
+# - enable_root_sessions: Allows authorized administrators to start short-lived, audited temporary
+#   root sessions in member accounts via AWS STS/SSM for emergency break-glass operations.
+# - delegated_admin_account: Registers a designated security account (e.g. 'audit') as IAM
+#   delegated administrator, allowing security operators to manage root access without payer console access.
+# Note: Paired with the 'DenyMemberRootActivity' SCP below, which blocks all direct root logins.
+root_access_management:
+  enabled: true
+  enable_root_credentials_management: true
+  enable_root_sessions: true
+  delegated_admin_account: "audit"
+
+# Declarative Service Control Policies (SCPs)
+service_control_policies:
+  enabled: true
+  policies:
+    - name: "DenyMemberRootActivity"
+      description: "Denies direct root access in member accounts except for authorized temporary root sessions"
+      policy_file: "policies/scp/deny-member-root.json"
+      targets:
+        - "root"
+    - name: "DenyLeaveOrganization"
+      description: "Prevents member accounts from leaving the AWS Organization"
+      policy_file: "policies/scp/deny-leave-organization.json"
+      targets:
+        - "root"
+
+# Organizational Unit (OU) Hierarchy
+ou_structure:
+  - name: "Security"
+    description: "Security and compliance accounts"
+  - name: "Infrastructure"
+    description: "Shared infrastructure and networking accounts"
+  - name: "Production"
+    description: "Production workloads"
+  - name: "NonProduction"
+    description: "Development, test, and staging environments"
+  - name: "Sandbox"
+    description: "Experimental workloads and developer playgrounds"
+  - name: "Suspended"
+    description: "Quarantined or decommissioned accounts"
+
+# Organization-wide CloudTrail configuration
+cloudtrail:
+  trail_name: "myorg-organization-trail"
+  bucket_prefix: "myorg-cloudtrail"
+  log_archive_account: "log-archive"
+  enable_kms: false # Set to false to use SSE-S3 (AES256) and avoid KMS key & API charges
+
+# Terraform Backend configuration (deployed in Deployment account)
+terraform_backend:
+  account: "deployment"
+  bucket_prefix: "myorg-terraform-state"
+  dynamodb_table_name: "terraform-state-lock"
+  enable_dynamodb: false # Set to false for native S3-only locking (Terraform 1.10+ use_lockfile)
+
+# Cost Allocation Tags in AWS Cost Explorer & Billing
+cost_allocation_tags:
+  enabled: true
+  tags:
+    - "Environment"
+    - "CostCenter"
+    - "Owner"
+
+
