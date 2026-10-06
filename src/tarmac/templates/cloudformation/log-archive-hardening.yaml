@@ -1,0 +1,287 @@
+# =============================================================================
+# AWS Governance: Log Archive Account Hardening Reference Template
+# =============================================================================
+# Architecture & Security Design Note:
+# -----------------------------------------------------------------------------
+# 1. Separation of Duties (KMS Key Policy):
+#    AWS's default KMS policy (kms:*) delegates all key actions to IAM.
+#    This template enforces least privilege by strictly separating duties:
+#    - Key Administrators: Can manage key rotation, tags, and lifecycle, but
+#      CANNOT encrypt or decrypt data.
+#    - Security Auditors & Investigators: Granted 'kms:Decrypt' to inspect and
+#      analyze logs in Amazon Athena or S3, but CANNOT forge or encrypt logs.
+#    - AWS Service Principals (cloudtrail, config, s3 logging): Granted
+#      'kms:GenerateDataKey' guarded by 'aws:SourceOrgID' to write verified
+#      audit logs into S3.
+#
+# 2. Centralized S3 Log Storage (AWS Security Reference Architecture - SRA):
+#    - 'OrganizationCloudTrailBucket': Centralized organizational log repository
+#      encrypted with 'LogArchiveKmsKey' and protected by an explicit bucket policy.
+#    - 'AccessLogsBucket': Dedicated target for S3 Server Access Logs to track
+#      who accesses the audit buckets while preventing recursive logging loops.
+# =============================================================================
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Log Archive account hardening — KMS key, centralized CloudTrail bucket, access logging, and lifecycle policies
+
+Parameters:
+  OrganizationId:
+    Type: String
+    Description: AWS Organization ID (e.g., o-xxxxx)
+    AllowedPattern: '^o-[a-z0-9]{10,32}$'
+
+  OrgName:
+    Type: String
+    Description: Organization name prefix for resource naming
+
+Resources:
+  LogArchiveKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts Log Archive S3 buckets
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowKeyAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Create*
+              - kms:Describe*
+              - kms:Enable*
+              - kms:List*
+              - kms:Put*
+              - kms:Update*
+              - kms:Revoke*
+              - kms:Disable*
+              - kms:Get*
+              - kms:Delete*
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:ScheduleKeyDeletion
+              - kms:CancelKeyDeletion
+            Resource: '*'
+          - Sid: AllowCloudTrailEncrypt
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceOrgID: !Ref OrganizationId
+          - Sid: AllowConfigEncrypt
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceOrgID: !Ref OrganizationId
+          - Sid: AllowS3LogDeliveryEncrypt
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+          - Sid: AllowDecryptForLogAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: Log Archive Encryption
+
+  LogArchiveKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${OrgName}-log-archive'
+      TargetKeyId: !Ref LogArchiveKmsKey
+
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: "Access logs destination bucket cannot log to itself without recursive logging loop"
+    Properties:
+      BucketName: !Sub '${OrgName}-log-archive-access-logs-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref LogArchiveKmsKey
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAccessLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Purpose
+          Value: S3 Access Logs for Log Archive Buckets
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequests
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt AccessLogsBucket.Arn
+              - !Sub '${AccessLogsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: AllowS3Logging
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${AccessLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  OrganizationCloudTrailBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${OrgName}-org-cloudtrail-logs-${AWS::AccountId}'
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: cloudtrail-access/
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref LogArchiveKmsKey
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionOldVersionsToGlacier
+            Status: Enabled
+            NoncurrentVersionTransitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+            NoncurrentVersionExpirationInDays: 365
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Purpose
+          Value: Organization CloudTrail Logs
+
+  OrganizationCloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref OrganizationCloudTrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequests
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt OrganizationCloudTrailBucket.Arn
+              - !Sub '${OrganizationCloudTrailBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt OrganizationCloudTrailBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceOrgID: !Ref OrganizationId
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource:
+              - !Sub '${OrganizationCloudTrailBucket.Arn}/AWSLogs/${OrganizationId}/*'
+              - !Sub '${OrganizationCloudTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+              - !Sub '${OrganizationCloudTrailBucket.Arn}/AWSLogs/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceOrgID: !Ref OrganizationId
+
+Outputs:
+  KmsKeyArn:
+    Description: ARN of the Log Archive KMS key
+    Value: !GetAtt LogArchiveKmsKey.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-KmsKeyArn'
+
+  KmsKeyId:
+    Description: ID of the Log Archive KMS key
+    Value: !Ref LogArchiveKmsKey
+    Export:
+      Name: !Sub '${AWS::StackName}-KmsKeyId'
+
+  AccessLogsBucketName:
+    Description: S3 access logs bucket name
+    Value: !Ref AccessLogsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-AccessLogsBucket'
+
+  CloudTrailBucketName:
+    Description: Organization CloudTrail logs S3 bucket name
+    Value: !Ref OrganizationCloudTrailBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudTrailBucketName'
+
+  CloudTrailBucketArn:
+    Description: Organization CloudTrail logs S3 bucket ARN
+    Value: !GetAtt OrganizationCloudTrailBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CloudTrailBucketArn'

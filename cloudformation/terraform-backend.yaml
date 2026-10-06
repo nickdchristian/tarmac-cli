@@ -1,0 +1,141 @@
+# Deployed in the Deployment account to provision a Terraform backend with or
+# without a DynamoDB table for state locking.
+#
+# Whichever option is chosen must be reflected in the Terraform configuration.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Terraform state backend with S3 bucket and optional DynamoDB table for state locking
+
+Parameters:
+  OrgName:
+    Type: String
+    Default: ''
+    Description: (Optional) Organization name prefix for resource naming
+
+  BucketPrefix:
+    Type: String
+    Default: terraform-state
+    Description: S3 bucket name prefix (used if OrgName is omitted)
+
+  EnableDynamoDB:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to create a DynamoDB table for state locking. Set to 'false' for native S3-only locking (Terraform 1.10+ use_lockfile)
+
+  DynamoDBTableName:
+    Type: String
+    Default: terraform-state-lock
+    Description: DynamoDB table name for state locking (ignored if EnableDynamoDB is false)
+
+Conditions:
+  HasOrgName: !Not [!Equals [!Ref OrgName, '']]
+  CreateDynamoDBLockTable: !Equals [!Ref EnableDynamoDB, 'true']
+
+Resources:
+  TerraformStateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: "S3 access logging is omitted on the backend bootstrap bucket to avoid circular dependencies; audit logging should be directed to the centralized Log Archive bucket."
+    Properties:
+      BucketName: !If
+        - HasOrgName
+        - !Sub '${OrgName}-terraform-state-${AWS::AccountId}'
+        - !Sub '${BucketPrefix}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+      Tags:
+        - Key: Purpose
+          Value: Terraform State Storage
+
+  TerraformStateBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TerraformStateBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequests
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt TerraformStateBucket.Arn
+              - !Sub '${TerraformStateBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  TerraformStateLockTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateDynamoDBLockTable
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_119
+            comment: "DynamoDB state lock table stores only transient lock IDs without sensitive payload; AWS-managed default SSE is sufficient and avoids unnecessary KMS CMK overhead."
+    Properties:
+      TableName: !Ref DynamoDBTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LockID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LockID
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Purpose
+          Value: Terraform State Locking
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket for Terraform state
+    Value: !Ref TerraformStateBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+
+  BucketArn:
+    Description: ARN of the S3 bucket
+    Value: !GetAtt TerraformStateBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketArn'
+
+  DynamoDBTableName:
+    Condition: CreateDynamoDBLockTable
+    Description: Name of the DynamoDB table for state locking
+    Value: !Ref TerraformStateLockTable
+    Export:
+      Name: !Sub '${AWS::StackName}-TableName'
+
+  DynamoDBTableArn:
+    Condition: CreateDynamoDBLockTable
+    Description: ARN of the DynamoDB table
+    Value: !GetAtt TerraformStateLockTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TableArn'
