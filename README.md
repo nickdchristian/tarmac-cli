@@ -1,7 +1,7 @@
 # Tarmac CLI (`tarmac-cli`)
 
-[![PyPI version](https://img.shields.io/pypi/v/tarmac-cli.svg)](https://pypi.org/project/tarmac-cli/)
-[![Python versions](https://img.shields.io/pypi/pyversions/tarmac-cli.svg)](https://pypi.org/project/tarmac-cli/)
+[![PyPI version](https://img.shields.io/pypi/v/tarmac-cli)](https://pypi.org/project/tarmac-cli/)
+[![Python versions](https://img.shields.io/pypi/pyversions/tarmac-cli)](https://pypi.org/project/tarmac-cli/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
