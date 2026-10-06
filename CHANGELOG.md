@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.3...v0.1.4) (2026-10-06)
+
+
+### Documentation
+
+* bust camo cache on pypi badges ([1383211](https://github.com/nickdchristian/tarmac-cli/commit/13832118793b3b72f71e11fe59493fcbabd5b42c))
+* update python versions badge to dynamic pypi badge ([2bd9018](https://github.com/nickdchristian/tarmac-cli/commit/2bd9018eb38894949252c163f7bb6e357568b973))
+
 ## [0.1.3](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.2...v0.1.3) (2026-10-06)
 
 
