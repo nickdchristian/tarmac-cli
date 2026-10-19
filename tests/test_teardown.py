@@ -107,6 +107,11 @@ def test_teardown_cloudtrail(test_bundle):
     )
     mock_session_mgr.get_caller_identity.return_value = {"Account": "111122223333"}
 
+    mock_trail.get_trail.return_value = {"Trail": {"TrailARN": "arn:aws:cloudtrail:us-east-1:1:trail/t"}}
+    mock_trail.list_tags.return_value = {
+        "ResourceTagList": [{"TagsList": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}]
+    }
+
     service = TeardownService(mock_session_mgr)
     reports = service.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
 
@@ -216,9 +221,14 @@ def test_teardown_scps(test_bundle):
     mock_paginator_targets = MagicMock()
     mock_paginator_targets.paginate.return_value = [{"Targets": [{"TargetId": "r-root"}]}]
 
+    mock_paginator_tags = MagicMock()
+    mock_paginator_tags.paginate.return_value = [{"Tags": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}]
+
     def get_paginator(name):
         if name == "list_policies":
             return mock_paginator_policies
+        if name == "list_tags_for_resource":
+            return mock_paginator_tags
         return mock_paginator_targets
 
     mock_org.get_paginator.side_effect = get_paginator
@@ -698,3 +708,110 @@ def test_cleanup_orphaned_bucket_contains_data_raises_governance_error():
 
     assert "contains data" in str(exc_info.value)
     mock_s3.delete_bucket.assert_not_called()
+
+
+# --- M-3: teardown only removes tarmac-owned trails and SCPs -------------------------------------
+
+
+def _teardown_service(clients: dict[str, MagicMock]) -> TeardownService:
+    mgr = MagicMock(spec=AwsSessionManager)
+    mgr.default_region = "us-east-1"
+    mgr.get_client.side_effect = lambda svc, **kw: clients[svc]
+    mgr.get_caller_identity.return_value = {"Account": "111122223333"}
+    return TeardownService(mgr)
+
+
+def _no_stack_cfn() -> MagicMock:
+    cfn = MagicMock()
+    cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStacks"
+    )
+    return cfn
+
+
+def test_teardown_cloudtrail_skips_untagged_trail(test_bundle):
+    trail = MagicMock()
+    trail.get_trail.return_value = {"Trail": {"TrailARN": "arn:aws:cloudtrail:us-east-1:1:trail/t"}}
+    trail.list_tags.return_value = {"ResourceTagList": [{"TagsList": [{"Key": "team", "Value": "sec"}]}]}
+    svc = _teardown_service({"cloudformation": _no_stack_cfn(), "cloudtrail": trail})
+
+    reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
+
+    trail.delete_trail.assert_not_called()
+    trail.stop_logging.assert_not_called()
+    assert any(r.resource_type == "CloudTrail Trail" and r.action == "SKIPPED" for r in reports)
+
+
+def test_teardown_cloudtrail_dry_run_reports_tagged_trail_without_deleting(test_bundle):
+    trail = MagicMock()
+    trail.get_trail.return_value = {"Trail": {"TrailARN": "arn:aws:cloudtrail:us-east-1:1:trail/t"}}
+    trail.list_tags.return_value = {
+        "ResourceTagList": [{"TagsList": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}]
+    }
+    svc = _teardown_service({"cloudformation": _no_stack_cfn(), "cloudtrail": trail})
+
+    reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=True)
+
+    trail.delete_trail.assert_not_called()
+    assert any(r.resource_type == "CloudTrail Trail" and r.action == "SIMULATED" for r in reports)
+
+
+def test_teardown_cloudtrail_missing_trail_is_silent(test_bundle):
+    trail = MagicMock()
+    trail.get_trail.side_effect = ClientError(
+        {"Error": {"Code": "TrailNotFoundException", "Message": "nope"}}, "GetTrail"
+    )
+    svc = _teardown_service({"cloudformation": _no_stack_cfn(), "cloudtrail": trail})
+
+    reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
+
+    assert not [r for r in reports if r.resource_type == "CloudTrail Trail"]
+
+
+def _scp_clients(tagged: bool) -> dict[str, MagicMock]:
+    org = MagicMock()
+    pols = MagicMock()
+    pols.paginate.return_value = [{"Policies": [{"Id": "p-legacy", "Name": "DenyLeaveOrganization"}]}]
+    tags = MagicMock()
+    tags.paginate.return_value = [
+        {"Tags": [{"Key": "tarmac:managed-by", "Value": "tarmac"}] if tagged else []}
+    ]
+    targets = MagicMock()
+    targets.paginate.return_value = [{"Targets": [{"TargetId": "r-root"}]}]
+    org.get_paginator.side_effect = lambda n: {
+        "list_policies": pols,
+        "list_tags_for_resource": tags,
+    }.get(n, targets)
+    return {"cloudformation": _no_stack_cfn(), "organizations": org}
+
+
+def test_teardown_scps_skips_untagged_legacy_policy(test_bundle):
+    test_bundle.org.service_control_policies.policies = []
+    clients = _scp_clients(tagged=False)
+    reports = _teardown_service(clients).teardown_scps(test_bundle, dry_run=False)
+
+    clients["organizations"].detach_policy.assert_not_called()
+    clients["organizations"].delete_policy.assert_not_called()
+    assert any(r.resource_name == "DenyLeaveOrganization" and r.action == "SKIPPED" for r in reports)
+
+
+def test_teardown_scps_removes_tagged_legacy_policy(test_bundle):
+    test_bundle.org.service_control_policies.policies = []
+    clients = _scp_clients(tagged=True)
+    _teardown_service(clients).teardown_scps(test_bundle, dry_run=False)
+
+    clients["organizations"].delete_policy.assert_called_once_with(PolicyId="p-legacy")
+
+
+def test_scp_create_and_template_carry_ownership_tag(tmp_path):
+    from tarmac.services.scp import SCPService
+
+    mgr = MagicMock(spec=AwsSessionManager)
+    org = MagicMock()
+    org.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-new"}}}
+    mgr.get_client.return_value = org
+    scp = SCPService(mgr)
+
+    scp.sync_policy("N", "d", "{}", {}, dry_run=False)
+
+    assert org.create_policy.call_args.kwargs["Tags"] == [{"Key": "tarmac:managed-by", "Value": "tarmac"}]

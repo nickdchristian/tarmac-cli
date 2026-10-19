@@ -541,8 +541,21 @@ class PreflightService:
                 if target_acct_id and target_acct_id != mgmt_id:
                     try:
                         target_s3 = self.session_mgr.get_member_client(target_acct_id, "s3")
-                    except Exception:
-                        target_s3 = s3
+                    except Exception as e:
+                        # Do NOT fall back to the management account's client: it would report the
+                        # bucket as "Available" or "Taken" based on the wrong account's view.
+                        logger.warning(
+                            "Cannot assume role into account %s for S3 check: %s", target_acct_id, e
+                        )
+                        results.append(
+                            PreflightCheckResult(
+                                name=f"S3 Bucket Availability ({label})",
+                                target=b_name,
+                                status=PreflightCheckStatus.INFO,
+                                live_value=f"Check skipped (cannot access account {target_acct_id})",
+                            )
+                        )
+                        continue
                 try:
                     target_s3.head_bucket(Bucket=b_name)
                     results.append(
@@ -587,7 +600,15 @@ class PreflightService:
                             )
                         )
         except Exception as e:
-            logger.debug("S3 collision check failed: %s", e)
+            logger.warning("S3 collision check failed: %s", e)
+            results.append(
+                PreflightCheckResult(
+                    name="S3 Bucket Availability",
+                    target="(all)",
+                    status=PreflightCheckStatus.INFO,
+                    live_value=f"Check skipped ({type(e).__name__})",
+                )
+            )
         return results
 
     def run_all_checks(self, region_override: str | None = None) -> PreflightReport:

@@ -470,3 +470,91 @@ def test_log_archive_template_hardening(base: str):
     assert enc[0]["ServerSideEncryptionByDefault"]["SSEAlgorithm"] == "AES256"
     sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"]]
     assert "AllowS3LogDeliveryEncrypt" not in sids
+
+
+# --- M-6: no silent fallback to example configuration --------------------------------------------
+
+
+def test_default_config_dir_does_not_fall_back_to_repo_examples(tmp_path, monkeypatch):
+    from tarmac.core.config_loader import get_default_config_dir
+
+    monkeypatch.delenv("TARMAC_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    resolved = get_default_config_dir()
+
+    assert "examples" not in resolved.parts
+    assert resolved == tmp_path / "config"
+
+
+def test_example_files_are_not_loaded_as_real_config(tmp_path):
+    from tarmac.core.config_loader import resolve_file
+    from tarmac.core.exceptions import ConfigurationError
+
+    (tmp_path / "organization.yaml.example").write_text("organization: {}\n")
+
+    with pytest.raises(ConfigurationError):
+        resolve_file(tmp_path, "organization")
+
+
+# --- M-12: email-first account matching and aggregated provisioning failures ----------------------
+
+
+def _acct_service(existing: dict[str, dict[str, Any]]):
+    from tarmac.services.accounts import AccountService
+
+    mgr = MagicMock(spec=AwsSessionManager)
+    org = MagicMock()
+    mgr.get_client.return_value = org
+    svc = AccountService(mgr)
+    svc.list_existing_accounts = MagicMock(return_value=existing)  # type: ignore[method-assign]
+    return svc, org
+
+
+def _acct_def(name: str, email: str, ou: str = "Workloads"):
+    from tarmac.core.config_schema import AccountDef
+
+    return AccountDef(name=name, email=email, ou=ou)
+
+
+def test_find_existing_account_prefers_email_over_name():
+    svc, _ = _acct_service({})
+    existing = {
+        "Prod App": {"Id": "111111111111", "Email": "other@example.com", "Status": "ACTIVE"},
+        "renamed": {"Id": "222222222222", "Email": "prod@example.com", "Status": "ACTIVE"},
+    }
+    found = svc.find_existing_account("prod-app", existing, email="prod@example.com")
+    assert found is not None
+    assert found["Id"] == "222222222222"
+
+
+def test_provision_refuses_to_adopt_name_match_with_different_email():
+    svc, org = _acct_service(
+        {"Prod App": {"Id": "111111111111", "Email": "other@example.com", "Status": "ACTIVE"}}
+    )
+    with pytest.raises(Exception, match="could not be provisioned") as exc:
+        svc.provision_accounts([_acct_def("prod-app", "prod@example.com")], {"Workloads": "ou-1"})
+
+    assert "email" in str(getattr(exc.value, "details", "")).lower()
+    org.move_account.assert_not_called()
+    org.create_account.assert_not_called()
+
+
+def test_provision_continues_after_one_create_failure_then_aggregates():
+    svc, org = _acct_service({})
+    org.create_account.side_effect = [
+        ClientError({"Error": {"Code": "ConstraintViolation", "Message": "quota"}}, "CreateAccount"),
+        {"CreateAccountStatus": {"Id": "car-2"}},
+    ]
+    svc._describe_create_status = MagicMock(return_value=("SUCCEEDED", "333333333333", ""))  # type: ignore[method-assign]
+    svc.move_account_if_needed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    svc.sync_account_tags = MagicMock(return_value=False)  # type: ignore[method-assign]
+
+    accounts = [_acct_def("a", "a@example.com"), _acct_def("b", "b@example.com")]
+    with pytest.raises(Exception, match="1 account") as exc:
+        svc.provision_accounts(accounts, {"Workloads": "ou-1"}, poll_delay_sec=0, max_poll_attempts=2)
+
+    assert "quota" in str(getattr(exc.value, "details", ""))
+    # The second account was still polled, moved and tagged despite the first one failing.
+    svc.move_account_if_needed.assert_called_once()
+    svc.sync_account_tags.assert_called_once()

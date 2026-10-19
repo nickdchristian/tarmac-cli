@@ -91,8 +91,20 @@ class AccountService:
             accounts[name] = acct
         return accounts
 
-    def find_existing_account(self, name: str, existing: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
-        """Find account by name with case- and separator-insensitive fallback."""
+    def find_existing_account(
+        self, name: str, existing: dict[str, dict[str, Any]], email: str | None = None
+    ) -> dict[str, Any] | None:
+        """Find an existing account, preferring the email (AWS's unique key) over the name.
+
+        Falls back to a case- and separator-insensitive name match. Callers that adopt the result
+        should check `email_conflicts` first, because a name match with a different email is a
+        different account.
+        """
+        if email:
+            wanted = email.strip().lower()
+            for v in existing.values():
+                if str(v.get("Email", "")).strip().lower() == wanted:
+                    return v
         if name in existing:
             return existing[name]
         norm = normalize_account_name(name)
@@ -100,6 +112,12 @@ class AccountService:
             if normalize_account_name(k) == norm:
                 return v
         return None
+
+    @staticmethod
+    def email_conflicts(existing_acct: dict[str, Any], email: str) -> bool:
+        """True when an existing account's email is known and differs from the declared one."""
+        current = str(existing_acct.get("Email", "")).strip().lower()
+        return bool(current) and current != email.strip().lower()
 
     def get_account_parent_id(self, account_id: str) -> str | None:
         """Fetch the current parent (OU or Root) ID for an account."""
@@ -181,7 +199,7 @@ class AccountService:
             name = acct_def.name
             target_ou_id = ou_map.get(acct_def.ou)
 
-            current_acct = self.find_existing_account(name, existing)
+            current_acct = self.find_existing_account(name, existing, email=acct_def.email)
             action: Literal["CREATE", "MOVE", "NOOP", "SUSPEND", "SUSPENDED"]
             if current_acct:
                 acct_id = current_acct["Id"]
@@ -418,6 +436,7 @@ class AccountService:
         existing = self.list_existing_accounts()
         results: list[AccountProvisionResult | None] = [None] * len(accounts)
         pending_creations: list[dict[str, Any]] = []
+        failures: list[str] = []
 
         for idx, acct_def in enumerate(accounts):
             name, email = acct_def.name, acct_def.email
@@ -428,7 +447,15 @@ class AccountService:
                 results[idx] = _make_result(acct_def)
                 continue
 
-            existing_acct = self.find_existing_account(name, existing)
+            existing_acct = self.find_existing_account(name, existing, email=email)
+            if existing_acct and self.email_conflicts(existing_acct, email):
+                msg = (
+                    f"Account '{name}': an account with that name exists ({existing_acct['Id']}) but its email "
+                    f"differs from the declared '{email}'. Refusing to adopt or move it."
+                )
+                logger.error(msg)
+                failures.append(msg)
+                continue
             if existing_acct:
                 acct_id = str(existing_acct["Id"])
                 if existing_acct.get("Status") == "SUSPENDED":
@@ -471,61 +498,89 @@ class AccountService:
                     }
                 )
             except ClientError as e:
-                raise AccountProvisioningError(
-                    f"Failed to request creation of account '{name}'",
-                    details=e.response["Error"].get("Message", str(e)),
-                ) from e
+                detail = e.response["Error"].get("Message", str(e))
+                logger.error("Failed to request creation of account '%s': %s", name, detail)
+                failures.append(f"Failed to request creation of account '{name}': {detail}")
 
         if pending_creations:
-            in_flight = list(pending_creations)
-            for attempt in range(1, max_poll_attempts + 1):
-                if not in_flight:
-                    break
-                time.sleep(poll_delay_sec)
-                still_pending: list[dict[str, Any]] = []
+            self._poll_pending_creations(
+                pending_creations, results, failures, poll_delay_sec, max_poll_attempts
+            )
 
-                for item in in_flight:
-                    name = item["acct_def"].name
-                    try:
-                        state, new_id, reason = self._describe_create_status(item["request_id"])
-                        logger.info(
-                            "Creation status for '%s': %s (attempt %d/%d)",
-                            name,
-                            state,
-                            attempt,
-                            max_poll_attempts,
-                        )
-
-                        if state == "SUCCEEDED":
-                            if not new_id:
-                                raise AccountProvisioningError(
-                                    f"Account creation for '{name}' succeeded but AccountId was not returned."
-                                )
-                            self.move_account_if_needed(new_id, name, item["target_ou_id"])
-                            self.sync_account_tags(new_id, name, item["acct_def"].tags, dry_run=False)
-                            results[item["index"]] = _make_result(
-                                item["acct_def"], new_id, item["target_ou_id"], "CREATED", "SUCCEEDED"
-                            )
-                        elif state == "IN_PROGRESS":
-                            still_pending.append(item)
-                        else:
-                            raise AccountProvisioningError(
-                                f"Account creation for '{name}' failed with status: {state}",
-                                details=reason or f"Status ended in {state}",
-                            )
-                    except ClientError as e:
-                        logger.warning("Error querying creation status for '%s': %s", name, e)
-                        still_pending.append(item)
-
-                in_flight = still_pending
-
-            if in_flight:
-                timed_out_names = [it["acct_def"].name for it in in_flight]
-                raise AccountProvisioningError(
-                    f"Timed out waiting for account creation for: {', '.join(timed_out_names)}"
-                )
+        if failures:
+            raise AccountProvisioningError(
+                f"{len(failures)} account(s) could not be provisioned; the others were completed.",
+                details="\n".join(failures),
+            )
 
         return [r for r in results if r is not None]
+
+    def _poll_pending_creations(
+        self,
+        pending_creations: list[dict[str, Any]],
+        results: list[AccountProvisionResult | None],
+        failures: list[str],
+        poll_delay_sec: int,
+        max_poll_attempts: int,
+    ) -> None:
+        """Poll in-flight CreateAccount requests, finishing (move + tag) each as it succeeds.
+
+        Per-account problems are appended to `failures` so one bad account never abandons the rest.
+        """
+        in_flight = list(pending_creations)
+        for attempt in range(1, max_poll_attempts + 1):
+            if not in_flight:
+                break
+            time.sleep(poll_delay_sec)
+            in_flight = [
+                item
+                for item in in_flight
+                if self._poll_one_creation(item, attempt, max_poll_attempts, results, failures)
+            ]
+
+        if in_flight:
+            timed_out_names = [it["acct_def"].name for it in in_flight]
+            failures.append(f"Timed out waiting for account creation for: {', '.join(timed_out_names)}")
+
+    def _poll_one_creation(
+        self,
+        item: dict[str, Any],
+        attempt: int,
+        max_attempts: int,
+        results: list[AccountProvisionResult | None],
+        failures: list[str],
+    ) -> bool:
+        """Check one request. Returns True if it is still pending and should be polled again."""
+        name = item["acct_def"].name
+        try:
+            state, new_id, reason = self._describe_create_status(item["request_id"])
+        except ClientError as e:
+            logger.warning("Error querying creation status for '%s': %s", name, e)
+            return True
+        logger.info("Creation status for '%s': %s (attempt %d/%d)", name, state, attempt, max_attempts)
+
+        if state == "IN_PROGRESS":
+            return True
+        if state != "SUCCEEDED":
+            failures.append(
+                f"Account creation for '{name}' failed with status: {state} ({reason or 'no reason given'})"
+            )
+            return False
+        if not new_id:
+            failures.append(f"Account creation for '{name}' succeeded but AccountId was not returned.")
+            return False
+
+        try:
+            self.move_account_if_needed(new_id, name, item["target_ou_id"])
+            self.sync_account_tags(new_id, name, item["acct_def"].tags, dry_run=False)
+        except ClientError as e:
+            logger.warning("Error finishing account '%s' (%s): %s", name, new_id, e)
+            failures.append(f"Account '{name}' ({new_id}) was created but could not be finished: {e}")
+            return False
+        results[item["index"]] = _make_result(
+            item["acct_def"], new_id, item["target_ou_id"], "CREATED", "SUCCEEDED"
+        )
+        return False
 
     def provision_account(
         self,

@@ -75,6 +75,8 @@ Resources:
       Tags:
         - Key: Purpose
           Value: Organization Trail
+        - Key: tarmac:managed-by
+          Value: tarmac
 
 Outputs:
   TrailArn:

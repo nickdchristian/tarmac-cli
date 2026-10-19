@@ -13,7 +13,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
 from ..core.exceptions import GovernanceError
-from ..core.models import SCPReconciliationResult
+from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
 from ..core.templates import resolve_resource_path
 from .cloudformation import CloudFormationService
 
@@ -74,6 +74,18 @@ class SCPService:
         except ClientError as e:
             raise GovernanceError("Failed to list Service Control Policies", details=str(e)) from e
 
+    def is_tarmac_managed(self, policy_id: str) -> bool:
+        """True only if the policy carries the tarmac ownership tag. Fails closed on lookup errors."""
+        try:
+            paginator = self.org_client.get_paginator("list_tags_for_resource")
+            for page in paginator.paginate(ResourceId=policy_id):
+                for tag in page.get("Tags", []):
+                    if tag.get("Key") == TAG_MANAGED_BY and tag.get("Value") == "tarmac":
+                        return True
+        except ClientError as e:
+            logger.warning("Could not read tags for policy %s: %s", policy_id, e)
+        return False
+
     def get_policy_content(self, policy_id: str) -> str:
         """Fetch the JSON content string of an existing policy."""
         try:
@@ -102,6 +114,15 @@ class SCPService:
             return json.dumps(json.loads(content), sort_keys=True)
         except Exception:
             return content.strip()
+
+    def _ensure_ownership_tag(self, policy_id: str) -> None:
+        """Best-effort: stamp an existing policy that tarmac manages with the ownership tag."""
+        try:
+            self.org_client.tag_resource(
+                ResourceId=policy_id, Tags=[{"Key": TAG_MANAGED_BY, "Value": "tarmac"}]
+            )
+        except ClientError as e:
+            logger.warning("Could not tag policy %s: %s", policy_id, e)
 
     def sync_policy(
         self,
@@ -135,6 +156,7 @@ class SCPService:
                     Content=content,
                 )
                 logger.info("Updated SCP '%s' (%s)", name, pol_id)
+                self._ensure_ownership_tag(pol_id)
                 return pol_id, "UPDATED"
             except ClientError as e:
                 raise GovernanceError(f"Failed to update SCP '{name}'", details=str(e)) from e
@@ -149,6 +171,7 @@ class SCPService:
                 Description=description,
                 Type="SERVICE_CONTROL_POLICY",
                 Content=content,
+                Tags=[{"Key": TAG_MANAGED_BY, "Value": "tarmac"}],
             )
             new_id = resp["Policy"]["PolicySummary"]["Id"]
             logger.info("Created SCP '%s' (%s)", name, new_id)
@@ -315,6 +338,7 @@ class SCPService:
                     "Type": "SERVICE_CONTROL_POLICY",
                     "Content": content_obj,
                     "TargetIds": target_ids,
+                    "Tags": [{"Key": TAG_MANAGED_BY, "Value": "tarmac"}],
                 },
             }
 
