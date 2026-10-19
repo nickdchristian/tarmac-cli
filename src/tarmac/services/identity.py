@@ -392,7 +392,7 @@ class IdentityService:
 
         if dry_run:
             logger.info("[DRY-RUN] Would create user '%s' (%s)", user_def.username, user_def.email)
-            return None
+            return f"dry-run-user-{user_def.username}"
 
         try:
             resp = self.identitystore_client.create_user(
@@ -426,7 +426,7 @@ class IdentityService:
 
         if dry_run:
             logger.info("[DRY-RUN] Would create group '%s'", group_def.name)
-            return None
+            return f"dry-run-group-{group_def.name}"
 
         try:
             resp = self.identitystore_client.create_group(
@@ -626,14 +626,13 @@ class IdentityService:
                 if not ps_arn:
                     continue
                 target_ids = self._resolve_target_account_ids(assignment.accounts, active_accts, all_acct_ids)
-                if not dry_run:
-                    total_assignments += self.assign_group_to_accounts(
-                        group_id=group_id,
-                        group_name=grp_def.name,
-                        permission_set_arn=ps_arn,
-                        account_ids=target_ids,
-                        dry_run=dry_run,
-                    )
+                total_assignments += self.assign_group_to_accounts(
+                    group_id=group_id,
+                    group_name=grp_def.name,
+                    permission_set_arn=ps_arn,
+                    account_ids=target_ids,
+                    dry_run=dry_run,
+                )
 
         return total_assignments, group_map, synced_groups
 

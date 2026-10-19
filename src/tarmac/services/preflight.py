@@ -498,13 +498,49 @@ class PreflightService:
             s3 = self.session_mgr.get_client("s3")
             caller = self.session_mgr.get_caller_identity()
             mgmt_id = caller.get("Account", "")
+
+            active_accts: dict[str, str] = {}
+            try:
+                org = self.session_mgr.get_client("organizations")
+                paginator = org.get_paginator("list_accounts")
+                for page in paginator.paginate():
+                    if isinstance(page, dict):
+                        for acct in page.get("Accounts", []):
+                            if isinstance(acct, dict) and acct.get("Status") == "ACTIVE":
+                                name = str(acct.get("Name", ""))
+                                acct_id = str(acct.get("Id", ""))
+                                if name and acct_id:
+                                    active_accts[name] = acct_id
+            except Exception as e:
+                logger.debug("Could not list accounts for S3 bucket collision check: %s", e)
+
+            log_archive_name = self.bundle.get_log_archive_account_name() or "log-archive"
+            log_archive_id = self.bundle.resolve_account_id(log_archive_name, active_accts) or mgmt_id
+
+            backend_name = self.bundle.get_backend_account_name() or "deployment"
+            deployment_id = self.bundle.resolve_account_id(backend_name, active_accts) or mgmt_id
+
             prefixes_to_check = [
-                ("CloudTrail Logs", f"{self.bundle.org.cloudtrail.bucket_prefix}-{mgmt_id}"),
-                ("Terraform State", f"{self.bundle.org.terraform_backend.bucket_prefix}-{mgmt_id}"),
+                (
+                    "CloudTrail Logs",
+                    f"{self.bundle.org.cloudtrail.bucket_prefix}-{log_archive_id}",
+                    log_archive_id,
+                ),
+                (
+                    "Terraform State",
+                    f"{self.bundle.org.terraform_backend.bucket_prefix}-{deployment_id}",
+                    deployment_id,
+                ),
             ]
-            for label, b_name in prefixes_to_check:
+            for label, b_name, target_acct_id in prefixes_to_check:
+                target_s3 = s3
+                if target_acct_id and target_acct_id != mgmt_id:
+                    try:
+                        target_s3 = self.session_mgr.get_member_client(target_acct_id, "s3")
+                    except Exception:
+                        target_s3 = s3
                 try:
-                    s3.head_bucket(Bucket=b_name)
+                    target_s3.head_bucket(Bucket=b_name)
                     results.append(
                         PreflightCheckResult(
                             name=f"S3 Bucket Availability ({label})",

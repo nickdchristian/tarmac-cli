@@ -73,10 +73,14 @@ class StatusService:
         backend_stack = f"{bundle.org.organization.name}-terraform-backend"
 
         if deployment_id:
-            dep_cfn = self.session_mgr.get_member_client(
-                deployment_id, "cloudformation", region_name=target_region
-            )
-            backend_status = self.get_stack_status(dep_cfn, backend_stack)
+            try:
+                dep_cfn = self.session_mgr.get_member_client(
+                    deployment_id, "cloudformation", region_name=target_region
+                )
+                backend_status = self.get_stack_status(dep_cfn, backend_stack)
+            except Exception as e:
+                logger.debug("Could not inspect backend stack in account %s: %s", deployment_id, e)
+                backend_status = "ACCESS_ERROR"
         else:
             backend_status = self.get_stack_status(cfn_client, backend_stack)
 

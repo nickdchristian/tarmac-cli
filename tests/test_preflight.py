@@ -438,3 +438,32 @@ def test_check_scp_quota_warn_limit(mock_session, test_bundle):
     assert res.status == PreflightCheckStatus.WARN
     assert "5 of 5 SCPs attached" in res.live_value
     assert res.action_required is not None
+
+
+def test_check_s3_bucket_collision_resolves_member_accounts(mock_session, test_bundle):
+    mock_session.get_caller_identity.return_value = {"Account": "111111111111"}
+    mock_org = MagicMock()
+    mock_paginator = MagicMock()
+    mock_paginator.paginate.return_value = [
+        {
+            "Accounts": [
+                {"Id": "888888888888", "Name": "log-archive", "Status": "ACTIVE"},
+                {"Id": "999999999999", "Name": "deployment", "Status": "ACTIVE"},
+            ]
+        }
+    ]
+    mock_org.get_paginator.return_value = mock_paginator
+    mock_s3_mgmt = MagicMock()
+    mock_s3_member = MagicMock()
+
+    mock_session.get_client.side_effect = lambda s, **kw: mock_org if s == "organizations" else mock_s3_mgmt
+    mock_session.get_member_client.return_value = mock_s3_member
+
+    service = PreflightService(mock_session, test_bundle)
+    results = service.check_s3_bucket_collision()
+
+    assert len(results) == 2
+    assert results[0].target.endswith("-888888888888")
+    assert results[1].target.endswith("-999999999999")
+    assert all(r.status == PreflightCheckStatus.PASS for r in results)
+    assert mock_s3_member.head_bucket.call_count == 2

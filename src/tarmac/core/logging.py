@@ -2,12 +2,11 @@
 
 import logging
 
+from rich.console import Console
 from rich.logging import RichHandler
 
-from ..cli.ui import error_console
 
-
-def setup_logging(debug: bool = False) -> None:
+def setup_logging(debug: bool = False, console: Console | None = None) -> None:
     """Configure centralized Rich logging for Tarmac.
 
     When debug is True:
@@ -18,9 +17,10 @@ def setup_logging(debug: bool = False) -> None:
     - Sets root logger to WARNING to avoid cluttering standard CLI terminal output.
     """
     level = logging.DEBUG if debug else logging.WARNING
+    target_console = console if console is not None else Console(stderr=True)
 
     handler = RichHandler(
-        console=error_console,
+        console=target_console,
         show_time=True,
         show_path=debug,
         rich_tracebacks=debug,

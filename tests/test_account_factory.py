@@ -632,3 +632,79 @@ def test_find_existing_account_normalized():
     assert service.find_existing_account("log_archive", existing) == existing["Log-Archive"]
     assert service.find_existing_account("audit-account", existing) == existing["Audit Account"]
     assert service.find_existing_account("NonExistent", existing) is None
+
+
+def test_export_inventory_sanitizes_env_var_names_and_values(tmp_path):
+    """Verify export_inventory sanitizes account names into valid POSIX identifiers and escapes values."""
+    mock_session_mgr = MagicMock()
+    mock_org_client = MagicMock()
+    mock_session_mgr.get_client.return_value = mock_org_client
+
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {
+            "Accounts": [
+                {"Id": "111111111111", "Name": "123-prod$(whoami)", "Status": "ACTIVE"},
+            ]
+        }
+    ]
+    mock_org_client.get_paginator.return_value = paginator
+
+    service = AccountService(mock_session_mgr)
+    catalog = AccountsCatalog(
+        accounts=[AccountDef(name="123-prod$(whoami)", email="p@example.com", ou="Workloads")]
+    )
+    service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
+
+    env_content = (tmp_path / "env.sh").read_text(encoding="utf-8")
+    assert 'export ACCT_123_PROD_WHOAMI_ACCOUNT_ID="111111111111"' in env_content
+    assert "$(" not in env_content
+
+
+def test_suspend_account_close_failure_reported():
+    """Verify suspend_account reports CLOSE_FAILED when close_account raises ClientError."""
+    mock_session_mgr = MagicMock()
+    mock_org_client = MagicMock()
+    mock_session_mgr.get_client.return_value = mock_org_client
+
+    mock_org_client.list_parents.return_value = {"Parents": [{"Id": "ou-suspended-999"}]}
+    tags_paginator = MagicMock()
+    tags_paginator.paginate.return_value = [{"Tags": []}]
+    mock_org_client.get_paginator.return_value = tags_paginator
+    mock_org_client.close_account.side_effect = ClientError(
+        {"Error": {"Code": "ConstraintViolationException", "Message": "Close quota exceeded"}},
+        "CloseAccount",
+    )
+
+    service = AccountService(mock_session_mgr)
+    res = service.suspend_account(
+        account_id="333333333333",
+        account_name="OldWorkload",
+        suspended_ou_id="ou-suspended-999",
+        dry_run=False,
+        close=True,
+    )
+    assert res.closed is False
+    assert res.status == "CLOSE_FAILED"
+    assert "Close quota exceeded" in res.message
+
+
+def test_account_service_caches_parent_and_tags():
+    """Verify get_account_parent_id and get_account_tags cache responses across calls."""
+    mock_session_mgr = MagicMock()
+    mock_org_client = MagicMock()
+    mock_session_mgr.get_client.return_value = mock_org_client
+
+    mock_org_client.list_parents.return_value = {"Parents": [{"Id": "ou-cached"}]}
+    tags_paginator = MagicMock()
+    tags_paginator.paginate.return_value = [{"Tags": [{"Key": "Env", "Value": "Prod"}]}]
+    mock_org_client.get_paginator.return_value = tags_paginator
+
+    service = AccountService(mock_session_mgr)
+    assert service.get_account_parent_id("111111111111") == "ou-cached"
+    assert service.get_account_parent_id("111111111111") == "ou-cached"
+    mock_org_client.list_parents.assert_called_once_with(ChildId="111111111111")
+
+    assert service.get_account_tags("111111111111") == {"Env": "Prod"}
+    assert service.get_account_tags("111111111111") == {"Env": "Prod"}
+    tags_paginator.paginate.assert_called_once_with(ResourceId="111111111111")

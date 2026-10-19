@@ -240,3 +240,41 @@ def test_guardduty_handles_client_error_on_admin_registration():
 
     assert report.status == "FAILED"
     assert "Access denied" in report.message
+
+
+def test_guardduty_and_securityhub_report_failed_when_all_regions_fail():
+    """Verify configure_guardduty and configure_securityhub report FAILED when all regions fail."""
+    mock_session_mgr = MagicMock()
+    mock_mgmt = MagicMock()
+    mock_audit = MagicMock()
+    mock_session_mgr.get_client.return_value = mock_mgmt
+    mock_session_mgr.get_member_client.return_value = mock_audit
+
+    mock_mgmt.list_organization_admin_accounts.return_value = {"AdminAccounts": []}
+    regional_err = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "Region blocked by SCP"}},
+        "RegionalCall",
+    )
+    mock_audit.list_detectors.side_effect = regional_err
+    mock_audit.describe_hub.side_effect = regional_err
+
+    service = SecurityServicesService(mock_session_mgr)
+    gd_report = service.configure_guardduty(
+        audit_id="111122223333",
+        primary_region="eu-west-1",
+        all_regions=["eu-west-1"],
+        config=GuardDutyConfig(enabled=True),
+        dry_run=False,
+    )
+    assert gd_report.status == "FAILED"
+    assert gd_report.regions == []
+
+    sh_report = service.configure_securityhub(
+        audit_id="111122223333",
+        primary_region="eu-west-1",
+        all_regions=["eu-west-1"],
+        config=SecurityHubConfig(enabled=True),
+        dry_run=False,
+    )
+    assert sh_report.status == "FAILED"
+    assert sh_report.regions == []

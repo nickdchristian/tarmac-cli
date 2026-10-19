@@ -22,7 +22,9 @@ from ..services.cloudformation import CloudFormationService
 from ..services.identity import IdentityService
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
+from ..services.preflight import PreflightService
 from ..services.scp import SCPService
+from ..services.security import SecurityServicesService
 from ..services.teardown import TeardownItemReport, TeardownService
 from .common import get_active_account_id_map, load_configs_or_exit, parse_tags_or_exit
 from .deploy_dry_run import (
@@ -80,7 +82,9 @@ __all__ = [
     "OrganizationService",
     "PreflightCheckStatus",
     "PreflightReport",
+    "PreflightService",
     "SCPService",
+    "SecurityServicesService",
     "StackDeployReport",
     "TeardownItemReport",
     "TeardownService",
@@ -220,7 +224,13 @@ def run_pipeline(
                 session_mgr, bundle, project_root, dry_run, custom_tags=custom_tags
             ),
             5: lambda: _run_phase_5_hardening(
-                session_mgr, bundle, target_region, project_root, dry_run, custom_tags=custom_tags
+                session_mgr,
+                bundle,
+                target_region,
+                project_root,
+                dry_run,
+                custom_tags=custom_tags,
+                skip_log_archive_hardening=(3 in phases_to_run),
             ),
             6: lambda: _run_phase_6_identity(
                 session_mgr,

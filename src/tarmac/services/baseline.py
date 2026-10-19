@@ -1,4 +1,7 @@
+"""Account Baselining Service (Default VPC Cleanup, Budgets & Anomaly Detection)."""
+
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -66,9 +69,21 @@ class BaselineService:
             len(target_regions),
         )
 
-        for region in target_regions:
-            report = self._cleanup_region_default_vpc(account_id, account_name, region, dry_run=dry_run)
-            reports.append(report)
+        if len(target_regions) <= 1:
+            for region in target_regions:
+                reports.append(
+                    self._cleanup_region_default_vpc(account_id, account_name, region, dry_run=dry_run)
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=min(8, len(target_regions))) as pool:
+                reports = list(
+                    pool.map(
+                        lambda reg: self._cleanup_region_default_vpc(
+                            account_id, account_name, reg, dry_run=dry_run
+                        ),
+                        target_regions,
+                    )
+                )
 
         return reports
 
@@ -250,6 +265,13 @@ class BaselineService:
                 dry_run=dry_run,
                 on_before_create=_cleanup_orphan_budget,
             )
+            if len(emails) > 1:
+                self._reconcile_additional_budget_emails(
+                    account_id=account_id,
+                    account_name=account_name,
+                    topic_arn=cfn_report.outputs.get("BudgetTopicArn"),
+                    additional_emails=[str(e) for e in emails[1:]],
+                )
             status = "CREATED" if cfn_report.action == "CREATED" else "UPDATED"
             return BudgetReport(
                 account_name=account_name,
@@ -270,6 +292,49 @@ class BaselineService:
                 alert_threshold_percent=budget_cfg.alert_threshold_percent,
                 status="FAILED",
                 message=str(e),
+            )
+
+    def _reconcile_additional_budget_emails(
+        self,
+        account_id: str,
+        account_name: str,
+        topic_arn: str | None,
+        additional_emails: list[str],
+    ) -> None:
+        """Idempotently subscribe additional notification emails to the budget SNS topic."""
+        if not additional_emails:
+            return
+        resolved_topic_arn = (
+            topic_arn
+            or f"arn:aws:sns:{self.session_mgr.default_region}:{account_id}:{account_name}-budget-alerts"
+        )
+        try:
+            sns_client = self.session_mgr.get_member_client(
+                account_id, "sns", region_name=self.session_mgr.default_region
+            )
+            subs_resp = sns_client.list_subscriptions_by_topic(TopicArn=resolved_topic_arn)
+            existing_endpoints = {
+                str(s.get("Endpoint", "")).lower()
+                for s in (subs_resp.get("Subscriptions", []) if isinstance(subs_resp, dict) else [])
+                if isinstance(s, dict)
+            }
+            for email in additional_emails:
+                if email.lower() not in existing_endpoints:
+                    sns_client.subscribe(
+                        TopicArn=resolved_topic_arn,
+                        Protocol="email",
+                        Endpoint=email,
+                    )
+                    logger.info(
+                        "Subscribed additional budget alert email '%s' to SNS topic '%s'",
+                        email,
+                        resolved_topic_arn,
+                    )
+        except Exception as e:
+            logger.warning(
+                "Could not subscribe additional emails to budget SNS topic in %s: %s",
+                account_name,
+                e,
             )
 
     def setup_cost_anomaly_monitor(
@@ -509,7 +574,15 @@ class BaselineService:
                 account_id, acct_def.name, baseline.anomaly_detection, dry_run=dry_run
             )
 
-        if not dry_run and not already_baselined:
+        has_vpc_errors = any(r.message.startswith("Error cleaning VPC:") for r in report.vpc_reports)
+        has_budget_failure = report.budget_report is not None and report.budget_report.status == "FAILED"
+        has_anomaly_failure = report.anomaly_report is not None and report.anomaly_report.status == "FAILED"
+
+        if (
+            not dry_run
+            and not already_baselined
+            and not (has_vpc_errors or has_budget_failure or has_anomaly_failure)
+        ):
             self.mark_account_baselined(account_id)
 
         return report

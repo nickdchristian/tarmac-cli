@@ -136,3 +136,15 @@ def test_aws_session_manager_member_client_short_circuits_payer():
             client = mgr.get_member_client("111111111111", "cloudformation")
             assert client == mock_target_client
             mock_gc.assert_called_once_with("cloudformation", region_name=None)
+
+
+def test_aws_session_manager_sts_client_uses_boto_config():
+    """Verify _sts_client is initialized with boto_config including explicit timeouts."""
+    with patch("boto3.Session") as mock_session_cls:
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        mgr = AwsSessionManager()
+        assert getattr(mgr.boto_config, "connect_timeout", None) == 10
+        assert getattr(mgr.boto_config, "read_timeout", None) == 30
+        mock_session.client.assert_called_once_with("sts", config=mgr.boto_config)

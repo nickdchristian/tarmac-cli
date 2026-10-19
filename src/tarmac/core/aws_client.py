@@ -25,12 +25,14 @@ class AwsSessionManager:
         self.default_region = resolved_region
         self.profile_name = resolved_profile
         self._root_session = boto3.Session(region_name=resolved_region, profile_name=resolved_profile)
-        self._sts_client = self._root_session.client("sts")
-        self._cached_assumed_sessions: dict[str, dict[str, Any]] = {}
-        self._cached_caller_identity: dict[str, str] | None = None
         self.boto_config = Config(
             retries={"max_attempts": 10, "mode": "adaptive"},
+            connect_timeout=10,
+            read_timeout=30,
         )
+        self._sts_client = self._root_session.client("sts", config=self.boto_config)
+        self._cached_assumed_sessions: dict[str, dict[str, Any]] = {}
+        self._cached_caller_identity: dict[str, str] | None = None
 
     def get_caller_identity(self) -> dict[str, str]:
         """Fetch caller identity (Account, UserId, Arn) for current root credentials."""

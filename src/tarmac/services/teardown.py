@@ -1004,7 +1004,7 @@ class TeardownService:
                                 resource_name=p_name,
                                 account_name="Management",
                                 account_id=mgmt_id,
-                                action="SIMILATED" if hasattr(self, "_typo") else "SIMULATED",
+                                action="SIMULATED",
                                 message=f"Would detach from {len(targets)} target(s) and delete",
                             )
                         )

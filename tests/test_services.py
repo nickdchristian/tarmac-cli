@@ -1257,3 +1257,104 @@ def test_drift_service_inspect_in_sync(sample_config_dir):
 
     assert report.in_sync_count > 0
     assert isinstance(report.has_drift, bool)
+
+
+def test_identity_sync_dry_run_counts_assignments_and_memberships():
+    """Verify sync_identity in dry_run mode simulates group assignments and memberships."""
+    from tarmac.core.config_schema import (
+        AssignmentDef,
+        GroupDef,
+        IdentityCenterConfig,
+        PermissionSetDef,
+        UserDef,
+    )
+
+    mock_session_mgr = MagicMock()
+    mock_sso = MagicMock()
+    mock_idstore = MagicMock()
+    mock_org = MagicMock()
+
+    def client_side_effect(service_name: str, **kwargs: Any) -> MagicMock:
+        if service_name == "sso-admin":
+            return mock_sso
+        if service_name == "identitystore":
+            return mock_idstore
+        if service_name == "organizations":
+            return mock_org
+        return MagicMock()
+
+    mock_session_mgr.get_client.side_effect = client_side_effect
+    mock_sso.list_instances.return_value = {
+        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-123", "IdentityStoreId": "d-1234567890"}]
+    }
+    mock_idstore.list_users.return_value = {"Users": []}
+    mock_idstore.list_groups.return_value = {"Groups": []}
+    org_paginator = MagicMock()
+    org_paginator.paginate.return_value = [
+        {"Accounts": [{"Id": "111122223333", "Name": "audit", "Status": "ACTIVE"}]}
+    ]
+    mock_org.get_paginator.return_value = org_paginator
+
+    cfg = IdentityCenterConfig(
+        admin_user=UserDef(username="admin", email="admin@example.com", first_name="Admin", last_name="User"),
+        breakglass_user=UserDef(
+            username="breakglass", email="bg@example.com", first_name="Break", last_name="Glass"
+        ),
+        permission_sets=[
+            PermissionSetDef(
+                name="AdminAccess",
+                managed_policies=["arn:aws:iam::aws:policy/AdministratorAccess"],
+            )
+        ],
+        groups=[
+            GroupDef(
+                name="Admins",
+                members=["admin"],
+                assignments=[AssignmentDef(permission_set="AdminAccess", accounts=["audit"])],
+            )
+        ],
+    )
+
+    service = IdentityService(mock_session_mgr)
+    report = service.sync_identity(cfg, dry_run=True)
+
+    assert len(report.users_synced) == 2
+    assert report.groups_synced == ["Admins"]
+    assert report.assignments_created == 1
+    assert report.memberships_added == 1
+    mock_idstore.create_user.assert_not_called()
+    mock_idstore.create_group.assert_not_called()
+    mock_sso.create_account_assignment.assert_not_called()
+
+
+def test_status_service_handles_member_role_assumption_failure(sample_config_dir):
+    """Verify StatusService.inspect sets backend_status='ACCESS_ERROR' when member role assumption fails."""
+    from tarmac.core.config_loader import load_all_configs
+    from tarmac.core.exceptions import AWSAuthenticationError
+    from tarmac.services.status import StatusService
+
+    bundle, _ = load_all_configs(sample_config_dir)
+    assert bundle is not None
+
+    mock_session_mgr = MagicMock()
+    mock_org = MagicMock()
+    mock_cfn = MagicMock()
+
+    mock_org.describe_organization.return_value = {"Organization": {"Id": "o-test123", "FeatureSet": "ALL"}}
+    mock_org.list_roots.return_value = {"Roots": [{"Id": "r-root"}]}
+    paginator = MagicMock()
+    paginator.paginate.side_effect = lambda **kw: (
+        [{"OrganizationalUnits": []}]
+        if "ParentId" in kw
+        else [{"Accounts": [{"Id": "222233334444", "Name": "deployment", "Status": "ACTIVE"}]}]
+    )
+    mock_org.get_paginator.return_value = paginator
+    mock_cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+
+    mock_session_mgr.get_client.side_effect = lambda s, **kw: mock_org if s == "organizations" else mock_cfn
+    mock_session_mgr.get_member_client.side_effect = AWSAuthenticationError(
+        "Failed to assume role into account 222233334444"
+    )
+
+    status = StatusService(mock_session_mgr).inspect(bundle, "eu-west-1")
+    assert status.backend_status == "ACCESS_ERROR"

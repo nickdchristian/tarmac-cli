@@ -75,6 +75,42 @@ def test_list_all_ous_nested():
     }
 
 
+def test_list_all_ous_warns_on_duplicate_ou_name(caplog):
+    """Verify list_all_ous logs a warning if duplicate OU names exist under different parents."""
+    mock_session_mgr = MagicMock()
+    mock_org_client = MagicMock()
+    mock_session_mgr.get_client.return_value = mock_org_client
+    mock_org_client.list_roots.return_value = {"Roots": [{"Id": "r-root"}]}
+
+    paginator = MagicMock()
+
+    def paginate_side_effect(ParentId: str):
+        if ParentId == "r-root":
+            return [
+                {
+                    "OrganizationalUnits": [
+                        {"Id": "ou-a", "Name": "TeamA"},
+                        {"Id": "ou-b", "Name": "TeamB"},
+                    ]
+                }
+            ]
+        if ParentId == "ou-a":
+            return [{"OrganizationalUnits": [{"Id": "ou-dev-a", "Name": "Dev"}]}]
+        if ParentId == "ou-b":
+            return [{"OrganizationalUnits": [{"Id": "ou-dev-b", "Name": "Dev"}]}]
+        return [{"OrganizationalUnits": []}]
+
+    paginator.paginate.side_effect = paginate_side_effect
+    mock_org_client.get_paginator.return_value = paginator
+
+    engine = OUService(mock_session_mgr)
+    with caplog.at_level("WARNING"):
+        all_ous = engine.list_all_ous()
+
+    assert all_ous["Dev"] == "ou-dev-b"
+    assert "Duplicate OU name 'Dev' detected" in caplog.text
+
+
 def test_ou_create_recovers_from_duplicate_race_condition():
     """Verify that DuplicateOrganizationalUnitException recovers by re-discovering the created OU."""
     from botocore.exceptions import ClientError

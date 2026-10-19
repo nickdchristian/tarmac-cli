@@ -226,6 +226,25 @@ class OrganizationService:
             logger.warning("Delegated admin registration: %s", detailed_err)
             return False
 
+    def register_service_delegated_administrators(
+        self, account_id: str, service_principals: list[str]
+    ) -> list[str]:
+        """Register an account as delegated administrator for the given AWS service principals."""
+        registered: list[str] = []
+        for sp in service_principals:
+            try:
+                self.org_client.register_delegated_administrator(AccountId=account_id, ServicePrincipal=sp)
+                registered.append(sp)
+            except ClientError as e:
+                err_code = e.response.get("Error", {}).get("Code", "")
+                if err_code == "AccountAlreadyRegisteredException":
+                    registered.append(sp)
+                else:
+                    logger.debug("Delegated admin registration for %s: %s", sp, e)
+            except Exception as e:
+                logger.debug("Delegated admin registration for %s: %s", sp, e)
+        return registered
+
     def get_completed_phases(self, mgmt_account_id: str) -> set[str]:
         """Retrieve the set of completed deployment phases from Management Account tags."""
         try:
