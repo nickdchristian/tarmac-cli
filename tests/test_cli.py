@@ -590,6 +590,36 @@ def test_cli_account_suspend(monkeypatch, sample_config_dir):
     )
 
 
+def test_cli_account_suspend_close_failure_exits_nonzero(monkeypatch, sample_config_dir):
+    """A failed CloseAccount must not be reported as success or exit 0."""
+    from tarmac.core.models import AccountSuspensionResult
+
+    mock_service = MagicMock()
+    mock_ou_service = MagicMock()
+    mock_service.list_existing_accounts.return_value = {"OldDev": {"Id": "444444444444", "Name": "OldDev"}}
+    mock_ou_service.get_root_id.return_value = "r-root"
+    mock_ou_service.list_all_ous.return_value = {"Suspended": "ou-susp-999"}
+    mock_service.suspend_account.return_value = AccountSuspensionResult(
+        name="OldDev",
+        account_id="444444444444",
+        moved_to_ou="ou-susp-999",
+        tags_updated=True,
+        closed=False,
+        status="CLOSE_FAILED",
+        message="Account OldDev quarantined. Account closure failed: quota exceeded",
+    )
+    monkeypatch.setattr("tarmac.cli.account.AwsSessionManager", lambda **kw: MagicMock())
+    monkeypatch.setattr("tarmac.cli.account.AccountService", lambda sm: mock_service)
+    monkeypatch.setattr("tarmac.cli.account.OUService", lambda sm: mock_ou_service)
+
+    result = runner.invoke(
+        app,
+        ["account", "suspend", "OldDev", "--close", "--config-dir", str(sample_config_dir), "--yes"],
+    )
+    assert result.exit_code == 1
+    assert "quota exceeded" in result.output
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_cli_org_cleanup_vpc(monkeypatch, sample_config_dir, dry_run: bool):
     """Verify org cleanup-vpc live and dry-run execution."""
