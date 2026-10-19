@@ -15,21 +15,21 @@ Define your organizational units, account factory, SCP guardrails, baseline secu
 
 ### 1. Installation & Setup
 
-Install from source with **[uv](https://docs.astral.sh/uv/)**:
+Install globally from **PyPI** with **[uv](https://docs.astral.sh/uv/)**:
+
+```bash
+uv tool install tarmac-cli
+tarmac --help
+```
+
+Or install from source for local development:
 
 ```bash
 git clone https://github.com/nickdchristian/tarmac-cli.git
 cd tarmac-cli
-uv sync
+uv sync --frozen
+uv run tarmac --help
 ```
-
-You can then run commands with `uv run tarmac` or install it into your local environment:
-```bash
-uv pip install -e .
-tarmac --help
-```
-
-*(Once published to PyPI, you can install globally with `uv tool install tarmac-cli`)*
 
 ### 2. Initialize Configuration
 
@@ -150,16 +150,19 @@ tarmac deploy destroy --preserve-backend
 ## Development & Testing
 
 ```bash
-# Sync environment dependencies
-uv sync
+# Sync environment dependencies from lockfile
+uv sync --frozen
 
-# Run the 247-test Pytest suite
+# Run all CI quality gates with a single command
+make check
+
+# Or run individual checks:
 uv run pytest
-
-# Run static analysis and formatting
 uv run ruff check .
 uv run ruff format --check .
 uv run basedpyright
+uv run cfn-lint cloudformation/*.yaml src/tarmac/templates/cloudformation/*.yaml
+uv run tarmac validate --config-dir examples/config
 ```
 
 ---
