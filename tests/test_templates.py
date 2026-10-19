@@ -68,7 +68,7 @@ def test_export_bundled_templates(tmp_path: Path):
 def test_scaffold_project_with_templates(tmp_path: Path):
     """Verify scaffold_project with with_templates=True creates both config and templates."""
     config_dir = tmp_path / "config"
-    created, skipped = scaffold_project(config_dir, with_templates=True)
+    created, _skipped = scaffold_project(config_dir, with_templates=True)
     assert len(created) >= 10  # 3 configs + 7+ templates/policies
     assert (config_dir / "organization.yaml").exists()
     assert (tmp_path / "cloudformation" / "organization-cloudtrail.yaml").exists()
@@ -109,9 +109,8 @@ def test_bundled_cloudformation_templates_are_valid_yaml():
         assert content.get("AWSTemplateFormatVersion") == "2010-09-09", (
             f"Template {rel_path} missing valid AWSTemplateFormatVersion"
         )
-        assert "Resources" in content and isinstance(content["Resources"], dict), (
-            f"Template {rel_path} missing Resources mapping"
-        )
+        assert "Resources" in content, f"Template {rel_path} missing Resources mapping"
+        assert isinstance(content["Resources"], dict), f"Template {rel_path} Resources is not a mapping"
         assert len(content["Resources"]) > 0, f"Template {rel_path} has empty Resources"
         for res_id, res_def in content["Resources"].items():
             assert "Type" in res_def, f"Resource {res_id} in {rel_path} missing Type"

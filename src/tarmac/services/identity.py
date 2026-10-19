@@ -705,7 +705,7 @@ class IdentityService:
         )
         report.permission_sets_synced = list(ps_map.keys())
 
-        users = [id_cfg.admin_user, id_cfg.breakglass_user] + id_cfg.additional_users
+        users = [id_cfg.admin_user, id_cfg.breakglass_user, *id_cfg.additional_users]
         user_map: dict[str, str] = {}
         for u in users:
             uid = self.get_or_create_user(u, dry_run=dry_run)

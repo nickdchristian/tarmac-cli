@@ -10,6 +10,7 @@ across deployment phases:
 - Milestone and status tags on the AWS Organization Root
 """
 
+import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -259,8 +260,20 @@ class TeardownService:
         if self.on_phase is not None:
             self.on_phase(phase_name)
 
+    def _has_credentials(self) -> bool:
+        """Return False only if a real boto3 session is present without resolved credentials."""
+        root_session = getattr(self.session_mgr, "_root_session", None)
+        if root_session is not None and callable(getattr(root_session, "get_credentials", None)):
+            try:
+                return root_session.get_credentials() is not None
+            except Exception:
+                return False
+        return True
+
     def _get_active_accounts(self) -> dict[str, str]:
         """Fetch all ACTIVE accounts in the organization as {AccountName: AccountId}."""
+        if not self._has_credentials():
+            return {}
         org_client = self.session_mgr.get_client("organizations")
         accts: dict[str, str] = {}
         try:
@@ -275,6 +288,8 @@ class TeardownService:
 
     def _get_management_account_id(self) -> str:
         """Resolve current management account ID."""
+        if not self._has_credentials():
+            return ""
         try:
             return str(self.session_mgr.get_caller_identity().get("Account", ""))
         except Exception:
@@ -346,10 +361,8 @@ class TeardownService:
         try:
             trail_client = self.session_mgr.get_client("cloudtrail", region_name=target_region)
             if not dry_run:
-                try:
+                with contextlib.suppress(ClientError):
                     trail_client.stop_logging(Name=trail_name)
-                except ClientError:
-                    pass
                 self._notify_progress(f"Deleting standalone CloudTrail trail '{trail_name}' in Management...")
                 trail_client.delete_trail(Name=trail_name)
                 results.append(

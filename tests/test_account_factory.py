@@ -476,9 +476,8 @@ def test_poll_create_account_status_failure_surfaces_aws_reason():
     }
 
     service = AccountService(mock_session_mgr)
-    with patch("time.sleep", return_value=None):
-        with pytest.raises(AccountProvisioningError) as exc_info:
-            service._poll_create_account_status("car-fail-99", "DupeAccount")
+    with patch("time.sleep", return_value=None), pytest.raises(AccountProvisioningError) as exc_info:
+        service._poll_create_account_status("car-fail-99", "DupeAccount")
 
     assert "FAILED" in str(exc_info.value)
     assert "EMAIL_ALREADY_EXISTS" in (exc_info.value.details or "")
@@ -495,9 +494,8 @@ def test_poll_create_account_status_timeout():
     }
 
     service = AccountService(mock_session_mgr)
-    with patch("time.sleep", return_value=None):
-        with pytest.raises(AccountProvisioningError) as exc_info:
-            service._poll_create_account_status("car-slow-99", "SlowAccount", max_attempts=3, delay_sec=0)
+    with patch("time.sleep", return_value=None), pytest.raises(AccountProvisioningError) as exc_info:
+        service._poll_create_account_status("car-slow-99", "SlowAccount", max_attempts=3, delay_sec=0)
 
     assert "timed out" in (exc_info.value.details or "").lower()
 
