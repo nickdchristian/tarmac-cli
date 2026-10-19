@@ -292,3 +292,32 @@ def test_full_teardown_lists_what_it_does_not_remove(tmp_path):
     assert "Not removed by teardown" in full.stdout
     assert "GuardDuty" in full.stdout
     assert "Not removed by teardown" not in one_phase.stdout
+
+
+def test_phase_5_stops_before_audit_stack_when_delegated_admin_registration_fails(bundle, tmp_path):
+    org_service = MagicMock()
+    org_service.register_service_delegated_administrators.side_effect = GovernanceError(
+        "Could not register account", details="config.amazonaws.com: denied"
+    )
+    cfn = MagicMock()
+    mgr = MagicMock()
+    accounts = {bundle.get_audit_account_name() or "audit": "444455556666"}
+
+    with (
+        patch("tarmac.cli.deploy.OrganizationService", return_value=org_service),
+        patch("tarmac.cli.deploy_phases._deploy_log_archive_hardening_stack"),
+        pytest.raises(GovernanceError, match="Could not register"),
+    ):
+        deploy_phases._deploy_hardening_stacks(
+            cfn,
+            mgr,
+            bundle,
+            "us-east-1",
+            tmp_path,
+            "o-abc1234567",
+            accounts,
+            dry_run=False,
+            skip_log_archive_hardening=True,
+        )
+
+    cfn.deploy_stack.assert_not_called()
