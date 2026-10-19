@@ -94,7 +94,7 @@ needs one non-root principal first. `tarmac preflight` and live `tarmac deploy r
    tarmac access bootstrap
    ```
 
-   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` (`AdministratorAccess` by default; MFA enforced for IAM
+   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a least-privilege policy (see below; MFA enforced for IAM
    users, IAM Identity Center sessions pass; 4-hour sessions).
 2. Create the organization (`tarmac org bootstrap` from CloudShell, or the console), enable **IAM Identity Center**, create an
    administrator user, and sign in with `aws sso login`. Run tarmac as that identity.
@@ -106,6 +106,15 @@ an MFA device for the user in the IAM console, put the key in a `[profile tarmac
 `AWS_PROFILE=tarmac tarmac access check`. Delete the user and its key once SSO works.
 
 `tarmac access template` prints the underlying CloudFormation template if you would rather deploy it yourself.
+
+**What the role can do.** In the management account it gets only the API calls tarmac makes: Organizations, CloudFormation,
+the organization trail, IAM Identity Center, GuardDuty/Security Hub delegation, Cost Explorer and a few read-only checks. For
+member accounts it may only assume `OrganizationAccountAccessRole`. It has no `iam:PassRole`, cannot create IAM roles or
+users, and an explicit deny stops it modifying its own role and policy, so changing the role is a root/admin task (re-run
+`tarmac access bootstrap`). A test checks the policy against every AWS API call in tarmac's source, so adding a new call
+without updating the policy fails CI. If a run reports `AccessDenied` for a new feature, deploy with
+`ManagedPolicyArn=arn:aws:iam::aws:policy/AdministratorAccess` as a stopgap and report the missing action. The policy has not
+yet been exercised end-to-end against a real organization; review it before relying on it in production.
 
 Member accounts need nothing extra: Organizations creates `OrganizationAccountAccessRole` in every account tarmac
 creates, trusting the management account, and the tarmac role reaches it through that. Accounts that were invited

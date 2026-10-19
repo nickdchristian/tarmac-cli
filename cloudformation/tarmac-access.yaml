@@ -14,10 +14,10 @@ Parameters:
 
   ManagedPolicyArn:
     Type: String
-    Default: arn:aws:iam::aws:policy/AdministratorAccess
+    Default: ''
     Description: >-
-      Permissions for the role. Tarmac creates organizations, SCPs, IAM roles, KMS keys and Identity Center
-      resources, so it needs near-administrator access. Replace with a customer-managed policy to tighten it.
+      Leave empty to use the least-privilege policy defined in this template (recommended). Set to an existing
+      managed policy ARN (for example arn:aws:iam::aws:policy/AdministratorAccess) to use that instead.
 
   RequireMfa:
     Type: String
@@ -48,10 +48,147 @@ Parameters:
     Description: Name of the optional bootstrap user.
 
 Conditions:
+  UseBuiltInPolicy: !Equals [!Ref ManagedPolicyArn, '']
   CreateUser: !Equals [!Ref CreateBootstrapUser, 'true']
   MfaRequired: !Equals [!Ref RequireMfa, 'true']
 
 Resources:
+  # Least-privilege permissions for the management account. Everything tarmac does inside member accounts goes
+  # through OrganizationAccountAccessRole, so only the sts:AssumeRole grant below applies there.
+  TarmacPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: UseBuiltInPolicy
+    Properties:
+      Description: Least-privilege permissions for tarmac in the management account.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReachMemberAccounts
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::*:role/OrganizationAccountAccessRole'
+          - Sid: Identity
+            Effect: Allow
+            Action: sts:GetCallerIdentity
+            Resource: '*'
+          - Sid: OrganizationsRead
+            Effect: Allow
+            Action:
+              - organizations:Describe*
+              - organizations:List*
+            Resource: '*'
+          - Sid: OrganizationsManage
+            Effect: Allow
+            Action:
+              - organizations:CreateOrganization
+              - organizations:CreateOrganizationalUnit
+              - organizations:CreateAccount
+              - organizations:CloseAccount
+              - organizations:MoveAccount
+              - organizations:CreatePolicy
+              - organizations:UpdatePolicy
+              - organizations:DeletePolicy
+              - organizations:AttachPolicy
+              - organizations:DetachPolicy
+              - organizations:EnablePolicyType
+              - organizations:EnableAWSServiceAccess
+              - organizations:RegisterDelegatedAdministrator
+              - organizations:DeregisterDelegatedAdministrator
+              - organizations:TagResource
+              - organizations:UntagResource
+            Resource: '*'
+          - Sid: CloudFormationStacks
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:Describe*
+              - cloudformation:List*
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+            Resource: '*'
+          - Sid: OrganizationTrail
+            Effect: Allow
+            Action:
+              - cloudtrail:CreateTrail
+              - cloudtrail:UpdateTrail
+              - cloudtrail:DeleteTrail
+              - cloudtrail:StartLogging
+              - cloudtrail:StopLogging
+              - cloudtrail:PutEventSelectors
+              - cloudtrail:Get*
+              - cloudtrail:Describe*
+              - cloudtrail:List*
+              - cloudtrail:AddTags
+              - cloudtrail:RemoveTags
+            Resource: '*'
+          - Sid: IdentityCenter
+            Effect: Allow
+            Action:
+              - sso:*
+              - sso-directory:DescribeDirectory
+              - sso-directory:SearchUsers
+              - sso-directory:SearchGroups
+              - identitystore:*
+            Resource: '*'
+          - Sid: SecurityServices
+            Effect: Allow
+            Action:
+              - guardduty:*
+              - securityhub:*
+              - config:Describe*
+              - config:List*
+              - config:Get*
+            Resource: '*'
+          - Sid: BillingAndSupportReads
+            Effect: Allow
+            Action:
+              - ce:*
+              - account:GetAlternateContact
+              - account:PutAlternateContact
+              - support:DescribeSeverityLevels
+              - servicequotas:GetServiceQuota
+              - servicequotas:ListServiceQuotas
+              - sns:ListTopics
+              - sns:ListSubscriptionsByTopic
+              - s3:ListBucket
+              - ec2:DescribeRegions
+              - iam:GetAccountSummary
+              - iam:ListUsers
+              - iam:ListAccountAliases
+            Resource: '*'
+          - Sid: RootAccessManagement
+            Effect: Allow
+            Action:
+              - iam:EnableOrganizationsRootCredentialsManagement
+              - iam:EnableOrganizationsRootSessions
+            Resource: '*'
+          - Sid: ServiceLinkedRoles
+            Effect: Allow
+            Action: iam:CreateServiceLinkedRole
+            Resource: '*'
+            Condition:
+              StringLike:
+                iam:AWSServiceName:
+                  - organizations.amazonaws.com
+                  - sso.amazonaws.com
+                  - cloudtrail.amazonaws.com
+                  - guardduty.amazonaws.com
+                  - securityhub.amazonaws.com
+                  - config.amazonaws.com
+                  - ram.amazonaws.com
+          - Sid: NeverModifyOwnAccess
+            Effect: Deny
+            Action:
+              - iam:*
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${RoleName}'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${AWS::StackName}-*'
+
   TarmacRole:
     Type: AWS::IAM::Role
     Properties:
@@ -59,7 +196,7 @@ Resources:
       Description: Role tarmac runs as to govern the AWS Organization.
       MaxSessionDuration: !Ref MaxSessionDurationSeconds
       ManagedPolicyArns:
-        - !Ref ManagedPolicyArn
+        - !If [UseBuiltInPolicy, !Ref TarmacPolicy, !Ref ManagedPolicyArn]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

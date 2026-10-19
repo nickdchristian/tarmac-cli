@@ -180,3 +180,110 @@ def test_bootstrap_dry_run_and_failure() -> None:
         assert runner.invoke(app, ["access", "bootstrap", "--dry-run"]).exit_code == 0
         svc.return_value.deploy_stack.side_effect = DeploymentError("boom")
         assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1
+
+
+# --- least-privilege policy ------------------------------------------------------------------------------------
+
+
+class _CfnLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_mapping(node, deep=True)  # type: ignore[arg-type]
+
+
+_CfnLoader.add_multi_constructor("!", _construct)
+
+# IAM prefix -> botocore service name (where they differ), plus actions whose IAM name is not an API operation.
+_PREFIX_TO_SERVICE = {"sso": "sso-admin", "servicequotas": "service-quotas"}
+_NON_OPERATION_ACTIONS = {"s3:ListBucket", "sso-directory:DescribeDirectory", "sso-directory:SearchUsers"}
+_NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups"}
+
+
+def _policy_statements() -> list[dict[str, object]]:
+    path = Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml"
+    template = yaml.load(path.read_text(encoding="utf-8"), Loader=_CfnLoader)
+    return template["Resources"]["TarmacPolicy"]["Properties"]["PolicyDocument"]["Statement"]
+
+
+def _allowed_actions() -> list[str]:
+    actions: list[str] = []
+    for stmt in _policy_statements():
+        if stmt["Effect"] != "Allow":
+            continue
+        raw = stmt["Action"]
+        actions.extend([raw] if isinstance(raw, str) else list(raw))  # type: ignore[arg-type]
+    return actions
+
+
+def _is_allowed(action: str) -> bool:
+    from fnmatch import fnmatchcase
+
+    return any(fnmatchcase(action.lower(), pattern.lower()) for pattern in _allowed_actions())
+
+
+def test_policy_has_no_admin_grants() -> None:
+    actions = _allowed_actions()
+    assert "*" not in actions
+    assert not any(
+        a.endswith(":*") and a.split(":")[0] in {"iam", "sts", "kms", "s3", "ec2"} for a in actions
+    )
+    assert "iam:PassRole" not in actions
+    assert "iam:CreateRole" not in actions
+    assert "iam:AttachRolePolicy" not in actions
+    assume = [s for s in _policy_statements() if s["Effect"] == "Allow" and s["Action"] == "sts:AssumeRole"]
+    assert len(assume) == 1
+    assert str(assume[0]["Resource"]).endswith(":role/OrganizationAccountAccessRole")
+
+
+def test_policy_denies_self_modification() -> None:
+    deny = [s for s in _policy_statements() if s["Effect"] == "Deny"]
+    assert len(deny) == 1
+    assert deny[0]["Action"] == ["iam:*"]
+
+
+def test_policy_actions_exist_in_aws_service_models() -> None:
+    from botocore import xform_name  # noqa: F401  (ensures botocore is available)
+    from botocore.session import get_session
+
+    session = get_session()
+    for action in _allowed_actions():
+        prefix, name = action.split(":")
+        if "*" in name or action in _NON_OPERATION_ACTIONS:
+            continue
+        model = session.get_service_model(_PREFIX_TO_SERVICE.get(prefix, prefix))
+        assert name in cast(list[str], model.operation_names), f"{action} is not a real API operation"
+
+
+def test_policy_covers_every_management_account_api_call() -> None:
+    """Every organizations/cloudformation/cloudtrail/sso/identitystore/guardduty/securityhub call in the source is allowed."""
+    import re
+
+    from botocore import xform_name
+    from botocore.session import get_session
+
+    src_dir = Path(__file__).resolve().parent.parent / "src" / "tarmac"
+    source = "\n".join(p.read_text(encoding="utf-8") for p in src_dir.rglob("*.py"))
+    used = set(re.findall(r"\.([a-z_]+)\(", source)) | set(
+        re.findall(r'get_paginator\(\s*"([a-z_]+)"', source)
+    )
+    session = get_session()
+    missing: list[str] = []
+    for service, prefix in {
+        "organizations": "organizations",
+        "cloudformation": "cloudformation",
+        "cloudtrail": "cloudtrail",
+        "sso-admin": "sso",
+        "identitystore": "identitystore",
+        "guardduty": "guardduty",
+        "securityhub": "securityhub",
+    }.items():
+        for op in cast(list[str], session.get_service_model(service).operation_names):
+            if xform_name(op) in used and not _is_allowed(f"{prefix}:{op}"):
+                missing.append(f"{prefix}:{op}")
+    assert not missing, f"Policy does not allow API calls tarmac makes: {sorted(missing)}"
