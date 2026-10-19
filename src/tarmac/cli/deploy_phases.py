@@ -505,7 +505,7 @@ def _delegate_security_services(
     from ..services.security import SecurityServicesService
 
     sec_service = SecurityServicesService(session_mgr)
-    all_regions = [target_region] + bundle.org.organization.additional_regions
+    all_regions = [target_region, *bundle.org.organization.additional_regions]
     reports = sec_service.configure_security_services(
         config=sec_cfg,
         primary_region=target_region,

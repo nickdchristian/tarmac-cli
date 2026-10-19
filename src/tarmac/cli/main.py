@@ -52,7 +52,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main_callback(
-    version: bool | None = typer.Option(  # noqa: ARG001
+    version: bool | None = typer.Option(
         None,
         "--version",
         "-V",
