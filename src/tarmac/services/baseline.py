@@ -129,6 +129,15 @@ class BaselineService:
                 region=region,
                 skipped=True,
                 message=f"Error cleaning VPC: {err_msg}",
+                error=True,
+            )
+        except Exception as e:
+            logger.warning("[%s] Unexpected error cleaning default VPC in %s: %s", region, account_name, e)
+            return VpcCleanupReport(
+                region=region,
+                skipped=True,
+                message=f"Error cleaning VPC: {e}",
+                error=True,
             )
 
     def _detach_and_delete_igws(self, ec2: Any, vpc_id: str) -> list[str]:
@@ -574,7 +583,7 @@ class BaselineService:
                 account_id, acct_def.name, baseline.anomaly_detection, dry_run=dry_run
             )
 
-        has_vpc_errors = any(r.message.startswith("Error cleaning VPC:") for r in report.vpc_reports)
+        has_vpc_errors = any(r.error for r in report.vpc_reports)
         has_budget_failure = report.budget_report is not None and report.budget_report.status == "FAILED"
         has_anomaly_failure = report.anomaly_report is not None and report.anomaly_report.status == "FAILED"
 

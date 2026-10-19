@@ -17,7 +17,7 @@ from tarmac.core.config_schema import (
     RootAccessConfig,
     UserDef,
 )
-from tarmac.core.exceptions import DeploymentError
+from tarmac.core.exceptions import DeploymentError, IdentityCenterError
 from tarmac.services.cloudformation import CloudFormationService
 from tarmac.services.identity import IdentityService
 from tarmac.services.organization import OrganizationService
@@ -904,8 +904,8 @@ def test_identity_sync_permission_sets_via_cfn_imports_when_preexisting(tmp_path
     mock_cfn.execute_change_set.assert_called_once()
 
 
-def test_identity_sync_permission_sets_fallback_when_import_fails(tmp_path: Path):
-    """Verify that if import fails, conflicting permission sets are cleaned up and stack is deployed fresh."""
+def test_identity_sync_permission_sets_import_failure_raises_without_deleting(tmp_path: Path):
+    """If importing pre-existing permission sets fails, nothing is deleted and the error surfaces."""
     mock_session_mgr = MagicMock()
     mock_sso = MagicMock()
     mock_cfn = MagicMock()
@@ -949,19 +949,16 @@ def test_identity_sync_permission_sets_fallback_when_import_fails(tmp_path: Path
         PermissionSetDef(name="DeployRole", managed_policies=["arn:aws:iam::aws:policy/AdministratorAccess"])
     ]
 
-    res = service.sync_permission_sets_via_cloudformation(
-        permission_sets=defs,
-        project_root=tmp_path,
-        org_name="myorg",
-        dry_run=False,
-    )
+    with pytest.raises(IdentityCenterError):
+        service.sync_permission_sets_via_cloudformation(
+            permission_sets=defs,
+            project_root=tmp_path,
+            org_name="myorg",
+            dry_run=False,
+        )
 
-    mock_sso.delete_permission_set.assert_called_once_with(
-        InstanceArn="arn:aws:sso:::instance/ssoins-live",
-        PermissionSetArn="arn:aws:sso:::permissionSet/ssoins-live/ps-live",
-    )
-    mock_cfn.create_stack.assert_called_once()
-    assert res == {"DeployRole": "arn:aws:sso:::permissionSet/ssoins-live/ps-new"}
+    mock_sso.delete_permission_set.assert_not_called()
+    mock_cfn.create_stack.assert_not_called()
 
 
 def test_identity_delete_permission_set_unassigns_accounts():

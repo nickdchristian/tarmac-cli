@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -33,6 +34,9 @@ class AwsSessionManager:
         self._sts_client = self._root_session.client("sts", config=self.boto_config)
         self._cached_assumed_sessions: dict[str, dict[str, Any]] = {}
         self._cached_caller_identity: dict[str, str] | None = None
+        # boto3 Session objects are not thread-safe; serialize client/session creation so callers
+        # (e.g. the parallel default-VPC cleanup) can share one manager. The clients returned are safe to use.
+        self._lock = threading.RLock()
 
     def get_caller_identity(self) -> dict[str, str]:
         """Fetch caller identity (Account, UserId, Arn) for current root credentials."""
@@ -55,7 +59,8 @@ class AwsSessionManager:
     def get_client(self, service_name: str, region_name: str | None = None) -> Any:
         """Get a boto3 client in the management account."""
         region = region_name or self.default_region
-        return self._root_session.client(service_name, region_name=region, config=self.boto_config)
+        with self._lock:
+            return self._root_session.client(service_name, region_name=region, config=self.boto_config)
 
     def get_assumed_session(
         self,
@@ -64,6 +69,12 @@ class AwsSessionManager:
         session_name: str = "tarmac-session",
     ) -> boto3.Session:
         """Assume a role in a target member account and return a boto3.Session with cached credentials."""
+        with self._lock:
+            return self._get_assumed_session_locked(account_id, role_name, session_name)
+
+    def _get_assumed_session_locked(
+        self, account_id: str, role_name: str, session_name: str
+    ) -> boto3.Session:
         cache_key = f"{account_id}:{role_name}"
         cached = self._cached_assumed_sessions.get(cache_key)
 
@@ -111,6 +122,7 @@ class AwsSessionManager:
         if caller_acct and account_id == caller_acct:
             return self.get_client(service_name, region_name=region_name)
 
-        assumed_session = self.get_assumed_session(account_id, role_name=role_name)
         region = region_name or self.default_region
-        return assumed_session.client(service_name, region_name=region, config=self.boto_config)
+        with self._lock:
+            assumed_session = self.get_assumed_session(account_id, role_name=role_name)
+            return assumed_session.client(service_name, region_name=region, config=self.boto_config)

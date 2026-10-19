@@ -123,6 +123,38 @@ __all__ = [
 ]
 
 
+PRODUCTION_ENV_VALUES = frozenset({"production", "prod", "prd"})
+PRODUCTION_ENV_TAG_KEYS = ("environment", "env", "stage")
+
+
+def _is_production_tagged(tags: dict[str, str]) -> bool:
+    """Return True if any environment-style tag marks the organization as production."""
+    return any(
+        str(value).strip().lower() in PRODUCTION_ENV_VALUES
+        for key, value in tags.items()
+        if key.strip().lower() in PRODUCTION_ENV_TAG_KEYS
+    )
+
+
+def _require_yes_for_json(dry_run: bool, yes: bool, json_output: bool) -> None:
+    """--json only changes the output format; it must never stand in for consent on live changes."""
+    if json_output and not (dry_run or yes):
+        error_console.print(
+            "[red]✗ --json cannot prompt for confirmation. Re-run with --yes to confirm a live "
+            "operation, or with --dry-run to preview it.[/red]"
+        )
+        raise typer.Exit(code=2)
+
+
+def _validate_phase(phase: int | None, allowed: range) -> None:
+    """Reject phase numbers outside the supported range instead of silently doing nothing."""
+    if phase is not None and phase not in allowed:
+        error_console.print(
+            f"[red]✗ Invalid phase: {phase}. Must be between {allowed.start} and {allowed.stop - 1}.[/red]"
+        )
+        raise typer.Exit(code=2)
+
+
 def _confirm_deployment(dry_run: bool, yes: bool) -> None:
     """Prompt user for confirmation unless bypassed."""
     if dry_run or yes:
@@ -156,7 +188,9 @@ def run_pipeline(
     ),
 ) -> None:
     """Run end-to-end deployment or a specific phase in deterministic order."""
-    _confirm_deployment(dry_run=dry_run or json_output, yes=yes)
+    _validate_phase(phase, range(0, 7))
+    _require_yes_for_json(dry_run, yes, json_output)
+    _confirm_deployment(dry_run=dry_run, yes=yes)
 
     bundle = load_configs_or_exit(config_dir)
     custom_tags = parse_tags_or_exit(tags)
@@ -291,11 +325,12 @@ def _execute_teardown(
     force: bool = False,
     preserve_backend: bool = False,
 ) -> None:
+    _validate_phase(phase, range(2, 7))
+    _require_yes_for_json(dry_run, yes, json_output)
     bundle = load_configs_or_exit(config_dir)
 
-    is_prod = (
-        bundle.get_organization_tags().get("Environment", "").lower() == "production"
-        or bundle.org.organization.tags.get("Environment", "").lower() == "production"
+    is_prod = _is_production_tagged(bundle.get_organization_tags()) or _is_production_tagged(
+        dict(bundle.org.organization.tags)
     )
     if is_prod and not dry_run and not force:
         error_console.print(
@@ -305,7 +340,7 @@ def _execute_teardown(
         )
         raise typer.Exit(code=1)
 
-    if not (dry_run or yes or json_output):
+    if not (dry_run or yes):
         confirm = typer.confirm(
             "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
             "remove AWS Budgets, and detach SCPs. Continue?",
@@ -394,6 +429,8 @@ def _execute_teardown(
             ],
         }
         print(json.dumps(data, indent=2))
+        if report.status == "FAILED":
+            raise typer.Exit(code=1)
         return
 
     table = create_table(title="Teardown Summary")
@@ -426,7 +463,8 @@ def _execute_teardown(
     console.print(table)
     if report.status == "FAILED":
         print_warning(f"Teardown finished with {report.failed_count} failure(s).")
-    elif dry_run:
+        raise typer.Exit(code=1)
+    if dry_run:
         print_info("Teardown dry-run simulation complete.")
     else:
         print_success(f"Teardown complete: {report.deleted_count} resource(s) removed.")

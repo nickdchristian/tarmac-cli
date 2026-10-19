@@ -27,9 +27,7 @@ runner = CliRunner()
 
 @pytest.fixture
 def teardown_config_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    cfg = Path("test-config")
-    if cfg.is_dir() and (cfg / "organization.yaml").exists():
-        return cfg
+    # Always scaffold: a developer's untracked local ./test-config must never change test results.
     temp_dir = tmp_path_factory.mktemp("test_cfg")
     from tarmac.services.scaffold import scaffold_project
 
@@ -333,7 +331,7 @@ def test_cli_teardown_handles_bracketed_markup_messages(monkeypatch, teardown_co
             status="FAILED",
         )
         res = runner.invoke(app, ["destroy", "-c", str(teardown_config_dir), "-y"])
-        assert res.exit_code == 0
+        assert res.exit_code == 1  # a failed teardown must not look successful to scripts and CI
         assert "Teardown Summary" in res.stdout
         assert "[DenyMemberRo" in res.stdout
         assert "[/:]" in res.stdout

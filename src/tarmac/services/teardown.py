@@ -77,6 +77,22 @@ def normalize_bucket_name(name_or_arn: str) -> str:
     return clean
 
 
+def _delete_s3_batch(s3_client: Any, bucket_name: str, batch: list[dict[str, str]]) -> int:
+    """Delete one batch of objects; return how many were actually deleted.
+
+    With Quiet=True S3 only reports failures, so inspect Errors rather than assuming success.
+    """
+    resp = s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": batch, "Quiet": True})
+    errors = resp.get("Errors", []) if isinstance(resp, dict) else []
+    if errors:
+        first = errors[0]
+        raise GovernanceError(
+            f"Failed to delete {len(errors)} object(s) from bucket '{bucket_name}'.",
+            details=f"{first.get('Code', 'Unknown')}: {first.get('Message', '')} (key: {first.get('Key', '')})",
+        )
+    return len(batch)
+
+
 def empty_s3_bucket(
     s3_client: Any,
     bucket_name: str,
@@ -85,6 +101,7 @@ def empty_s3_bucket(
     """Purge all object versions, delete markers, and unversioned objects from an S3 bucket.
 
     Returns the total number of deleted objects and delete markers.
+    Raises GovernanceError if S3 refuses to delete objects (Object Lock, bucket policy, KMS, ...).
     """
     bucket_name = normalize_bucket_name(bucket_name)
     if not bucket_name:
@@ -121,15 +138,13 @@ def empty_s3_bucket(
             if to_delete:
                 for i in range(0, len(to_delete), 1000):
                     batch = to_delete[i : i + 1000]
-                    s3_client.delete_objects(
-                        Bucket=bucket_name,
-                        Delete={"Objects": batch, "Quiet": True},
-                    )
-                    total_deleted += len(batch)
+                    total_deleted += _delete_s3_batch(s3_client, bucket_name, batch)
                     if on_progress is not None and total_deleted > 0 and total_deleted % 1000 == 0:
                         on_progress(f"Purged {total_deleted} items from bucket '{bucket_name}' so far...")
     except ClientError as e:
-        logger.debug("Error purging object versions in '%s': %s", bucket_name, e)
+        raise GovernanceError(
+            f"Failed to purge object versions in bucket '{bucket_name}'.", details=str(e)
+        ) from e
 
     # 2. Purge unversioned objects (fallback for standard non-versioned objects)
     try:
@@ -140,15 +155,11 @@ def empty_s3_bucket(
                 to_delete_objs = [{"Key": obj["Key"]} for obj in contents]
                 for i in range(0, len(to_delete_objs), 1000):
                     batch_objs = to_delete_objs[i : i + 1000]
-                    s3_client.delete_objects(
-                        Bucket=bucket_name,
-                        Delete={"Objects": batch_objs, "Quiet": True},
-                    )
-                    total_deleted += len(batch_objs)
+                    total_deleted += _delete_s3_batch(s3_client, bucket_name, batch_objs)
                     if on_progress is not None and total_deleted > 0 and total_deleted % 1000 == 0:
                         on_progress(f"Purged {total_deleted} items from bucket '{bucket_name}' so far...")
     except ClientError as e:
-        logger.debug("Error purging standard objects in '%s': %s", bucket_name, e)
+        raise GovernanceError(f"Failed to purge objects in bucket '{bucket_name}'.", details=str(e)) from e
 
     if total_deleted > 0:
         logger.info("Successfully purged %d items from bucket '%s'.", total_deleted, bucket_name)
@@ -294,6 +305,33 @@ class TeardownService:
             return str(self.session_mgr.get_caller_identity().get("Account", ""))
         except Exception:
             return ""
+
+    def _delete_retained_bucket(
+        self, s3_client: Any, bucket: str, account_name: str, account_id: str
+    ) -> list[TeardownItemReport]:
+        """Delete a bucket CloudFormation retained. Returns report items only for failures."""
+        try:
+            s3_client.delete_bucket(Bucket=bucket)
+            logger.info("Deleted retained S3 bucket '%s' in %s.", bucket, account_name)
+            return []
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchBucket", "NotFound"):
+                return []
+            message = e.response.get("Error", {}).get("Message", str(e))
+        except Exception as e:
+            message = str(e)
+        logger.warning("Could not delete retained bucket '%s': %s", bucket, message)
+        return [
+            TeardownItemReport(
+                resource_type="S3 Bucket",
+                resource_name=bucket,
+                account_name=account_name,
+                account_id=account_id,
+                action="FAILED",
+                message=f"Could not delete bucket: {message}",
+            )
+        ]
 
     def teardown_cloudtrail(
         self, bundle: ConfigBundle, target_region: str, dry_run: bool = False
@@ -513,15 +551,7 @@ class TeardownService:
             # Delete the emptied S3 buckets that CloudFormation retained
             if not dry_run:
                 for b in sorted(buckets_to_empty):
-                    try:
-                        s3_client.delete_bucket(Bucket=b)
-                        logger.info("Deleted retained S3 bucket '%s' in %s.", b, log_acct_name)
-                    except ClientError as e:
-                        code = e.response.get("Error", {}).get("Code", "")
-                        if code not in ("NoSuchBucket", "NotFound"):
-                            logger.debug("Bucket '%s' deletion after stack teardown: %s", b, e)
-                    except Exception as e:
-                        logger.debug("Bucket '%s' deletion error: %s", b, e)
+                    results.extend(self._delete_retained_bucket(s3_client, b, log_acct_name, log_acct_id))
 
         except Exception as e:
             results.append(
@@ -651,7 +681,7 @@ class TeardownService:
                     for mon in mon_resp.get("AnomalyMonitors", []):
                         m_name = str(mon.get("MonitorName", ""))
                         m_arn = str(mon.get("MonitorArn", ""))
-                        if acct_name.lower() in m_name.lower() or "tarmac" in m_name.lower():
+                        if m_name in (f"{acct_name}-cost-anomaly-monitor", f"{acct_name}-services-monitor"):
                             if dry_run:
                                 results.append(
                                     TeardownItemReport(
@@ -821,15 +851,9 @@ class TeardownService:
             # Delete the emptied backend S3 buckets that CloudFormation retained
             if not dry_run:
                 for b in sorted(buckets_to_empty):
-                    try:
-                        s3_client.delete_bucket(Bucket=b)
-                        logger.info("Deleted retained backend state bucket '%s' in %s.", b, backend_acct_name)
-                    except ClientError as e:
-                        code = e.response.get("Error", {}).get("Code", "")
-                        if code not in ("NoSuchBucket", "NotFound"):
-                            logger.debug("Bucket '%s' deletion after stack teardown: %s", b, e)
-                    except Exception as e:
-                        logger.debug("Bucket '%s' deletion error: %s", b, e)
+                    results.extend(
+                        self._delete_retained_bucket(s3_client, b, backend_acct_name, backend_acct_id)
+                    )
 
         except Exception as e:
             results.append(
@@ -1108,6 +1132,21 @@ class TeardownService:
                 for ps_def in bundle.identity.identity_center.permission_sets:
                     if ps_def.name in existing_ps:
                         ps_arn = existing_ps[ps_def.name]
+                        if not identity_service.is_tarmac_managed_permission_set(inst_arn, ps_arn):
+                            results.append(
+                                TeardownItemReport(
+                                    resource_type="Permission Set",
+                                    resource_name=ps_def.name,
+                                    account_name="Management",
+                                    account_id=mgmt_id,
+                                    action="SKIPPED",
+                                    message=(
+                                        "Not tagged tarmac:managed-by=tarmac, so it was not created by "
+                                        "tarmac; delete it manually if intended"
+                                    ),
+                                )
+                            )
+                            continue
                         if dry_run:
                             results.append(
                                 TeardownItemReport(

@@ -12,7 +12,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GroupDef, IdentityCenterConfig, PermissionSetDef, UserDef
 from ..core.exceptions import DeploymentError, IdentityCenterError
-from ..core.models import IdentitySyncReport
+from ..core.models import TAG_MANAGED_BY, IdentitySyncReport
 from ..core.templates import resolve_resource_path
 from .cloudformation import CloudFormationService
 
@@ -147,13 +147,33 @@ class IdentityService:
         except ClientError as e:
             raise IdentityCenterError("Failed listing permission sets", details=str(e)) from e
 
+    def is_tarmac_managed_permission_set(self, instance_arn: str, permission_set_arn: str) -> bool:
+        """True only if the permission set carries the tarmac ownership tag.
+
+        Fails closed: any lookup error is treated as "not managed" so destructive callers skip it.
+        """
+        try:
+            paginator = self.sso_client.get_paginator("list_tags_for_resource")
+            for page in paginator.paginate(InstanceArn=instance_arn, ResourceArn=permission_set_arn):
+                for tag in page.get("Tags", []):
+                    if tag.get("Key") == TAG_MANAGED_BY and tag.get("Value") == "tarmac":
+                        return True
+        except ClientError as e:
+            logger.warning("Could not read tags for permission set %s: %s", permission_set_arn, e)
+        return False
+
     def synthesize_permission_sets_template(
         self,
         instance_arn: str,
         permission_sets: list[PermissionSetDef],
         project_root: Path | None = None,
+        include_ownership_tag: bool = True,
     ) -> dict[str, Any]:
-        """Synthesize a CloudFormation template from declared PermissionSet definitions."""
+        """Synthesize a CloudFormation template from declared PermissionSet definitions.
+
+        include_ownership_tag=False is used for IMPORT change sets, which cannot modify tags;
+        the tag is applied by a normal stack update right after the import.
+        """
         resources: dict[str, Any] = {}
         for ps_def in permission_sets:
             res_id = "PermissionSet" + re.sub(r"[^a-zA-Z0-9]", "", ps_def.name)
@@ -164,6 +184,8 @@ class IdentityService:
                 "SessionDuration": ps_def.session_duration,
                 "ManagedPolicies": ps_def.managed_policies,
             }
+            if include_ownership_tag:
+                props["Tags"] = [{"Key": TAG_MANAGED_BY, "Value": "tarmac"}]
             if ps_def.inline_policy_file:
                 p_path = resolve_resource_path(ps_def.inline_policy_file, project_root=project_root)
                 props["InlinePolicy"] = json.loads(p_path.read_text(encoding="utf-8"))
@@ -331,6 +353,12 @@ class IdentityService:
                             }
                         )
 
+                import_template_body = yaml.dump(
+                    self.synthesize_permission_sets_template(
+                        instance_arn, permission_sets, project_root=project_root, include_ownership_tag=False
+                    ),
+                    sort_keys=False,
+                )
                 logger.info(
                     "Importing pre-existing Permission Sets %s into CloudFormation stack '%s'...",
                     sorted(pre_existing),
@@ -340,27 +368,35 @@ class IdentityService:
                     cfn_service.import_resources_and_deploy_stack(
                         cfn_client=cfn_client,
                         stack_name=stack_name,
-                        template_body=template_body,
+                        template_body=import_template_body,
                         resources_to_import=resources_to_import,
                         tags=tags,
                         org_tags=org_tags,
                         dry_run=dry_run,
                     )
+                    # Now that the sets are stack-managed, apply the full template (adds ownership tags).
+                    cfn_service.deploy_stack(
+                        cfn_client=cfn_client,
+                        stack_name=stack_name,
+                        parameters={},
+                        tags=tags,
+                        dry_run=dry_run,
+                        template_body=template_body,
+                        org_tags=org_tags,
+                    )
                     return self.list_permission_sets(instance_arn)
                 except (DeploymentError, ClientError) as e:
-                    logger.warning(
-                        "CloudFormation import for stack '%s' failed (%s). Reconciling conflicting permission set(s) directly...",
-                        stack_name,
-                        e,
-                    )
-                    for ps_name in pre_existing:
-                        ps_arn = existing_ps[ps_name]
-                        logger.info(
-                            "Cleaning up conflicting pre-existing Permission Set '%s' (%s)...",
-                            ps_name,
-                            ps_arn,
-                        )
-                        self.delete_permission_set(instance_arn, ps_arn)
+                    # Never delete permission sets we did not create: removing one also removes every
+                    # account assignment on it, which can lock people out of AWS accounts.
+                    raise IdentityCenterError(
+                        f"Could not adopt pre-existing permission set(s) {sorted(pre_existing)} into "
+                        f"stack '{stack_name}'.",
+                        details=(
+                            f"{e}\nNo permission sets were deleted. Resolve the CloudFormation import "
+                            "error, or rename the permission set(s) in identity.yaml so tarmac creates "
+                            "new ones alongside the existing ones."
+                        ),
+                    ) from e
 
         cfn_service.deploy_stack(
             cfn_client=cfn_client,

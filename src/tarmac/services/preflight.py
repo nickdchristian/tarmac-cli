@@ -432,8 +432,12 @@ class PreflightService:
             return PreflightCheckResult(
                 name="AWS Organizations Account Quota",
                 target="Organizations",
-                status=PreflightCheckStatus.PASS,
-                live_value=f"{active_accounts} active accounts (quota check passed)",
+                status=PreflightCheckStatus.WARN,
+                live_value=f"{active_accounts} active accounts; quota could not be verified",
+                action_required=(
+                    f"Confirm the account quota allows {declared_count} more account(s) in AWS Service Quotas "
+                    "(code: L-25807E2B); grant servicequotas:GetServiceQuota to automate this check"
+                ),
             )
         except Exception as e:
             logger.debug("Account quota check failed: %s", e)
