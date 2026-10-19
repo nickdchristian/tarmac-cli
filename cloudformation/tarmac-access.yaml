@@ -34,7 +34,7 @@ Parameters:
 
   CreateBootstrapUser:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: ['true', 'false']
     Description: >-
       Create a break-glass-style IAM user whose only permission is to assume the tarmac role (plus managing its
@@ -71,7 +71,8 @@ Resources:
             Action: sts:AssumeRole
             Condition: !If
               - MfaRequired
-              - Bool:
+              # BoolIfExists: IAM users must use MFA; IAM Identity Center (SSO) sessions carry no MFA flag and pass.
+              - BoolIfExists:
                   aws:MultiFactorAuthPresent: 'true'
               - !Ref AWS::NoValue
       Tags:

@@ -106,3 +106,77 @@ def test_access_template_is_least_surprising() -> None:
     assert t["Parameters"]["MaxSessionDurationSeconds"]["Default"] >= 14400
     user_policies = {p["PolicyName"] for p in t["Resources"]["BootstrapUser"]["Properties"]["Policies"]}
     assert user_policies == {"AssumeTarmacRole", "ManageOwnMfaAndAccessKey"}
+
+
+def test_template_defaults_and_mfa_condition() -> None:
+    text = (Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "BoolIfExists" in text  # SSO sessions carry no MFA flag
+    assert "CreateBootstrapUser:\n    Type: String\n    Default: 'false'" in text
+
+
+def test_write_role_profile_is_idempotent(tmp_path: Path) -> None:
+    from tarmac.cli.access import _write_role_profile
+
+    cfg = tmp_path / ".aws" / "config"
+    assert _write_role_profile(cfg, "tarmac", "arn:role", "tarmac-bootstrap", "arn:mfa", "us-east-1") is True
+    assert _write_role_profile(cfg, "tarmac", "arn:other", "x", "y", "z") is False
+    text = cfg.read_text(encoding="utf-8")
+    assert "[profile tarmac]" in text
+    assert "role_arn = arn:role" in text
+    assert "source_profile = tarmac-bootstrap" in text
+    assert "arn:other" not in text
+
+
+def _bootstrap_mgr() -> MagicMock:
+    mgr = _mgr(ROOT)
+    cast(MagicMock, mgr.get_caller_identity).return_value = ROOT
+    return cast(MagicMock, mgr)
+
+
+def test_bootstrap_deploys_and_writes_profile_for_user(tmp_path: Path) -> None:
+    cfg = tmp_path / "config"
+    report = MagicMock(
+        action="CREATED", outputs={"TarmacRoleArn": "arn:aws:iam::111111111111:role/TarmacDeploymentRole"}
+    )
+    with (
+        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
+        patch("tarmac.cli.access.CloudFormationService") as svc,
+    ):
+        svc.return_value.deploy_stack.return_value = report
+        result = runner.invoke(
+            app, ["access", "bootstrap", "--with-bootstrap-user", "--aws-config", str(cfg)]
+        )
+    assert result.exit_code == 0
+    params = svc.return_value.deploy_stack.call_args.args[3]
+    assert params["CreateBootstrapUser"] == "true"
+    assert "role_arn = arn:aws:iam::111111111111:role/TarmacDeploymentRole" in cfg.read_text(encoding="utf-8")
+
+
+def test_bootstrap_without_user_writes_nothing(tmp_path: Path) -> None:
+    cfg = tmp_path / "config"
+    report = MagicMock(action="CREATED", outputs={})
+    with (
+        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
+        patch("tarmac.cli.access.CloudFormationService") as svc,
+    ):
+        svc.return_value.deploy_stack.return_value = report
+        result = runner.invoke(app, ["access", "bootstrap", "--aws-config", str(cfg)])
+    assert result.exit_code == 0
+    assert svc.return_value.deploy_stack.call_args.args[3]["CreateBootstrapUser"] == "false"
+    assert not cfg.exists()
+    assert "Identity Center" in result.output
+
+
+def test_bootstrap_dry_run_and_failure() -> None:
+    from tarmac.core.exceptions import DeploymentError
+
+    with (
+        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
+        patch("tarmac.cli.access.CloudFormationService") as svc,
+    ):
+        svc.return_value.deploy_stack.return_value = MagicMock(action="SIMULATED", outputs={})
+        assert runner.invoke(app, ["access", "bootstrap", "--dry-run"]).exit_code == 0
+        svc.return_value.deploy_stack.side_effect = DeploymentError("boom")
+        assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1

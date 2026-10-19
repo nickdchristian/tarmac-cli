@@ -87,28 +87,25 @@ Tarmac configures member accounts by assuming `OrganizationAccountAccessRole` in
 user is not allowed to call `sts:AssumeRole`. (Root access keys are also discouraged.) So a brand-new account
 needs one non-root principal first. `tarmac preflight` and live `tarmac deploy run` refuse to continue as root.
 
-1. `tarmac access template -o tarmac-access.yaml`
-2. In the CloudFormation console of the management account (signed in as root, once), create a stack from that file
-   with capability `CAPABILITY_NAMED_IAM`. It creates `TarmacDeploymentRole` (MFA required to assume, 4-hour
-   sessions, `AdministratorAccess` by default; override `ManagedPolicyArn` to tighten) and an optional
-   `tarmac-bootstrap` IAM user that can only assume that role and manage its own MFA and access key.
-3. Sign in once as `tarmac-bootstrap` (or set a console password for it), register an MFA device, create an access key,
-   and add profiles to `~/.aws/config`:
+1. Sign in to the management account console as root and open **AWS CloudShell** (it uses your console session, so no root
+   access keys are created). Install tarmac there (`pip install tarmac-cli`) and run:
 
-   ```ini
-   [profile tarmac-bootstrap]
-   region = us-east-1
-
-   [profile tarmac]
-   role_arn = arn:aws:iam::<management-account-id>:role/TarmacDeploymentRole
-   source_profile = tarmac-bootstrap
-   mfa_serial = arn:aws:iam::<management-account-id>:mfa/tarmac-bootstrap
-   region = us-east-1
+   ```bash
+   tarmac access bootstrap
    ```
 
-4. `AWS_PROFILE=tarmac tarmac access check` should report a non-root identity.
-5. Once Identity Center is set up, sign in through SSO (grant the permission set rights to assume the role, or use an
-   administrator permission set), then delete the `tarmac-bootstrap` access key and user.
+   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` (`AdministratorAccess` by default; MFA enforced for IAM
+   users, IAM Identity Center sessions pass; 4-hour sessions).
+2. Create the organization (`tarmac org bootstrap` from CloudShell, or the console), enable **IAM Identity Center**, create an
+   administrator user, and sign in with `aws sso login`. Run tarmac as that identity.
+3. `tarmac access check` confirms the credentials are non-root and can read the organization; on failure it prints a hint.
+
+Before Identity Center exists you can instead run `tarmac access bootstrap --with-bootstrap-user`. That also creates an
+assume-only IAM user (`tarmac-bootstrap`) and adds a `[profile tarmac]` block to `~/.aws/config`. Create an access key and
+an MFA device for the user in the IAM console, put the key in a `[profile tarmac-bootstrap]` profile, and run
+`AWS_PROFILE=tarmac tarmac access check`. Delete the user and its key once SSO works.
+
+`tarmac access template` prints the underlying CloudFormation template if you would rather deploy it yourself.
 
 Member accounts need nothing extra: Organizations creates `OrganizationAccountAccessRole` in every account tarmac
 creates, trusting the management account, and the tarmac role reaches it through that. Accounts that were invited
