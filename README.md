@@ -166,9 +166,15 @@ sets, milestone tags) so `tarmac deploy run` can rebuild it. It deliberately **k
 
 * the organization, **OUs and member accounts** (closing an account is irreversible and AWS reserves its email, so
   use `tarmac account suspend --close` per account and declare a new email if you want a truly fresh account);
-* GuardDuty / Security Hub / AWS Config delegated-administrator settings and member detectors (these keep billing until disabled);
-* IAM Identity Center users and groups;
-* the KMS key that encrypted the log archive, so archived logs stay decryptable.
+* GuardDuty / Security Hub / AWS Config delegation and member detectors, which keep billing until disabled.
+  Pass `--disable-security-services` to turn them off as part of Phase 5 (it turns off auto-enable, deregisters
+  the delegated administrators, deletes the GuardDuty detectors and disables Security Hub in the audit,
+  management and declared member accounts). **This deletes finding history**, so it is opt-in. Failures per
+  account/region are reported, and a failed step makes the command exit non-zero;
+* IAM Identity Center users and groups (always kept; remove them in the console or your identity provider).
+
+The log-archive KMS key is scheduled for deletion (30-day window, cancel with `aws kms cancel-key-deletion`)
+once its buckets have been purged and deleted; if any log-archive cleanup failed the key is kept.
 
 If a teardown leaves a CloudFormation stack in `DELETE_FAILED` (for example a bucket that could not be emptied),
 fix the cause and re-run teardown or deploy: both now delete and recreate stacks stuck in `DELETE_FAILED`,
