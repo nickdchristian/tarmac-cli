@@ -37,7 +37,10 @@ def get_default_config_dir() -> Path:
     2. Path.cwd() / "config" / "local" (local dev/testing overrides)
     3. Path.cwd() / "config" (standard GitOps / production location)
     4. Path.cwd() (if organization.yaml exists in cwd)
-    5. Source repository examples/config or config/ directory (during development)
+
+    There is deliberately no fallback to the repository's examples/config: a missing config
+    directory must fail loudly rather than deploy the sample organization. To use the examples,
+    pass --config-dir examples/config explicitly.
     """
     if env_dir := os.environ.get("TARMAC_CONFIG_DIR"):
         return Path(env_dir)
@@ -59,24 +62,14 @@ def get_default_config_dir() -> Path:
     if cwd_config.is_dir():
         return cwd_config
 
-    repo_root = Path(__file__).resolve().parents[3]
-    repo_local = repo_root / "config" / "local"
-    if repo_local.is_dir():
-        return repo_local
-
-    repo_config = repo_root / "config"
-    if repo_config.is_dir() and (repo_config / "organization.yaml").is_file():
-        return repo_config
-
-    repo_examples = repo_root / "examples" / "config"
-    if repo_examples.is_dir():
-        return repo_examples
-
     return cwd_config
 
 
 def resolve_file(config_dir: Path, base_name: str) -> Path:
-    """Resolve a config file, checking for .local.yaml, .yaml, and .yaml.example."""
+    """Resolve a config file, checking for .local.yaml, .yaml and local/<name>.yaml.
+
+    *.yaml.example files are templates and are never loaded as real configuration.
+    """
     local_path = config_dir / f"{base_name}.local.yaml"
     if local_path.is_file():
         return local_path
@@ -85,17 +78,13 @@ def resolve_file(config_dir: Path, base_name: str) -> Path:
     if yaml_path.is_file():
         return yaml_path
 
-    example_path = config_dir / f"{base_name}.yaml.example"
-    if example_path.is_file():
-        return example_path
-
     nested_local = config_dir / "local" / f"{base_name}.yaml"
     if nested_local.is_file():
         return nested_local
 
     raise ConfigurationError(
         f"Configuration file not found for '{base_name}'.",
-        details=f"Looked for {local_path.name}, {yaml_path.name}, and {example_path.name} in {config_dir}",
+        details=f"Looked for {local_path.name} and {yaml_path.name} in {config_dir}",
     )
 
 

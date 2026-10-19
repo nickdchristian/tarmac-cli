@@ -192,7 +192,7 @@ class DriftService:
             if not expected_tags:
                 continue
 
-            live_tags = self._get_account_tags(acct_id)
+            live_tags = acct_service.get_account_tags(acct_id)
             drifted_keys = [k for k, expected_v in expected_tags.items() if live_tags.get(k) != expected_v]
 
             status = "DRIFTED" if drifted_keys else "IN_SYNC"

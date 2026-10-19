@@ -29,6 +29,7 @@ def warn_if_example_newer(config_dir: Path | None = None) -> None:
 def load_configs_or_exit(config_dir: Path | None = None) -> ConfigBundle:
     """Load configuration files and validate cross-references, exiting with code 1 on failure."""
     warn_if_example_newer(config_dir)
+    error_console.print(f"[dim]Using configuration from: {config_dir or get_default_config_dir()}[/dim]")
     bundle, errors = load_all_configs(config_dir)
     if errors or bundle is None:
         for err in errors:

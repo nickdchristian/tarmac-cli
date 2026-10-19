@@ -190,6 +190,20 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     console.print(table)
 
 
+def _fetch_live_account_plan(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> list[Any]:
+    """Fetch live OU map and compute account plan items if credentials are available."""
+    try:
+        if session_mgr._root_session.get_credentials() is not None:
+            ou_service = OUService(session_mgr)
+            account_service = AccountService(session_mgr)
+            root_id = ou_service.get_root_id()
+            ou_map = ou_service.list_all_ous(root_id)
+            return account_service.plan(bundle.accounts, ou_map)
+    except Exception as e:
+        logger.debug("Live AWS account query bypassed during dry-run: %s", e)
+    return []
+
+
 def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
     table = create_table(title="Phase 4 Plan: Account Factory Provisioning & Baselining")
     table.add_column("Account Name", style="cyan")
@@ -199,16 +213,7 @@ def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle
     table.add_column("Monthly Budget", style="yellow", justify="right")
     table.add_column("Baseline Security Controls", style="dim")
 
-    plan_items: list[Any] = []
-    try:
-        if session_mgr._root_session.get_credentials() is not None:
-            ou_service = OUService(session_mgr)
-            account_service = AccountService(session_mgr)
-            root_id = ou_service.get_root_id()
-            ou_map = ou_service.list_all_ous(root_id)
-            plan_items = account_service.plan(bundle.accounts, ou_map)
-    except Exception as e:
-        logger.debug("Live AWS account query bypassed during dry-run: %s", e)
+    plan_items = _fetch_live_account_plan(session_mgr, bundle)
 
     if plan_items:
         for item in plan_items:
@@ -380,7 +385,8 @@ def _render_phase_6_dry_run(bundle: ConfigBundle, region_override: str | None) -
     print_info(f"Target Identity Center Region: {target_region}")
 
 
-def _render_dry_run_summary(phases_run: list[int], bundle: ConfigBundle) -> None:
+def _compute_dry_run_summary_counts(bundle: ConfigBundle) -> dict[str, int]:
+    """Compute common summary counts for dry-run reporting."""
     ou_count = len(_collect_ou_tree(bundle.org.ou_structure))
     acct_count = len(bundle.accounts.accounts)
     scp_count = (
@@ -388,29 +394,33 @@ def _render_dry_run_summary(phases_run: list[int], bundle: ConfigBundle) -> None
         if (bundle.org.service_control_policies and bundle.org.service_control_policies.enabled)
         else 0
     )
-    cfn_stacks = [
-        f"{bundle.org.organization.name}-organization-cloudtrail",
-        f"{bundle.org.organization.name}-terraform-backend",
-        f"{bundle.org.organization.name}-log-archive-hardening",
-        f"{bundle.org.organization.name}-audit-account-hardening",
-    ]
-    if scp_count > 0:
-        cfn_stacks.insert(0, f"{bundle.org.organization.name}-service-control-policies")
-
+    stack_count = 4 + (1 if scp_count > 0 else 0)
     id_cfg = bundle.identity.identity_center
     user_count = 2 + len(id_cfg.additional_users)
     perm_count = len(id_cfg.permission_sets)
     group_count = len(id_cfg.groups)
+    return {
+        "ou_count": ou_count,
+        "acct_count": acct_count,
+        "scp_count": scp_count,
+        "stack_count": stack_count,
+        "user_count": user_count,
+        "perm_count": perm_count,
+        "group_count": group_count,
+    }
 
+
+def _render_dry_run_summary(phases_run: list[int], bundle: ConfigBundle) -> None:
+    counts = _compute_dry_run_summary_counts(bundle)
     phases_str = ", ".join(f"Phase {p}" for p in sorted(phases_run))
 
     summary_text = (
         f"[bold white]Simulation Scope:[/bold white] {phases_str}\n\n"
-        f"  [bold cyan]• Organizational Units (OUs):[/bold cyan] {ou_count} declared in hierarchy\n"
-        f"  [bold cyan]• Member Accounts:[/bold cyan] {acct_count} declared in factory catalog\n"
-        f"  [bold cyan]• Service Control Policies:[/bold cyan] {scp_count} policies configured\n"
-        f"  [bold cyan]• CloudFormation Stacks:[/bold cyan] {len(cfn_stacks)} foundation stacks\n"
-        f"  [bold cyan]• IAM Identity Center:[/bold cyan] {perm_count} permission sets, {user_count} users, {group_count} groups\n\n"
+        f"  [bold cyan]• Organizational Units (OUs):[/bold cyan] {counts['ou_count']} declared in hierarchy\n"
+        f"  [bold cyan]• Member Accounts:[/bold cyan] {counts['acct_count']} declared in factory catalog\n"
+        f"  [bold cyan]• Service Control Policies:[/bold cyan] {counts['scp_count']} policies configured\n"
+        f"  [bold cyan]• CloudFormation Stacks:[/bold cyan] {counts['stack_count']} foundation stacks\n"
+        f"  [bold cyan]• IAM Identity Center:[/bold cyan] {counts['perm_count']} permission sets, {counts['user_count']} users, {counts['group_count']} groups\n\n"
         f"[bold green]Simulation Outcome:[/bold green] All configurations validated successfully. No AWS resources modified.\n\n"
         f"[bold yellow]Next Step:[/bold yellow] To execute this deployment against live AWS infrastructure, run:\n"
         f"  [bold white]tarmac deploy run[/bold white]"
@@ -510,16 +520,7 @@ def _build_dry_run_plan_dict(
 
     if 4 in phases_to_run:
         accounts_plan: list[dict[str, Any]] = []
-        plan_items: list[Any] = []
-        try:
-            if session_mgr._root_session.get_credentials() is not None:
-                ou_service = OUService(session_mgr)
-                account_service = AccountService(session_mgr)
-                root_id = ou_service.get_root_id()
-                ou_map = ou_service.list_all_ous(root_id)
-                plan_items = account_service.plan(bundle.accounts, ou_map)
-        except Exception as e:
-            logger.debug("Live AWS account query bypassed during dry-run: %s", e)
+        plan_items = _fetch_live_account_plan(session_mgr, bundle)
 
         if plan_items:
             for item in plan_items:
@@ -631,26 +632,7 @@ def _build_dry_run_plan_dict(
             "groups": groups_data,
         }
 
-    ou_count = len(_collect_ou_tree(bundle.org.ou_structure))
-    acct_count = len(bundle.accounts.accounts)
-    scp_count = (
-        len(bundle.org.service_control_policies.policies)
-        if (bundle.org.service_control_policies and bundle.org.service_control_policies.enabled)
-        else 0
-    )
-    cfn_stacks = [
-        f"{bundle.org.organization.name}-organization-cloudtrail",
-        f"{bundle.org.organization.name}-terraform-backend",
-        f"{bundle.org.organization.name}-log-archive-hardening",
-        f"{bundle.org.organization.name}-audit-account-hardening",
-    ]
-    if scp_count > 0:
-        cfn_stacks.insert(0, f"{bundle.org.organization.name}-service-control-policies")
-
-    id_cfg = bundle.identity.identity_center
-    user_count = 2 + len(id_cfg.additional_users)
-    perm_count = len(id_cfg.permission_sets)
-    group_count = len(id_cfg.groups)
+    counts = _compute_dry_run_summary_counts(bundle)
 
     return {
         "dry_run": True,
@@ -665,13 +647,13 @@ def _build_dry_run_plan_dict(
         "phases": phases_data,
         "summary": {
             "phases_simulated": sorted(phases_to_run),
-            "total_ous": ou_count,
-            "total_accounts": acct_count,
-            "total_scps": scp_count,
-            "total_stacks": len(cfn_stacks),
-            "total_permission_sets": perm_count,
-            "total_users": user_count,
-            "total_groups": group_count,
+            "total_ous": counts["ou_count"],
+            "total_accounts": counts["acct_count"],
+            "total_scps": counts["scp_count"],
+            "total_stacks": counts["stack_count"],
+            "total_permission_sets": counts["perm_count"],
+            "total_users": counts["user_count"],
+            "total_groups": counts["group_count"],
             "outcome": "SUCCESS",
         },
     }

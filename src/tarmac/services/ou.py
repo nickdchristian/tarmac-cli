@@ -1,6 +1,7 @@
 """Organizational Unit (OU) Tree Reconciliation Service."""
 
 import logging
+from collections import deque
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -48,15 +49,23 @@ class OUService:
         """Recursively discover all OUs across the entire organization tree."""
         root_id = parent_id or self.get_root_id()
         all_ous: dict[str, str] = {}
-        to_visit = [root_id]
+        to_visit: deque[str] = deque([root_id])
         visited: set[str] = set()
         while to_visit:
-            curr = to_visit.pop(0)
+            curr = to_visit.popleft()
             if curr in visited:
                 continue
             visited.add(curr)
             direct = self.list_existing_ous_for_parent(curr)
-            all_ous.update(direct)
+            for ou_name, ou_id in direct.items():
+                if ou_name in all_ous and all_ous[ou_name] != ou_id:
+                    logger.warning(
+                        "Duplicate OU name '%s' detected across organization hierarchy (%s vs %s).",
+                        ou_name,
+                        all_ous[ou_name],
+                        ou_id,
+                    )
+                all_ous[ou_name] = ou_id
             for child_id in direct.values():
                 if child_id not in visited:
                     to_visit.append(child_id)

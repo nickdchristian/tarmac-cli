@@ -17,7 +17,7 @@ from tarmac.core.config_schema import (
     RootAccessConfig,
     UserDef,
 )
-from tarmac.core.exceptions import DeploymentError
+from tarmac.core.exceptions import DeploymentError, IdentityCenterError
 from tarmac.services.cloudformation import CloudFormationService
 from tarmac.services.identity import IdentityService
 from tarmac.services.organization import OrganizationService
@@ -904,8 +904,8 @@ def test_identity_sync_permission_sets_via_cfn_imports_when_preexisting(tmp_path
     mock_cfn.execute_change_set.assert_called_once()
 
 
-def test_identity_sync_permission_sets_fallback_when_import_fails(tmp_path: Path):
-    """Verify that if import fails, conflicting permission sets are cleaned up and stack is deployed fresh."""
+def test_identity_sync_permission_sets_import_failure_raises_without_deleting(tmp_path: Path):
+    """If importing pre-existing permission sets fails, nothing is deleted and the error surfaces."""
     mock_session_mgr = MagicMock()
     mock_sso = MagicMock()
     mock_cfn = MagicMock()
@@ -949,19 +949,16 @@ def test_identity_sync_permission_sets_fallback_when_import_fails(tmp_path: Path
         PermissionSetDef(name="DeployRole", managed_policies=["arn:aws:iam::aws:policy/AdministratorAccess"])
     ]
 
-    res = service.sync_permission_sets_via_cloudformation(
-        permission_sets=defs,
-        project_root=tmp_path,
-        org_name="myorg",
-        dry_run=False,
-    )
+    with pytest.raises(IdentityCenterError):
+        service.sync_permission_sets_via_cloudformation(
+            permission_sets=defs,
+            project_root=tmp_path,
+            org_name="myorg",
+            dry_run=False,
+        )
 
-    mock_sso.delete_permission_set.assert_called_once_with(
-        InstanceArn="arn:aws:sso:::instance/ssoins-live",
-        PermissionSetArn="arn:aws:sso:::permissionSet/ssoins-live/ps-live",
-    )
-    mock_cfn.create_stack.assert_called_once()
-    assert res == {"DeployRole": "arn:aws:sso:::permissionSet/ssoins-live/ps-new"}
+    mock_sso.delete_permission_set.assert_not_called()
+    mock_cfn.create_stack.assert_not_called()
 
 
 def test_identity_delete_permission_set_unassigns_accounts():
@@ -1043,7 +1040,7 @@ def test_identity_poll_assignment_status_failed_raises_error():
     assert "Target account is not accessible due to SCP" in str(exc_info.value)
 
 
-def test_identity_poll_assignment_status_timeout_logs_warning():
+def test_identity_poll_assignment_status_timeout_logs_warning(caplog):
     """Verify that _poll_assignment_status times out cleanly without crashing when status stays IN_PROGRESS."""
     mock_session_mgr = MagicMock()
     mock_sso = MagicMock()
@@ -1062,6 +1059,10 @@ def test_identity_poll_assignment_status_timeout_logs_warning():
         acct_id="111122223333",
         timeout_seconds=0.05,
         poll_interval=0.01,
+    )
+    assert mock_sso.describe_account_assignment_creation_status.call_count >= 1
+    assert any(r.levelname == "WARNING" and "111122223333" in r.getMessage() for r in caplog.records), (
+        "timeout must be surfaced as a warning that names the account"
     )
 
 
@@ -1257,3 +1258,104 @@ def test_drift_service_inspect_in_sync(sample_config_dir):
 
     assert report.in_sync_count > 0
     assert isinstance(report.has_drift, bool)
+
+
+def test_identity_sync_dry_run_counts_assignments_and_memberships():
+    """Verify sync_identity in dry_run mode simulates group assignments and memberships."""
+    from tarmac.core.config_schema import (
+        AssignmentDef,
+        GroupDef,
+        IdentityCenterConfig,
+        PermissionSetDef,
+        UserDef,
+    )
+
+    mock_session_mgr = MagicMock()
+    mock_sso = MagicMock()
+    mock_idstore = MagicMock()
+    mock_org = MagicMock()
+
+    def client_side_effect(service_name: str, **kwargs: Any) -> MagicMock:
+        if service_name == "sso-admin":
+            return mock_sso
+        if service_name == "identitystore":
+            return mock_idstore
+        if service_name == "organizations":
+            return mock_org
+        return MagicMock()
+
+    mock_session_mgr.get_client.side_effect = client_side_effect
+    mock_sso.list_instances.return_value = {
+        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-123", "IdentityStoreId": "d-1234567890"}]
+    }
+    mock_idstore.list_users.return_value = {"Users": []}
+    mock_idstore.list_groups.return_value = {"Groups": []}
+    org_paginator = MagicMock()
+    org_paginator.paginate.return_value = [
+        {"Accounts": [{"Id": "111122223333", "Name": "audit", "Status": "ACTIVE"}]}
+    ]
+    mock_org.get_paginator.return_value = org_paginator
+
+    cfg = IdentityCenterConfig(
+        admin_user=UserDef(username="admin", email="admin@example.com", first_name="Admin", last_name="User"),
+        breakglass_user=UserDef(
+            username="breakglass", email="bg@example.com", first_name="Break", last_name="Glass"
+        ),
+        permission_sets=[
+            PermissionSetDef(
+                name="AdminAccess",
+                managed_policies=["arn:aws:iam::aws:policy/AdministratorAccess"],
+            )
+        ],
+        groups=[
+            GroupDef(
+                name="Admins",
+                members=["admin"],
+                assignments=[AssignmentDef(permission_set="AdminAccess", accounts=["audit"])],
+            )
+        ],
+    )
+
+    service = IdentityService(mock_session_mgr)
+    report = service.sync_identity(cfg, dry_run=True)
+
+    assert len(report.users_synced) == 2
+    assert report.groups_synced == ["Admins"]
+    assert report.assignments_created == 1
+    assert report.memberships_added == 1
+    mock_idstore.create_user.assert_not_called()
+    mock_idstore.create_group.assert_not_called()
+    mock_sso.create_account_assignment.assert_not_called()
+
+
+def test_status_service_handles_member_role_assumption_failure(sample_config_dir):
+    """Verify StatusService.inspect sets backend_status='ACCESS_ERROR' when member role assumption fails."""
+    from tarmac.core.config_loader import load_all_configs
+    from tarmac.core.exceptions import AWSAuthenticationError
+    from tarmac.services.status import StatusService
+
+    bundle, _ = load_all_configs(sample_config_dir)
+    assert bundle is not None
+
+    mock_session_mgr = MagicMock()
+    mock_org = MagicMock()
+    mock_cfn = MagicMock()
+
+    mock_org.describe_organization.return_value = {"Organization": {"Id": "o-test123", "FeatureSet": "ALL"}}
+    mock_org.list_roots.return_value = {"Roots": [{"Id": "r-root"}]}
+    paginator = MagicMock()
+    paginator.paginate.side_effect = lambda **kw: (
+        [{"OrganizationalUnits": []}]
+        if "ParentId" in kw
+        else [{"Accounts": [{"Id": "222233334444", "Name": "deployment", "Status": "ACTIVE"}]}]
+    )
+    mock_org.get_paginator.return_value = paginator
+    mock_cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+
+    mock_session_mgr.get_client.side_effect = lambda s, **kw: mock_org if s == "organizations" else mock_cfn
+    mock_session_mgr.get_member_client.side_effect = AWSAuthenticationError(
+        "Failed to assume role into account 222233334444"
+    )
+
+    status = StatusService(mock_session_mgr).inspect(bundle, "eu-west-1")
+    assert status.backend_status == "ACCESS_ERROR"

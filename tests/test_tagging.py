@@ -42,7 +42,7 @@ def test_validate_tag_key_valid():
         "with+plus",
     ]
     for key in valid_keys:
-        validate_tag_key(key)
+        assert validate_tag_key(key) is None, key
 
 
 def test_validate_tag_key_invalid():

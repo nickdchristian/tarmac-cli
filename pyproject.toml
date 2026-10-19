@@ -90,6 +90,7 @@ source = ["tarmac"]
 branch = true
 
 [tool.coverage.report]
+fail_under = 75
 show_missing = true
 skip_covered = true
 exclude_lines = [
@@ -114,6 +115,7 @@ select = [
     "SIM", # flake8-simplify
     "PT",  # flake8-pytest-style
     "RUF", # Ruff-specific rules
+    "C901", # cyclomatic complexity (ratchet max-complexity down over time)
 ]
 ignore = [
     "E501",   # line length handled by formatter
@@ -123,6 +125,9 @@ ignore = [
     "S105",   # status enum constants (e.g. PASS = "PASS")
     "S110",   # best-effort diagnostic fallback blocks
 ]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "S105", "S106", "S506", "PT011"]

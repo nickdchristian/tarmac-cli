@@ -71,7 +71,7 @@ def main_callback(
 
         os.environ["AWS_PROFILE"] = profile
 
-    setup_logging(debug=debug)
+    setup_logging(debug=debug, console=error_console)
 
 
 @app.command("init")

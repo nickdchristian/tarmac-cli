@@ -9,7 +9,7 @@ import typer
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
-from ..core.exceptions import GovernanceError
+from ..core.exceptions import AccountProvisioningError, GovernanceError
 from ..core.models import PreflightCheckStatus, PreflightReport, StackDeployReport
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
@@ -18,7 +18,9 @@ from ..services.cloudformation import CloudFormationService
 from ..services.identity import IdentityService
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
+from ..services.preflight import PreflightService
 from ..services.scp import SCPService
+from ..services.security import SecurityServicesService
 from ..services.teardown import cleanup_orphaned_bucket
 from .common import get_active_account_id_map
 from .deploy_dry_run import (
@@ -74,9 +76,7 @@ def _run_phase_0_preflight(
         _render_phase_0_dry_run(bundle)
         return
 
-    from ..services.preflight import PreflightService
-
-    service = PreflightService(session_mgr, bundle)
+    service = _get_service("PreflightService", PreflightService)(session_mgr, bundle)
     report = service.run_all_checks()
 
     if report.failures > 0:
@@ -348,6 +348,13 @@ def _run_phase_4_accounts(
                 custom_tags=custom_tags,
             )
 
+    failed_results = [r for r in results if r.status == "FAILED"]
+    if failed_results:
+        failed_names = ", ".join(r.name for r in failed_results)
+        raise AccountProvisioningError(
+            f"Phase 4 failed: Account provisioning failed for {len(failed_results)} account(s): {failed_names}"
+        )
+
     suspended_ou_id = ou_map.get("Suspended")
     plan_items = account_service.plan(bundle.accounts, ou_map)
     for item in plan_items:
@@ -437,10 +444,11 @@ def _deploy_hardening_stacks(
     accts: dict[str, str],
     dry_run: bool,
     custom_tags: dict[str, str] | None = None,
+    skip_log_archive_hardening: bool = False,
 ) -> None:
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     log_archive_id = bundle.resolve_account_id(log_archive_name, accts)
-    if log_archive_id:
+    if log_archive_id and not skip_log_archive_hardening:
         _deploy_log_archive_hardening_stack(
             cfn_service,
             session_mgr,
@@ -456,12 +464,11 @@ def _deploy_hardening_stacks(
     audit_name = bundle.get_audit_account_name() or "audit"
     audit_id = bundle.resolve_account_id(audit_name, accts)
     if audit_id:
-        org_client = session_mgr.get_client("organizations")
-        for sp in ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com"]:
-            try:
-                org_client.register_delegated_administrator(AccountId=audit_id, ServicePrincipal=sp)
-            except Exception as e:
-                logger.debug("Delegated admin registration for %s: %s", sp, e)
+        org_service = _get_service("OrganizationService", OrganizationService)(session_mgr)
+        org_service.register_service_delegated_administrators(
+            audit_id,
+            ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com"],
+        )
 
         cfn_client = session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region)
         template_file = resolve_resource_path(
@@ -502,9 +509,7 @@ def _delegate_security_services(
     if not (sec_cfg.guardduty.enabled or sec_cfg.securityhub.enabled):
         return
 
-    from ..services.security import SecurityServicesService
-
-    sec_service = SecurityServicesService(session_mgr)
+    sec_service = _get_service("SecurityServicesService", SecurityServicesService)(session_mgr)
     all_regions = [target_region, *bundle.org.organization.additional_regions]
     reports = sec_service.configure_security_services(
         config=sec_cfg,
@@ -527,6 +532,7 @@ def _run_phase_5_hardening(
     project_root: Path,
     dry_run: bool,
     custom_tags: dict[str, str] | None = None,
+    skip_log_archive_hardening: bool = False,
 ) -> None:
     """Phase 5: Account Hardening, Terraform Backend & Security Services."""
     print_step("5", "Backend, Hardening & Security Services Deployments")
@@ -565,6 +571,7 @@ def _run_phase_5_hardening(
         accts,
         dry_run,
         custom_tags=custom_tags,
+        skip_log_archive_hardening=skip_log_archive_hardening,
     )
 
     _delegate_security_services(session_mgr, bundle, target_region, accts, dry_run)

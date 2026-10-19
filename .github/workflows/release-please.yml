@@ -30,5 +30,6 @@ jobs:
         if: ${{ steps.release.outputs.release_created == 'true' || steps.release.outputs.releases_created == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
         run: |
-          gh workflow run publish.yml --ref main
+          gh workflow run publish.yml --ref "$RELEASE_TAG"

@@ -68,6 +68,7 @@ class VpcCleanupReport:
     deleted_vpc: bool = False
     skipped: bool = False
     message: str = ""
+    error: bool = False
 
 
 @dataclass(frozen=True)

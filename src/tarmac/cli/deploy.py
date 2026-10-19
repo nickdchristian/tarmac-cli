@@ -22,7 +22,9 @@ from ..services.cloudformation import CloudFormationService
 from ..services.identity import IdentityService
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
+from ..services.preflight import PreflightService
 from ..services.scp import SCPService
+from ..services.security import SecurityServicesService
 from ..services.teardown import TeardownItemReport, TeardownService
 from .common import get_active_account_id_map, load_configs_or_exit, parse_tags_or_exit
 from .deploy_dry_run import (
@@ -80,7 +82,9 @@ __all__ = [
     "OrganizationService",
     "PreflightCheckStatus",
     "PreflightReport",
+    "PreflightService",
     "SCPService",
+    "SecurityServicesService",
     "StackDeployReport",
     "TeardownItemReport",
     "TeardownService",
@@ -119,6 +123,38 @@ __all__ = [
 ]
 
 
+PRODUCTION_ENV_VALUES = frozenset({"production", "prod", "prd"})
+PRODUCTION_ENV_TAG_KEYS = ("environment", "env", "stage")
+
+
+def _is_production_tagged(tags: dict[str, str]) -> bool:
+    """Return True if any environment-style tag marks the organization as production."""
+    return any(
+        str(value).strip().lower() in PRODUCTION_ENV_VALUES
+        for key, value in tags.items()
+        if key.strip().lower() in PRODUCTION_ENV_TAG_KEYS
+    )
+
+
+def _require_yes_for_json(dry_run: bool, yes: bool, json_output: bool) -> None:
+    """--json only changes the output format; it must never stand in for consent on live changes."""
+    if json_output and not (dry_run or yes):
+        error_console.print(
+            "[red]✗ --json cannot prompt for confirmation. Re-run with --yes to confirm a live "
+            "operation, or with --dry-run to preview it.[/red]"
+        )
+        raise typer.Exit(code=2)
+
+
+def _validate_phase(phase: int | None, allowed: range) -> None:
+    """Reject phase numbers outside the supported range instead of silently doing nothing."""
+    if phase is not None and phase not in allowed:
+        error_console.print(
+            f"[red]✗ Invalid phase: {phase}. Must be between {allowed.start} and {allowed.stop - 1}.[/red]"
+        )
+        raise typer.Exit(code=2)
+
+
 def _confirm_deployment(dry_run: bool, yes: bool) -> None:
     """Prompt user for confirmation unless bypassed."""
     if dry_run or yes:
@@ -138,6 +174,18 @@ def _resolve_phases_to_run(phase: int | None, skip_preflight: bool) -> list[int]
     return [1, 2, 3, 4, 5, 6] if skip_preflight else [0, 1, 2, 3, 4, 5, 6]
 
 
+def _resolve_management_account_id(session_mgr: AwsSessionManager, *, dry_run: bool) -> str:
+    """Return the caller's account ID; during a dry-run, tolerate missing credentials."""
+    if not dry_run:
+        return str(session_mgr.get_caller_identity().get("Account", ""))
+    try:
+        if session_mgr._root_session.get_credentials() is not None:
+            return str(session_mgr.get_caller_identity().get("Account", ""))
+    except Exception as e:
+        logger.debug("Caller identity unavailable during dry-run: %s", e)
+    return ""
+
+
 @app.command("run")
 def run_pipeline(
     phase: int | None = typer.Option(None, "--phase", "-p", help="Specific phase to run (0-6)"),
@@ -152,7 +200,9 @@ def run_pipeline(
     ),
 ) -> None:
     """Run end-to-end deployment or a specific phase in deterministic order."""
-    _confirm_deployment(dry_run=dry_run or json_output, yes=yes)
+    _validate_phase(phase, range(0, 7))
+    _require_yes_for_json(dry_run, yes, json_output)
+    _confirm_deployment(dry_run=dry_run, yes=yes)
 
     bundle = load_configs_or_exit(config_dir)
     custom_tags = parse_tags_or_exit(tags)
@@ -189,19 +239,7 @@ def run_pipeline(
         else:
             print_header("AWS Governance: End-to-End Deployment")
 
-    caller: dict[str, Any] = {}
-    mgmt_id = ""
-    if not dry_run:
-        caller = session_mgr.get_caller_identity()
-        mgmt_id = caller.get("Account", "")
-    else:
-        try:
-            if session_mgr._root_session.get_credentials() is not None:
-                caller = session_mgr.get_caller_identity()
-                mgmt_id = caller.get("Account", "")
-        except Exception as e:
-            logger.debug("Caller identity unavailable during dry-run: %s", e)
-            mgmt_id = ""
+    mgmt_id = _resolve_management_account_id(session_mgr, dry_run=dry_run)
 
     if mgmt_id and not dry_run and not json_output:
         completed_milestones = org_service.get_completed_phases(mgmt_id)
@@ -220,7 +258,13 @@ def run_pipeline(
                 session_mgr, bundle, project_root, dry_run, custom_tags=custom_tags
             ),
             5: lambda: _run_phase_5_hardening(
-                session_mgr, bundle, target_region, project_root, dry_run, custom_tags=custom_tags
+                session_mgr,
+                bundle,
+                target_region,
+                project_root,
+                dry_run,
+                custom_tags=custom_tags,
+                skip_log_archive_hardening=(3 in phases_to_run),
             ),
             6: lambda: _run_phase_6_identity(
                 session_mgr,
@@ -271,6 +315,74 @@ def run_pipeline(
         raise typer.Exit(code=1)
 
 
+_TEARDOWN_FAILED_STYLE = "[bold red]FAILED[/bold red]"
+_TEARDOWN_ACTION_STYLES = {
+    "DELETED": "[bold green]DELETED[/bold green]",
+    "EMPTY": "[bold green]DELETED[/bold green]",
+    "SIMULATED": "[bold yellow]WOULD DELETE[/bold yellow]",
+    "NOT_FOUND": "[dim]NOT FOUND[/dim]",
+    "SKIPPED": "[yellow]SKIPPED[/yellow]",
+}
+
+
+def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None:
+    """Refuse to tear down an organization tagged as production unless --force is given."""
+    is_prod = _is_production_tagged(bundle.get_organization_tags()) or _is_production_tagged(
+        dict(bundle.org.organization.tags)
+    )
+    if is_prod and not dry_run and not force:
+        error_console.print(
+            "[bold red]⛔ SAFETY LOCK: Organization is tagged as 'production'.[/bold red]\n"
+            "[red]Teardown would destroy production infrastructure and logs. "
+            "To proceed, re-run with --force.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+
+def _print_teardown_item(item: TeardownItemReport) -> None:
+    """Render one live teardown progress line."""
+    r_type = escape(item.resource_type)
+    r_name = escape(item.resource_name)
+    acct = escape(item.account_name)
+    msg = escape(item.message)
+    if item.action in ("DELETED", "EMPTY"):
+        console.print(
+            f"  [bold green]✓[/bold green] [green]{item.action}[/green] {r_type} "
+            f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
+        )
+    elif item.action == "SIMULATED":
+        console.print(
+            f"  [bold yellow]⚡[/bold yellow] [yellow]WOULD DELETE[/yellow] {r_type} "
+            f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
+        )
+    elif item.action == "NOT_FOUND":
+        console.print(f"  [dim]• NOT FOUND {r_type} {r_name} ({acct})[/dim]")
+    elif item.action == "SKIPPED":
+        console.print(f"  [yellow]• SKIPPED {r_type} {r_name} ({acct}): {msg}[/yellow]")
+    elif item.action == "FAILED":
+        console.print(
+            f"  [bold red]✗ FAILED[/bold red] {r_type} [bold]{r_name}[/bold] ({acct}): [red]{msg}[/red]"
+        )
+
+
+def _teardown_json_payload(report: Any) -> dict[str, Any]:
+    return {
+        "status": report.status,
+        "deleted_count": report.deleted_count,
+        "failed_count": report.failed_count,
+        "items": [
+            {
+                "type": i.resource_type,
+                "name": i.resource_name,
+                "account": i.account_name,
+                "action": i.action,
+                "message": i.message,
+            }
+            for i in report.items
+        ],
+    }
+
+
 def _execute_teardown(
     phase: int | None,
     config_dir: Path | None,
@@ -281,21 +393,13 @@ def _execute_teardown(
     force: bool = False,
     preserve_backend: bool = False,
 ) -> None:
+    _validate_phase(phase, range(2, 7))
+    _require_yes_for_json(dry_run, yes, json_output)
     bundle = load_configs_or_exit(config_dir)
 
-    is_prod = (
-        bundle.get_organization_tags().get("Environment", "").lower() == "production"
-        or bundle.org.organization.tags.get("Environment", "").lower() == "production"
-    )
-    if is_prod and not dry_run and not force:
-        error_console.print(
-            "[bold red]⛔ SAFETY LOCK: Organization is tagged as 'production'.[/bold red]\n"
-            "[red]Teardown would destroy production infrastructure and logs. "
-            "To proceed, re-run with --force.[/red]"
-        )
-        raise typer.Exit(code=1)
+    _enforce_production_lock(bundle, dry_run=dry_run, force=force)
 
-    if not (dry_run or yes or json_output):
+    if not (dry_run or yes):
         confirm = typer.confirm(
             "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
             "remove AWS Budgets, and detach SCPs. Continue?",
@@ -314,33 +418,9 @@ def _execute_teardown(
     def _cli_on_progress(msg: str) -> None:
         console.print(f"  [dim cyan]⏳ {escape(msg)}[/dim cyan]")
 
-    def _cli_on_item(item: TeardownItemReport) -> None:
-        r_type = escape(item.resource_type)
-        r_name = escape(item.resource_name)
-        acct = escape(item.account_name)
-        msg = escape(item.message)
-        if item.action in ("DELETED", "EMPTY"):
-            console.print(
-                f"  [bold green]✓[/bold green] [green]{item.action}[/green] {r_type} "
-                f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
-            )
-        elif item.action == "SIMULATED":
-            console.print(
-                f"  [bold yellow]⚡[/bold yellow] [yellow]WOULD DELETE[/yellow] {r_type} "
-                f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
-            )
-        elif item.action == "NOT_FOUND":
-            console.print(f"  [dim]• NOT FOUND {r_type} {r_name} ({acct})[/dim]")
-        elif item.action == "SKIPPED":
-            console.print(f"  [yellow]• SKIPPED {r_type} {r_name} ({acct}): {msg}[/yellow]")
-        elif item.action == "FAILED":
-            console.print(
-                f"  [bold red]✗ FAILED[/bold red] {r_type} [bold]{r_name}[/bold] ({acct}): [red]{msg}[/red]"
-            )
-
     on_phase_cb = _cli_on_phase if not json_output else None
     on_progress_cb = _cli_on_progress if not json_output else None
-    on_item_cb = _cli_on_item if not json_output else None
+    on_item_cb = _print_teardown_item if not json_output else None
 
     service = TeardownService(
         session_mgr,
@@ -368,22 +448,10 @@ def _execute_teardown(
         console.print()
 
     if json_output:
-        data = {
-            "status": report.status,
-            "deleted_count": report.deleted_count,
-            "failed_count": report.failed_count,
-            "items": [
-                {
-                    "type": i.resource_type,
-                    "name": i.resource_name,
-                    "account": i.account_name,
-                    "action": i.action,
-                    "message": i.message,
-                }
-                for i in report.items
-            ],
-        }
+        data = _teardown_json_payload(report)
         print(json.dumps(data, indent=2))
+        if report.status == "FAILED":
+            raise typer.Exit(code=1)
         return
 
     table = create_table(title="Teardown Summary")
@@ -394,16 +462,7 @@ def _execute_teardown(
     table.add_column("Details", style="dim")
 
     for item in report.items:
-        if item.action in ("DELETED", "EMPTY"):
-            action_style = "[bold green]DELETED[/bold green]"
-        elif item.action == "SIMULATED":
-            action_style = "[bold yellow]WOULD DELETE[/bold yellow]"
-        elif item.action == "NOT_FOUND":
-            action_style = "[dim]NOT FOUND[/dim]"
-        elif item.action == "SKIPPED":
-            action_style = "[yellow]SKIPPED[/yellow]"
-        else:
-            action_style = "[bold red]FAILED[/bold red]"
+        action_style = _TEARDOWN_ACTION_STYLES.get(item.action, _TEARDOWN_FAILED_STYLE)
 
         table.add_row(
             Text(item.resource_type),
@@ -416,7 +475,8 @@ def _execute_teardown(
     console.print(table)
     if report.status == "FAILED":
         print_warning(f"Teardown finished with {report.failed_count} failure(s).")
-    elif dry_run:
+        raise typer.Exit(code=1)
+    if dry_run:
         print_info("Teardown dry-run simulation complete.")
     else:
         print_success(f"Teardown complete: {report.deleted_count} resource(s) removed.")

@@ -450,3 +450,87 @@ def test_baseline_account_purges_all_enabled_regions_by_default():
     assert len(report.vpc_reports) == 2
     assert {r.region for r in report.vpc_reports} == {"eu-west-1", "us-east-1"}
     mock_ec2.describe_regions.assert_called_once_with(AllRegions=False)
+
+
+def test_setup_account_budget_subscribes_additional_emails():
+    """Verify additional notification emails beyond the first are subscribed to the budget SNS topic."""
+    mock_session_mgr = MagicMock()
+    mock_cfn = MagicMock()
+    mock_sns = MagicMock()
+    mock_waiter = MagicMock()
+    mock_cfn.get_waiter.return_value = mock_waiter
+
+    def get_member_client(acct_id: str, service: str, **kwargs):
+        if service == "cloudformation":
+            return mock_cfn
+        if service == "sns":
+            return mock_sns
+        return MagicMock()
+
+    mock_session_mgr.get_member_client.side_effect = get_member_client
+    mock_cfn.describe_stacks.side_effect = [
+        ClientError(
+            {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+        ),
+        {"Stacks": [{"Outputs": [{"OutputKey": "BudgetName", "OutputValue": "Prod-monthly-budget"}]}]},
+    ]
+    mock_cfn.describe_stack_resource.return_value = {
+        "StackResourceDetail": {"PhysicalResourceId": "arn:aws:sns:us-east-1:123456789012:budget-alerts"}
+    }
+    sns_paginator = MagicMock()
+    sns_paginator.paginate.return_value = [
+        {"Subscriptions": [{"Protocol": "email", "Endpoint": "first@example.com"}]}
+    ]
+    mock_sns.get_paginator.return_value = sns_paginator
+
+    baseliner = BaselineService(mock_session_mgr)
+    budget_cfg = BudgetConfig(
+        monthly_limit_usd=500.0,
+        notification_emails=["first@example.com", "second@example.com", "third@example.com"],
+    )
+
+    report = baseliner.setup_account_budget("123456789012", "Prod", budget_cfg, dry_run=False)
+    assert report.status == "CREATED"
+    assert mock_sns.subscribe.call_count == 2
+    subscribed_endpoints = [c.kwargs["Endpoint"] for c in mock_sns.subscribe.call_args_list]
+    assert subscribed_endpoints == ["second@example.com", "third@example.com"]
+
+
+def test_baseline_account_does_not_mark_baselined_when_budget_fails():
+    """Verify account is NOT marked tarmac:baseline=completed when budget deployment fails."""
+    mock_session_mgr = MagicMock()
+    mock_org = MagicMock()
+    mock_ec2 = MagicMock()
+    mock_cfn = MagicMock()
+    mock_session_mgr.get_client.return_value = mock_org
+    mock_session_mgr.default_region = "eu-west-1"
+
+    def get_member_client(acct_id: str, service: str, **kwargs):
+        if service == "ec2":
+            return mock_ec2
+        return mock_cfn
+
+    mock_session_mgr.get_member_client.side_effect = get_member_client
+    tag_paginator = MagicMock()
+    tag_paginator.paginate.return_value = [{"Tags": []}]
+    mock_org.get_paginator.return_value = tag_paginator
+    mock_ec2.describe_vpcs.return_value = {"Vpcs": []}
+    mock_cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "DescribeStacks"
+    )
+
+    baseliner = BaselineService(mock_session_mgr)
+    acct_def = AccountDef(
+        name="PartialAccount",
+        email="partial@example.com",
+        ou="Workloads",
+        baseline=AccountBaselineConfig(
+            delete_default_vpc=True,
+            budget=BudgetConfig(monthly_limit_usd=100.0, notification_emails=["finops@example.com"]),
+        ),
+    )
+
+    report = baseliner.baseline_account(acct_def, "123456789012", regions=["eu-west-1"])
+    assert report.budget_report is not None
+    assert report.budget_report.status == "FAILED"
+    mock_org.tag_resource.assert_not_called()

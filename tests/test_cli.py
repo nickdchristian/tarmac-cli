@@ -590,6 +590,36 @@ def test_cli_account_suspend(monkeypatch, sample_config_dir):
     )
 
 
+def test_cli_account_suspend_close_failure_exits_nonzero(monkeypatch, sample_config_dir):
+    """A failed CloseAccount must not be reported as success or exit 0."""
+    from tarmac.core.models import AccountSuspensionResult
+
+    mock_service = MagicMock()
+    mock_ou_service = MagicMock()
+    mock_service.list_existing_accounts.return_value = {"OldDev": {"Id": "444444444444", "Name": "OldDev"}}
+    mock_ou_service.get_root_id.return_value = "r-root"
+    mock_ou_service.list_all_ous.return_value = {"Suspended": "ou-susp-999"}
+    mock_service.suspend_account.return_value = AccountSuspensionResult(
+        name="OldDev",
+        account_id="444444444444",
+        moved_to_ou="ou-susp-999",
+        tags_updated=True,
+        closed=False,
+        status="CLOSE_FAILED",
+        message="Account OldDev quarantined. Account closure failed: quota exceeded",
+    )
+    monkeypatch.setattr("tarmac.cli.account.AwsSessionManager", lambda **kw: MagicMock())
+    monkeypatch.setattr("tarmac.cli.account.AccountService", lambda sm: mock_service)
+    monkeypatch.setattr("tarmac.cli.account.OUService", lambda sm: mock_ou_service)
+
+    result = runner.invoke(
+        app,
+        ["account", "suspend", "OldDev", "--close", "--config-dir", str(sample_config_dir), "--yes"],
+    )
+    assert result.exit_code == 1
+    assert "quota exceeded" in result.output
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_cli_org_cleanup_vpc(monkeypatch, sample_config_dir, dry_run: bool):
     """Verify org cleanup-vpc live and dry-run execution."""
@@ -992,3 +1022,87 @@ def test_cli_deploy_run_dry_run_json_single_phase(sample_config_dir, monkeypatch
     assert data["summary"]["phases_simulated"] == [4]
     assert list(data["phases"].keys()) == ["4_accounts"]
     assert len(data["phases"]["4_accounts"]) > 0
+
+
+def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_dir, monkeypatch):
+    """Verify Phase 4 exits non-zero and does not record phase completion when an account fails to provision."""
+    from unittest.mock import MagicMock
+
+    from tarmac.core.models import AccountProvisionResult, OUSyncReport
+
+    mock_session_mgr = MagicMock()
+    mock_session_mgr.get_caller_identity.return_value = {"Account": "111111111111"}
+    mock_ou_service = MagicMock()
+    mock_ou_service.sync_ou_structure.return_value = OUSyncReport(
+        synced_ous={
+            "Security": "ou-sec",
+            "Infrastructure": "ou-inf",
+            "Workloads": "ou-wrk",
+            "Suspended": "ou-sus",
+        }
+    )
+    mock_acct_service = MagicMock()
+    mock_acct_service.provision_accounts.return_value = [
+        AccountProvisionResult(
+            name="log-archive",
+            email="logs@example.com",
+            account_id="",
+            ou_name="Security",
+            ou_id="ou-sec",
+            action_taken="FAILED",
+            status="FAILED",
+        )
+    ]
+    mock_org_service = MagicMock()
+
+    monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: mock_session_mgr)
+    monkeypatch.setattr("tarmac.cli.deploy.OUService", lambda sm: mock_ou_service)
+    monkeypatch.setattr("tarmac.cli.deploy.AccountService", lambda sm: mock_acct_service)
+    monkeypatch.setattr("tarmac.cli.deploy.BaselineService", lambda sm: MagicMock())
+    monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: mock_org_service)
+
+    result = runner.invoke(
+        app,
+        ["deploy", "run", "--config-dir", str(sample_config_dir), "--phase", "4", "--yes"],
+    )
+    assert result.exit_code != 0
+    mock_org_service.record_phase_completed.assert_not_called()
+
+
+def test_deploy_hardening_stacks_skips_log_archive_when_requested(sample_config_dir):
+    """Verify _deploy_hardening_stacks skips log-archive-hardening when skip_log_archive_hardening=True."""
+    from unittest.mock import MagicMock
+
+    from tarmac.cli.deploy_phases import _deploy_hardening_stacks
+    from tarmac.core.config_loader import load_all_configs
+    from tarmac.core.models import StackDeployReport
+
+    bundle, _ = load_all_configs(sample_config_dir)
+    assert bundle is not None
+
+    mock_session_mgr = MagicMock()
+    mock_cfn_service = MagicMock()
+    deployed: list[str] = []
+
+    def record_deploy(cfn_client, stack_name, *args, **kwargs):
+        deployed.append(stack_name)
+        return StackDeployReport(stack_name=stack_name, action="CREATED", outputs={})
+
+    mock_cfn_service.deploy_stack.side_effect = record_deploy
+    accts = {"Log-Archive": "888888888888", "Audit": "777777777777"}
+
+    _deploy_hardening_stacks(
+        mock_cfn_service,
+        mock_session_mgr,
+        bundle,
+        "eu-west-1",
+        sample_config_dir.parent,
+        "o-test123",
+        accts,
+        dry_run=False,
+        skip_log_archive_hardening=True,
+    )
+
+    assert len(deployed) == 1
+    assert "audit-account-hardening" in deployed[0]
+    assert all("log-archive-hardening" not in s for s in deployed)

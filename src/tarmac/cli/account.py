@@ -16,7 +16,15 @@ from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.ou import OUService
 from .common import load_configs_or_exit
-from .ui import console, create_table, error_console, print_header, print_info, print_success
+from .ui import (
+    console,
+    create_table,
+    error_console,
+    print_header,
+    print_info,
+    print_success,
+    print_warning,
+)
 
 app = typer.Typer(help="Declarative AWS Account Factory commands.")
 
@@ -443,6 +451,9 @@ def suspend_account_cmd(
             close=close,
         )
 
+        if res.status == "CLOSE_FAILED":
+            print_warning(f"Account {res.name} ({res.account_id}): {res.message}")
+            raise typer.Exit(code=1)
         print_success(f"Account {res.name} ({res.account_id}): {res.message}")
 
     except GovernanceError as e:

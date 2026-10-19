@@ -36,6 +36,8 @@ Parameters:
 Resources:
   LogArchiveKmsKey:
     Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Description: Encrypts Log Archive S3 buckets
       EnableKeyRotation: true
@@ -86,17 +88,6 @@ Resources:
             Condition:
               StringEquals:
                 aws:SourceOrgID: !Ref OrganizationId
-          - Sid: AllowS3LogDeliveryEncrypt
-            Effect: Allow
-            Principal:
-              Service: logging.s3.amazonaws.com
-            Action:
-              - kms:GenerateDataKey
-              - kms:Decrypt
-            Resource: '*'
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref 'AWS::AccountId'
           - Sid: AllowDecryptForLogAccess
             Effect: Allow
             Principal:
@@ -130,9 +121,9 @@ Resources:
         Status: Enabled
       BucketEncryption:
         ServerSideEncryptionConfiguration:
+          # S3 server access log delivery requires SSE-S3; it cannot write to an SSE-KMS destination bucket.
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref LogArchiveKmsKey
+              SSEAlgorithm: AES256
             BucketKeyEnabled: true
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true

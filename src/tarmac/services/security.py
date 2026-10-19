@@ -111,10 +111,11 @@ class SecurityServicesService:
             except ClientError as e:
                 logger.warning("Could not configure GuardDuty in region %s: %s", reg, e)
 
+        status = "ENABLED" if configured_regions or not all_regions else "FAILED"
         return SecurityServiceReport(
             service_name="GuardDuty",
             delegated_account=audit_id,
-            status="ENABLED",
+            status=status,
             regions=configured_regions,
             message=f"Delegated to {audit_id} with auto-enable in {len(configured_regions)} region(s)",
         )
@@ -195,10 +196,11 @@ class SecurityServicesService:
         except ClientError as e:
             logger.warning("Could not setup Security Hub finding aggregator in %s: %s", primary_region, e)
 
+        status = "ENABLED" if configured_regions or not all_regions else "FAILED"
         return SecurityServiceReport(
             service_name="SecurityHub",
             delegated_account=audit_id,
-            status="ENABLED",
+            status=status,
             regions=configured_regions,
             message=f"Delegated to {audit_id} with standards {config.standards} in {len(configured_regions)} region(s)",
         )
