@@ -325,6 +325,23 @@ _TEARDOWN_ACTION_STYLES = {
 }
 
 
+_TEARDOWN_RETAINED = (
+    "Organizational Units and member accounts (use `tarmac account suspend --close` per account; "
+    "AWS reserves a closed account's email, so reuse needs a new email)",
+    "GuardDuty / Security Hub / AWS Config delegated-administrator settings and member detectors",
+    "IAM Identity Center users and groups (permission sets and their assignments are removed)",
+    "The KMS key that encrypted the log archive (retained so archived logs stay decryptable)",
+    "Trusted service access and cost-allocation-tag activation in AWS Organizations",
+)
+
+
+def _print_teardown_retained_notice() -> None:
+    """Tell the user what a full teardown intentionally does not remove, so 'start over' is predictable."""
+    print_info("Not removed by teardown (a redeploy reuses or reconciles these):")
+    for line in _TEARDOWN_RETAINED:
+        console.print(f"  [dim]• {escape(line)}[/dim]")
+
+
 def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None:
     """Refuse to tear down an organization tagged as production unless --force is given."""
     is_prod = _is_production_tagged(bundle.get_organization_tags()) or _is_production_tagged(
@@ -480,6 +497,8 @@ def _execute_teardown(
         print_info("Teardown dry-run simulation complete.")
     else:
         print_success(f"Teardown complete: {report.deleted_count} resource(s) removed.")
+        if phase is None:
+            _print_teardown_retained_notice()
 
 
 @app.command("teardown")

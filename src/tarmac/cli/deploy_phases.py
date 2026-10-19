@@ -10,7 +10,7 @@ import typer
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AccountProvisioningError, GovernanceError
-from ..core.models import PreflightCheckStatus, PreflightReport, StackDeployReport
+from ..core.models import BaselineReport, PreflightCheckStatus, PreflightReport, StackDeployReport
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
@@ -49,6 +49,25 @@ def _get_service(name: str, fallback: Any) -> Any:
     if deploy_mod is not None and hasattr(deploy_mod, name):
         return getattr(deploy_mod, name)
     return fallback
+
+
+def _suspended_account_guidance(name: str, email: str, account_id: str) -> str:
+    return (
+        f"Account '{name}' ({account_id}) is closed/suspended in AWS Organizations, so it cannot be reused or "
+        f"re-created with the same email ({email}). AWS keeps a closed account's email reserved, so declare a "
+        "new email address (and optionally a new name) for it in accounts.yaml, or reinstate the account "
+        "within AWS's post-closure window."
+    )
+
+
+def _baseline_failures(report: BaselineReport) -> list[str]:
+    """Describe every failed baseline step in a BaselineReport (empty list means success)."""
+    problems = [f"default VPC cleanup in {r.region}: {r.message}" for r in report.vpc_reports if r.error]
+    if report.budget_report is not None and report.budget_report.status == "FAILED":
+        problems.append(f"budget: {report.budget_report.message}")
+    if report.anomaly_report is not None and report.anomaly_report.status == "FAILED":
+        problems.append(f"cost anomaly monitor: {report.anomaly_report.message}")
+    return [f"{report.account_name} ({report.account_id}) {p}" for p in problems]
 
 
 def _handle_preflight_failures(report: PreflightReport) -> None:
@@ -253,6 +272,13 @@ def _run_phase_3_cloudtrail(
             ou_map = ou_service.sync_ou_structure(bundle.org.ou_structure).synced_ous
             account_service = _get_service("AccountService", AccountService)(session_mgr)
             prov_results = account_service.provision_accounts([acct_def], ou_map=ou_map, dry_run=False)
+            if prov_results and prov_results[0].status == "SKIPPED":
+                raise GovernanceError(
+                    "Phase 3 failed: "
+                    + _suspended_account_guidance(
+                        acct_def.name, acct_def.email, prov_results[0].account_id or "unknown"
+                    )
+                )
             if prov_results and prov_results[0].account_id and prov_results[0].account_id != "DRY-RUN-ID":
                 log_archive_id = prov_results[0].account_id
                 accts[acct_def.name] = log_archive_id
@@ -336,10 +362,16 @@ def _run_phase_4_accounts(
     results = account_service.provision_accounts(bundle.accounts.accounts, ou_map=ou_map, dry_run=False)
     acct_def_map = {a.name: a for a in bundle.accounts.accounts}
 
+    baseline_problems: list[str] = []
     for result in results:
         acct_def = acct_def_map.get(result.name)
+        if result.status == "SKIPPED":
+            print_warning(
+                _suspended_account_guidance(result.name, result.email, result.account_id or "unknown")
+            )
+            continue
         if acct_def and result.account_id and result.account_id != "DRY-RUN-ID":
-            baseliner.baseline_account(
+            baseline_report = baseliner.baseline_account(
                 acct_def,
                 result.account_id,
                 regions=None,
@@ -347,6 +379,7 @@ def _run_phase_4_accounts(
                 org_tags=bundle.get_organization_tags(),
                 custom_tags=custom_tags,
             )
+            baseline_problems.extend(_baseline_failures(baseline_report))
 
     failed_results = [r for r in results if r.status == "FAILED"]
     if failed_results:
@@ -371,6 +404,15 @@ def _run_phase_4_accounts(
 
     account_service.export_inventory(bundle.accounts, ou_map, project_root / "outputs")
     _ensure_delegated_admin(session_mgr, bundle)
+
+    if baseline_problems:
+        # Do not record the "accounts" milestone: the accounts exist, but their baseline is incomplete.
+        raise AccountProvisioningError(
+            f"Phase 4 finished with {len(baseline_problems)} failed baseline step(s); "
+            "fix the cause and re-run `tarmac deploy run --phase 4`.",
+            details="\n".join(baseline_problems),
+        )
+
     caller = session_mgr.get_caller_identity()
     mgmt_id = caller.get("Account", "")
     if mgmt_id:
@@ -463,6 +505,11 @@ def _deploy_hardening_stacks(
 
     audit_name = bundle.get_audit_account_name() or "audit"
     audit_id = bundle.resolve_account_id(audit_name, accts)
+    if not audit_id and not dry_run:
+        print_warning(
+            f"Audit account '{audit_name}' was not found among active accounts; "
+            "skipping audit hardening and Config delegation."
+        )
     if audit_id:
         org_service = _get_service("OrganizationService", OrganizationService)(session_mgr)
         org_service.register_service_delegated_administrators(
@@ -518,11 +565,18 @@ def _delegate_security_services(
         account_id_map=accts,
         dry_run=dry_run,
     )
+    failed: list[str] = []
     for rep in reports:
         if rep.status in ("ENABLED", "ALREADY_CONFIGURED", "SIMULATED"):
             print_success(f"Security Delegation ({rep.service_name}): {rep.message}")
         else:
             print_warning(f"Security Delegation ({rep.service_name}): {rep.message}")
+            if rep.status == "FAILED":
+                failed.append(f"{rep.service_name}: {rep.message}")
+    if failed:
+        raise GovernanceError(
+            "Phase 5 failed: security service delegation did not complete.", details="\n".join(failed)
+        )
 
 
 def _run_phase_5_hardening(
@@ -547,6 +601,11 @@ def _run_phase_5_hardening(
 
     backend_name = bundle.get_backend_account_name() or "deployment"
     deployment_id = bundle.resolve_account_id(backend_name, accts)
+    if not deployment_id:
+        print_warning(
+            f"Backend account '{backend_name}' was not found among active accounts; "
+            "skipping the Terraform backend stack."
+        )
     if deployment_id:
         cfn_client = session_mgr.get_member_client(deployment_id, "cloudformation", region_name=target_region)
         _deploy_backend_stack(

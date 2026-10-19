@@ -15,7 +15,7 @@ from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
 from ..core.exceptions import GovernanceError
 from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
 from ..core.templates import resolve_resource_path
-from .cloudformation import CloudFormationService
+from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
 
 logger = logging.getLogger(__name__)
 
@@ -310,8 +310,13 @@ class SCPService:
         root_id: str,
         ou_map: dict[str, str],
         project_root: Path,
+        include_ownership_tag: bool = True,
     ) -> dict[str, Any]:
-        """Synthesize a CloudFormation template from declared SCP definitions."""
+        """Synthesize a CloudFormation template from declared SCP definitions.
+
+        include_ownership_tag=False is used for IMPORT change sets, which cannot modify tags; the tag is
+        applied by a normal stack update right after the import.
+        """
         resources: dict[str, Any] = {}
         for scp_def in config.policies:
             policy_path = resolve_resource_path(scp_def.policy_file, project_root=project_root)
@@ -338,9 +343,12 @@ class SCPService:
                     "Type": "SERVICE_CONTROL_POLICY",
                     "Content": content_obj,
                     "TargetIds": target_ids,
-                    "Tags": [{"Key": TAG_MANAGED_BY, "Value": "tarmac"}],
                 },
             }
+            if include_ownership_tag:
+                resources[resource_logical_id]["Properties"]["Tags"] = [
+                    {"Key": TAG_MANAGED_BY, "Value": "tarmac"}
+                ]
 
         return {
             "AWSTemplateFormatVersion": "2010-09-09",
@@ -386,7 +394,11 @@ class SCPService:
 
             if pre_existing:
                 stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
-                if stack_status in (None, "DELETE_COMPLETE", "ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS"):
+                if (
+                    stack_status is None
+                    or stack_status == "DELETE_COMPLETE"
+                    or stack_status in UNUSABLE_STACK_STATES
+                ):
                     resources_to_import: list[dict[str, Any]] = []
                     for scp_def in config.policies:
                         if scp_def.name in existing_scps:
@@ -405,14 +417,30 @@ class SCPService:
                         sorted(pre_existing),
                         stack_name,
                     )
+                    import_template_body = yaml.dump(
+                        self.synthesize_template(
+                            config, root_id, ou_map, project_root, include_ownership_tag=False
+                        ),
+                        sort_keys=False,
+                    )
                     cfn_report = cfn_service.import_resources_and_deploy_stack(
                         cfn_client=cfn_client,
                         stack_name=stack_name,
-                        template_body=template_body,
+                        template_body=import_template_body,
                         resources_to_import=resources_to_import,
                         tags=tags,
                         org_tags=org_tags,
                         dry_run=dry_run,
+                    )
+                    # The policies are stack-managed now: apply the full template (adds ownership tags).
+                    cfn_service.deploy_stack(
+                        cfn_client=cfn_client,
+                        stack_name=stack_name,
+                        parameters={},
+                        tags=tags,
+                        org_tags=org_tags,
+                        dry_run=dry_run,
+                        template_body=template_body,
                     )
                     import_results: list[SCPReconciliationResult] = []
                     for scp_def in config.policies:
