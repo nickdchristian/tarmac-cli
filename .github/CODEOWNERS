@@ -1,8 +1,0 @@
-# Default owners for everything in the repository
-* @nickdchristian
-
-# CI/CD workflows, security policies, and CloudFormation templates
-/.github/ @nickdchristian
-/cloudformation/ @nickdchristian
-/policies/ @nickdchristian
-/src/tarmac/templates/ @nickdchristian

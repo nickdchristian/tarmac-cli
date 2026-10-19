@@ -153,11 +153,10 @@ tarmac deploy destroy --preserve-backend
 # Sync environment dependencies from lockfile
 uv sync --frozen
 
-# Run all CI quality gates with a single command
-make check
-
-# Or run individual checks:
+# Run the Pytest suite
 uv run pytest
+
+# Run static analysis, formatting, and template/config validation
 uv run ruff check .
 uv run ruff format --check .
 uv run basedpyright

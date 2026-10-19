@@ -9,28 +9,17 @@ Thank you for your interest in contributing to **Tarmac CLI** (`tarmac-cli`)!
 
 ## Local Development Setup
 
-1. Clone the repository and sync dependencies from `uv.lock`:
-   ```bash
-   git clone https://github.com/nickdchristian/tarmac-cli.git
-   cd tarmac-cli
-   uv sync --frozen
-   ```
+Clone the repository and sync dependencies from `uv.lock`:
 
-2. (Optional) Install pre-commit hooks:
-   ```bash
-   uvx pre-commit install
-   ```
+```bash
+git clone https://github.com/nickdchristian/tarmac-cli.git
+cd tarmac-cli
+uv sync --frozen
+```
 
 ## Running Quality Gates
 
-We provide a `Makefile` so you can run the exact same checks locally that execute in GitHub Actions CI:
-
-```bash
-# Run all quality gates (lint, format, typecheck, cfn-lint, validate, test)
-make check
-```
-
-Or run individual checks directly with `uv`:
+Run the same quality gates locally that execute in GitHub Actions CI:
 
 ```bash
 # 1. Lint & Format (Ruff)
@@ -53,6 +42,6 @@ uv run pytest
 ## Pull Request & Commit Guidelines
 
 - **Conventional Commits:** All Pull Request titles are validated in CI using [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `refactor:`, `test:`, `perf:`, `build:`, `style:`, `revert:`).
-- **Release Automation:** Versioning and `CHANGELOG.md` generation are managed automatically by **Release Please** on merge to `main`. Do not manually bump versions in `pyproject.toml` or `CHANGELOG.md`.
-- **Template Parity:** If you modify CloudFormation templates in `cloudformation/` or SCP policies in `policies/scp/`, ensure the corresponding packaged templates under `src/tarmac/templates/` are kept in sync.
-- **No Live AWS Calls in Unit Tests:** All tests under `tests/` must mock `AwsSessionManager` or boto3 clients and must never require live AWS credentials or network access.
+- **Release Automation:** Versioning and `CHANGELOG.md` generation are managed automatically by **Release Please** on merge to `main` (`feat:` bumps minor/patch, `fix:` bumps patch). Do not manually bump versions in `pyproject.toml` or `CHANGELOG.md`.
+- **Template Parity:** If you modify CloudFormation templates in `cloudformation/` or SCP policies in `policies/scp/`, ensure the corresponding packaged templates under `src/tarmac/templates/` are kept in sync (`tests/test_templates.py` enforces byte-for-byte parity).
+- **No Live AWS Calls in Unit Tests:** All tests under `tests/` are isolated from host AWS credentials and must mock `AwsSessionManager` or boto3 clients.
