@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Tarmac bootstrap access. Creates the non-root IAM role that tarmac runs as in the management account
+  (the root user cannot call sts:AssumeRole, so it cannot reach member accounts), plus an optional
+  low-privilege IAM user that may only assume that role. Deploy once from the console while signed in as
+  root (or any admin), then run tarmac as the role.
+
+Parameters:
+  RoleName:
+    Type: String
+    Default: TarmacDeploymentRole
+    Description: Name of the role tarmac runs as in the management account.
+    AllowedPattern: '^[A-Za-z0-9+=,.@_-]{1,64}$'
+
+  ManagedPolicyArn:
+    Type: String
+    Default: arn:aws:iam::aws:policy/AdministratorAccess
+    Description: >-
+      Permissions for the role. Tarmac creates organizations, SCPs, IAM roles, KMS keys and Identity Center
+      resources, so it needs near-administrator access. Replace with a customer-managed policy to tighten it.
+
+  RequireMfa:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Require MFA to assume the role (strongly recommended).
+
+  MaxSessionDurationSeconds:
+    Type: Number
+    Default: 14400
+    MinValue: 3600
+    MaxValue: 43200
+    Description: Maximum session length. A full deployment can take longer than one hour.
+
+  CreateBootstrapUser:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create a break-glass-style IAM user whose only permission is to assume the tarmac role (plus managing its
+      own MFA and access key). Set to false if you already have a non-root identity (for example an
+      IAM Identity Center admin) that will assume the role.
+
+  BootstrapUserName:
+    Type: String
+    Default: tarmac-bootstrap
+    AllowedPattern: '^[A-Za-z0-9+=,.@_-]{1,64}$'
+    Description: Name of the optional bootstrap user.
+
+Conditions:
+  CreateUser: !Equals [!Ref CreateBootstrapUser, 'true']
+  MfaRequired: !Equals [!Ref RequireMfa, 'true']
+
+Resources:
+  TarmacRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Role tarmac runs as to govern the AWS Organization.
+      MaxSessionDuration: !Ref MaxSessionDurationSeconds
+      ManagedPolicyArns:
+        - !Ref ManagedPolicyArn
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Trusting the account delegates to IAM: only identities in this account that ALSO have an
+          # identity policy allowing sts:AssumeRole on this role can use it. The root user cannot.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+            Condition: !If
+              - MfaRequired
+              - Bool:
+                  aws:MultiFactorAuthPresent: 'true'
+              - !Ref AWS::NoValue
+      Tags:
+        - Key: tarmac:managed-by
+          Value: tarmac
+
+  BootstrapUser:
+    Type: AWS::IAM::User
+    Condition: CreateUser
+    Properties:
+      UserName: !Ref BootstrapUserName
+      Policies:
+        - PolicyName: AssumeTarmacRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt TarmacRole.Arn
+        - PolicyName: ManageOwnMfaAndAccessKey
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:GetUser
+                  - iam:ListMFADevices
+                  - iam:ListVirtualMFADevices
+                  - iam:CreateVirtualMFADevice
+                  - iam:EnableMFADevice
+                  - iam:ResyncMFADevice
+                  - iam:ListAccessKeys
+                  - iam:CreateAccessKey
+                  - iam:UpdateAccessKey
+                  - iam:DeleteAccessKey
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${!aws:username}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:mfa/${!aws:username}'
+      Tags:
+        - Key: tarmac:managed-by
+          Value: tarmac
+
+Outputs:
+  TarmacRoleArn:
+    Description: Role ARN to put in your AWS CLI profile (role_arn).
+    Value: !GetAtt TarmacRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TarmacRoleArn'
+  BootstrapUserName:
+    Condition: CreateUser
+    Description: IAM user to create an access key and MFA device for, then delete after IAM Identity Center is set up.
+    Value: !Ref BootstrapUser
+    Export:
+      Name: !Sub '${AWS::StackName}-BootstrapUserName'

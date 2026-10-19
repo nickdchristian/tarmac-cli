@@ -74,12 +74,45 @@ Tarmac runs as the **management account** of the organization it creates. A fres
 one-time manual steps that AWS does not allow to be automated:
 
 1. Sign in as the root user, enable **MFA**, and add a payment method (`tarmac preflight` checks this).
-2. Create an admin identity (an IAM Identity Center user, or a temporary admin role) and configure AWS credentials for it.
+2. Create the tarmac role (see **Bootstrap access** below) and configure AWS credentials for it. Do not run tarmac as root.
 3. Run `tarmac deploy run --phase 1` (or `tarmac org bootstrap`) to create the organization.
 4. Enable **IAM Identity Center** once in the AWS console (it requires an existing organization). Phase 6 fails without it.
 5. Run `tarmac deploy run` for the remaining phases. Phases are idempotent, so a failed run can simply be repeated.
 
 Each member account needs a **unique email address**; AWS never lets a closed account's email be reused.
+
+### Bootstrap access (why tarmac cannot run as root)
+
+Tarmac configures member accounts by assuming `OrganizationAccountAccessRole` in each of them, and the AWS root
+user is not allowed to call `sts:AssumeRole`. (Root access keys are also discouraged.) So a brand-new account
+needs one non-root principal first. `tarmac preflight` and live `tarmac deploy run` refuse to continue as root.
+
+1. `tarmac access template -o tarmac-access.yaml`
+2. In the CloudFormation console of the management account (signed in as root, once), create a stack from that file
+   with capability `CAPABILITY_NAMED_IAM`. It creates `TarmacDeploymentRole` (MFA required to assume, 4-hour
+   sessions, `AdministratorAccess` by default; override `ManagedPolicyArn` to tighten) and an optional
+   `tarmac-bootstrap` IAM user that can only assume that role and manage its own MFA and access key.
+3. Sign in once as `tarmac-bootstrap` (or set a console password for it), register an MFA device, create an access key,
+   and add profiles to `~/.aws/config`:
+
+   ```ini
+   [profile tarmac-bootstrap]
+   region = us-east-1
+
+   [profile tarmac]
+   role_arn = arn:aws:iam::<management-account-id>:role/TarmacDeploymentRole
+   source_profile = tarmac-bootstrap
+   mfa_serial = arn:aws:iam::<management-account-id>:mfa/tarmac-bootstrap
+   region = us-east-1
+   ```
+
+4. `AWS_PROFILE=tarmac tarmac access check` should report a non-root identity.
+5. Once Identity Center is set up, sign in through SSO (grant the permission set rights to assume the role, or use an
+   administrator permission set), then delete the `tarmac-bootstrap` access key and user.
+
+Member accounts need nothing extra: Organizations creates `OrganizationAccountAccessRole` in every account tarmac
+creates, trusting the management account, and the tarmac role reaches it through that. Accounts that were invited
+(not created) need that role added by hand.
 
 ---
 

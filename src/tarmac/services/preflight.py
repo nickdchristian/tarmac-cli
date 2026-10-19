@@ -31,6 +31,36 @@ class PreflightService:
         self.session_mgr = session_mgr
         self.bundle = bundle
 
+    def check_not_root_identity(self) -> PreflightCheckResult:
+        """Fail when running as the root user: it cannot assume roles in member accounts."""
+        try:
+            is_root = self.session_mgr.is_root_identity()
+        except Exception as e:
+            logger.debug("Root identity check: %s", e)
+            return PreflightCheckResult(
+                name="Caller Identity",
+                target="Non-root IAM principal",
+                status=PreflightCheckStatus.INFO,
+                live_value="Could not determine caller identity",
+            )
+        if is_root is True:
+            return PreflightCheckResult(
+                name="Caller Identity",
+                target="Non-root IAM principal",
+                status=PreflightCheckStatus.FAIL,
+                live_value="Root user credentials",
+                action_required=(
+                    "Root cannot call sts:AssumeRole, so tarmac cannot reach member accounts. "
+                    "Run 'tarmac access template' to create the tarmac role, then use it (see README: Bootstrap access)"
+                ),
+            )
+        return PreflightCheckResult(
+            name="Caller Identity",
+            target="Non-root IAM principal",
+            status=PreflightCheckStatus.PASS,
+            live_value="IAM role or user",
+        )
+
     def check_organization_status(self) -> PreflightCheckResult:
         """Verify that caller is authenticated as the Management Account with All Features enabled."""
         try:
@@ -616,6 +646,7 @@ class PreflightService:
         home_region = region_override or self.bundle.org.organization.primary_region
 
         checks: list[PreflightCheckResult] = [
+            self.check_not_root_identity(),
             self.check_organization_status(),
             self.check_root_mfa(),
             self.check_iam_user_hygiene(),

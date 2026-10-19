@@ -360,7 +360,7 @@ def test_run_all_checks_compilation(mock_session, test_bundle):
     assert report.can_proceed is True
     assert report.failures == 0
     assert report.passed > 0
-    assert len(report.checks) == 17
+    assert len(report.checks) == 18
 
 
 def test_check_account_quota_pass(mock_session, test_bundle):

@@ -14,7 +14,7 @@ from ..core.exceptions import GovernanceError
 from ..core.logging import setup_logging
 from ..services.drift import DriftService
 from ..services.status import StatusService
-from . import account, baseline, deploy, identity, org, ou
+from . import access, account, baseline, deploy, identity, org, ou
 from .common import warn_if_example_newer
 from .preflight import run_preflight_checks
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
@@ -25,6 +25,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+app.add_typer(access.app, name="access")
 app.add_typer(org.app, name="org")
 app.add_typer(ou.app, name="ou")
 app.add_typer(account.app, name="account")
