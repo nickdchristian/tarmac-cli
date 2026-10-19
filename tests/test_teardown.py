@@ -1,8 +1,10 @@
 """Unit tests for TeardownService and teardown CLI."""
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
+import boto3
 import pytest
 from botocore.exceptions import ClientError
 from typer.testing import CliRunner
@@ -815,3 +817,144 @@ def test_scp_create_and_template_carry_ownership_tag(tmp_path):
     scp.sync_policy("N", "d", "{}", {}, dry_run=False)
 
     assert org.create_policy.call_args.kwargs["Tags"] == [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
+
+
+# --- previously untested destructive paths: audit stack, milestone reset, phase dispatch ---------
+
+
+def _audit_service(cfn: MagicMock) -> TeardownService:
+    mgr = MagicMock(spec=AwsSessionManager)
+    mgr.default_region = "us-east-1"
+    mgr.get_member_client.return_value = cfn
+    mgr.get_caller_identity.return_value = {"Account": "111122223333"}
+    return TeardownService(mgr)
+
+
+def _mgr_of(svc: TeardownService) -> MagicMock:
+    return cast(MagicMock, svc.session_mgr)
+
+
+def _audit_accounts(bundle) -> dict[str, str]:
+    return {bundle.get_audit_account_name() or "audit": "444455556666"}
+
+
+def test_teardown_audit_deletes_stack_in_the_audit_account(test_bundle):
+    cfn = MagicMock()
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+    svc = _audit_service(cfn)
+
+    reports = svc.teardown_audit(test_bundle, "us-east-1", account_id_map=_audit_accounts(test_bundle))
+
+    _mgr_of(svc).get_member_client.assert_called_once_with(
+        "444455556666", "cloudformation", region_name="us-east-1"
+    )
+    cfn.delete_stack.assert_called_once_with(
+        StackName=f"{test_bundle.org.organization.name}-audit-account-hardening"
+    )
+    assert [r.action for r in reports] == ["DELETED"]
+
+
+def test_teardown_audit_dry_run_deletes_nothing(test_bundle):
+    cfn = MagicMock()
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+
+    reports = _audit_service(cfn).teardown_audit(
+        test_bundle, "us-east-1", dry_run=True, account_id_map=_audit_accounts(test_bundle)
+    )
+
+    cfn.delete_stack.assert_not_called()
+    assert [r.action for r in reports] == ["SIMULATED"]
+
+
+def test_teardown_audit_skips_when_account_unresolved(test_bundle):
+    svc = _audit_service(MagicMock())
+    reports = svc.teardown_audit(test_bundle, "us-east-1", account_id_map={"unrelated": "999999999999"})
+
+    _mgr_of(svc).get_member_client.assert_not_called()
+    assert [r.action for r in reports] == ["SKIPPED"]
+
+
+def test_teardown_audit_reports_failure_instead_of_raising(test_bundle):
+    svc = _audit_service(MagicMock())
+    _mgr_of(svc).get_member_client.side_effect = RuntimeError("cannot assume role")
+
+    reports = svc.teardown_audit(test_bundle, "us-east-1", account_id_map=_audit_accounts(test_bundle))
+
+    assert [r.action for r in reports] == ["FAILED"]
+    assert "cannot assume role" in reports[0].message
+
+
+def test_reset_milestones_untags_exactly_the_tags_tarmac_writes():
+    from botocore.stub import Stubber
+
+    from tarmac.core.models import TAG_COMPLETED_PHASES, TAG_STATUS, TAG_VERSION
+
+    org = boto3.client(
+        "organizations", region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x"
+    )
+    mgr = MagicMock(spec=AwsSessionManager)
+    mgr.get_client.return_value = org
+    svc = TeardownService(mgr)
+
+    with Stubber(org) as stub:
+        stub.add_response(
+            "untag_resource",
+            {},
+            {
+                "ResourceId": "111122223333",
+                "TagKeys": [TAG_COMPLETED_PHASES, TAG_STATUS, TAG_VERSION, "tarmac:deployment-ready"],
+            },
+        )
+        reports = svc.reset_milestones("111122223333")
+        stub.assert_no_pending_responses()
+
+    assert [r.action for r in reports] == ["DELETED"]
+
+
+def test_reset_milestones_dry_run_and_empty_account_make_no_calls():
+    mgr = MagicMock(spec=AwsSessionManager)
+    svc = TeardownService(mgr)
+
+    assert [r.action for r in svc.reset_milestones("111122223333", dry_run=True)] == ["SIMULATED"]
+    assert svc.reset_milestones("") == []
+    mgr.get_client.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("phase", "method"),
+    [
+        (2, "teardown_scps"),
+        (3, "teardown_cloudtrail"),
+        (3, "teardown_log_archive"),
+        (4, "teardown_budgets"),
+        (5, "teardown_backend"),
+        (5, "teardown_audit"),
+        (6, "teardown_identity"),
+    ],
+)
+def test_teardown_phase_dispatches_each_phase_to_its_handlers(test_bundle, phase, method):
+    svc = _audit_service(MagicMock())
+    handlers = [
+        "teardown_scps",
+        "teardown_cloudtrail",
+        "teardown_log_archive",
+        "teardown_budgets",
+        "teardown_backend",
+        "teardown_audit",
+        "teardown_identity",
+    ]
+    for h in handlers:
+        setattr(svc, h, MagicMock(return_value=[]))
+
+    svc.teardown_phase(phase, test_bundle, "us-east-1", dry_run=True, account_id_map={"x": "1"})
+
+    assert getattr(svc, method).call_count == 1
+    called = {h for h in handlers if getattr(svc, h).called}
+    # Phase 5 must not touch log-archive buckets (audit finding M-5): only its own handlers run.
+    if phase == 5:
+        assert called == {"teardown_backend", "teardown_audit"}
+
+
+def test_teardown_phase_unknown_phase_does_nothing(test_bundle):
+    svc = _audit_service(MagicMock())
+    assert svc.teardown_phase(9, test_bundle, "us-east-1", account_id_map={"x": "1"}) == []

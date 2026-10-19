@@ -1040,7 +1040,7 @@ def test_identity_poll_assignment_status_failed_raises_error():
     assert "Target account is not accessible due to SCP" in str(exc_info.value)
 
 
-def test_identity_poll_assignment_status_timeout_logs_warning():
+def test_identity_poll_assignment_status_timeout_logs_warning(caplog):
     """Verify that _poll_assignment_status times out cleanly without crashing when status stays IN_PROGRESS."""
     mock_session_mgr = MagicMock()
     mock_sso = MagicMock()
@@ -1059,6 +1059,10 @@ def test_identity_poll_assignment_status_timeout_logs_warning():
         acct_id="111122223333",
         timeout_seconds=0.05,
         poll_interval=0.01,
+    )
+    assert mock_sso.describe_account_assignment_creation_status.call_count >= 1
+    assert any(r.levelname == "WARNING" and "111122223333" in r.getMessage() for r in caplog.records), (
+        "timeout must be surfaced as a warning that names the account"
     )
 
 

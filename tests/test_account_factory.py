@@ -708,3 +708,42 @@ def test_account_service_caches_parent_and_tags():
     assert service.get_account_tags("111111111111") == {"Env": "Prod"}
     assert service.get_account_tags("111111111111") == {"Env": "Prod"}
     tags_paginator.paginate.assert_called_once_with(ResourceId="111111111111")
+
+
+def test_export_inventory_escapes_shell_metacharacters_in_values(tmp_path):
+    """Values are written inside double quotes in a sourced script, so $, backticks, quotes and
+    backslashes must be escaped or a hostile value becomes command execution."""
+    mock_session_mgr = MagicMock()
+    mock_org_client = MagicMock()
+    mock_session_mgr.get_client.return_value = mock_org_client
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {"Accounts": [{"Id": '1$(id)`id`"\\', "Name": "prod", "Status": "ACTIVE"}]}
+    ]
+    mock_org_client.get_paginator.return_value = paginator
+
+    service = AccountService(mock_session_mgr)
+    catalog = AccountsCatalog(accounts=[AccountDef(name="prod", email="p@example.com", ou="Workloads")])
+    service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
+
+    line = next(
+        ln for ln in (tmp_path / "env.sh").read_text(encoding="utf-8").splitlines() if "PROD_ACCOUNT_ID" in ln
+    )
+    assert line == 'export PROD_ACCOUNT_ID="1\\$(id)\\`id\\`\\"\\\\"'
+
+
+def test_move_account_updates_parent_cache_so_it_is_not_moved_twice():
+    mock_session_mgr = MagicMock()
+    org = MagicMock()
+    mock_session_mgr.get_client.return_value = org
+    org.list_parents.return_value = {"Parents": [{"Id": "r-root"}]}
+    service = AccountService(mock_session_mgr)
+
+    assert service.move_account_if_needed("111111111111", "a", "ou-target") is True
+    assert service.get_account_parent_id("111111111111") == "ou-target"
+    assert service.move_account_if_needed("111111111111", "a", "ou-target") is False
+
+    org.move_account.assert_called_once_with(
+        AccountId="111111111111", SourceParentId="r-root", DestinationParentId="ou-target"
+    )
+    org.list_parents.assert_called_once()
