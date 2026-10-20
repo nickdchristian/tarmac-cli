@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ORGANIZATION_YAML = """# Organization Master Configuration
 organization:
-  name: "myorg"
+  name: "myorg"                          # Tarmac names its CloudFormation stacks after this. Do not change it after the first deploy.
   domain: "myorg.example.com"
   primary_region: "us-east-1"
   additional_regions:
@@ -95,6 +95,9 @@ cost_allocation_tags:
 """
 
 DEFAULT_ACCOUNTS_YAML = """# AWS Accounts Catalog
+# Replace every sample email: AWS never lets an email be reused once an account has used it.
+# An account Tarmac created (tagged as managed) that you remove from this list is moved to the Suspended OU.
+# quarantine_removed_accounts: false   # uncomment to turn that off
 accounts:
   - name: "Log-Archive"
     email: "aws-log-archive@myorg.example.com"

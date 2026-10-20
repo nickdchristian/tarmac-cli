@@ -1,12 +1,13 @@
 """CloudFormation Stack Deployment Service."""
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from botocore.exceptions import ClientError, WaiterError
+from botocore.exceptions import BotoCoreError, ClientError, WaiterError
 
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
@@ -194,8 +195,11 @@ class CloudFormationService:
                 stack_name=stack_name, action="IMPORTED", outputs=outputs, status="SUCCEEDED"
             )
         except (ClientError, WaiterError) as e:
-            reasons = self._fetch_failure_reasons(cfn_client, stack_name)
+            reasons = self._change_set_failure_reason(cfn_client, stack_name, change_set_name)
+            reasons = reasons or self._fetch_failure_reasons(cfn_client, stack_name)
             detail = f"{e} (Root cause: {reasons})" if reasons else str(e)
+            hint = self._ownership_hint(reasons)
+            detail = f"{detail}\n{hint}" if hint else detail
             audit(
                 "import",
                 f"stack:{stack_name}",
@@ -282,6 +286,30 @@ class CloudFormationService:
                 f"Could not delete CloudFormation stack '{stack_name}': {detail}",
             )
             raise DeploymentError(f"Failed to delete stack '{stack_name}'", details=detail) from e
+
+    @staticmethod
+    def _change_set_failure_reason(cfn_client: Any, stack_name: str, change_set_name: str) -> str:
+        """The StatusReason CloudFormation gives a change set that failed to build (empty if unavailable)."""
+        try:
+            described = cfn_client.describe_change_set(StackName=stack_name, ChangeSetName=change_set_name)
+        except (ClientError, WaiterError, BotoCoreError):
+            return ""
+        if described.get("Status") == "FAILED":
+            return str(described.get("StatusReason", ""))
+        return ""
+
+    @staticmethod
+    def _ownership_hint(reason: str) -> str:
+        """Plain-language next step when a resource already belongs to a different CloudFormation stack."""
+        match = re.search(r"already exists in stack (\S+)", reason)
+        if not match:
+            return ""
+        owner = match.group(1)
+        return (
+            f"That resource is already managed by CloudFormation stack {owner}. Tarmac names its stacks after "
+            "organization.name in organization.yaml, so if that name was changed after an earlier deploy, set it "
+            "back to the original value (the prefix of the stack named above)."
+        )
 
     def _fetch_failure_reasons(self, cfn_client: Any, stack_name: str) -> str:
         """Retrieve failure causes from recent stack events and pre-deployment validation."""

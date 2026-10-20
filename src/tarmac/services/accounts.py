@@ -22,6 +22,7 @@ from ..core.models import (
     AccountProvisionResult,
     AccountSuspensionResult,
 )
+from ..core.placeholders import is_placeholder_email
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,8 @@ class AccountService:
                     else f"Account ({acct_id}) is quarantined in Suspended OU"
                 )
             else:
+                if not catalog.quarantine_removed_accounts:
+                    continue
                 tags = self.get_account_tags(acct_id)
                 if tags.get(TAG_MANAGED_BY) != "tarmac" and tags.get("ManagedBy") != "tarmac":
                     continue
@@ -330,6 +333,24 @@ class AccountService:
             status="SUCCEEDED" if (not close or closed) else "CLOSE_FAILED",
             message=msg,
         )
+
+    def simulate_move(self, account_id: str, account_name: str, target_ou_id: str) -> bool:
+        """Record the move a real run would make. Reads the current parent only; changes nothing."""
+        current_parent = self.get_account_parent_id(account_id)
+        if not current_parent or current_parent == target_ou_id:
+            return False
+        audit(
+            "move",
+            f"account:{account_id}",
+            Outcome.SIMULATED,
+            f"[DRY-RUN] Would move account '{account_name}' ({account_id}) from {current_parent} "
+            f"to OU {target_ou_id}",
+            dry_run=True,
+            account_id=account_id,
+            from_parent=current_parent,
+            to_parent=target_ou_id,
+        )
+        return True
 
     def move_account_if_needed(self, account_id: str, account_name: str, target_ou_id: str) -> bool:
         """Move account to target OU if not already placed there. Returns True if moved."""
@@ -513,7 +534,11 @@ class AccountService:
                     continue
 
                 logger.debug("Account '%s' exists (ID: %s)", name, acct_id)
-                moved = not dry_run and self.move_account_if_needed(acct_id, name, target_ou_id)
+                if dry_run:
+                    moved = False
+                    self.simulate_move(acct_id, name, target_ou_id)
+                else:
+                    moved = self.move_account_if_needed(acct_id, name, target_ou_id)
                 tags_updated = self.sync_account_tags(acct_id, name, acct_def.tags, dry_run=dry_run)
                 action = "MOVED" if moved else ("TAGGED" if tags_updated else "REUSED")
                 results[idx] = _make_result(acct_def, acct_id, target_ou_id, action, "SUCCEEDED")
@@ -532,6 +557,16 @@ class AccountService:
                 results[idx] = _make_result(
                     acct_def, "DRY-RUN-ID", target_ou_id, "SIMULATED_CREATE", "SIMULATED"
                 )
+                continue
+
+            if is_placeholder_email(email):
+                msg = (
+                    f"Account '{name}': refusing to create an account with the sample email '{email}'. "
+                    "AWS never lets an email be reused once an account has used it, even after the account "
+                    "is closed. Set a real, unique address in accounts.yaml."
+                )
+                audit("create", f"account:{name}", Outcome.FAILED, msg, email=email)
+                failures.append(msg)
                 continue
 
             try:

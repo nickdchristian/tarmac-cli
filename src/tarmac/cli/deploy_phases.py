@@ -127,7 +127,7 @@ def _run_phase_1_org(
     results = org_service.configure_root_access(bundle.org.root_access_management)
     if results.get("delegated_admin"):
         print_success(
-            f"Registered delegated administrator ({bundle.org.root_access_management.delegated_admin_account}) for IAM."
+            f"Delegated administrator ({bundle.org.root_access_management.delegated_admin_account}) for IAM is in place."
         )
 
     target_cost_tags = bundle.get_cost_allocation_tags()
@@ -172,7 +172,10 @@ def _run_phase_2_ou(
     ou_service = _get_service("OUService", OUService)(session_mgr)
     root_id = ou_service.get_root_id()
     report = ou_service.sync_ou_structure(bundle.org.ou_structure)
-    print_success(f"Phase 2: Synced {len(report.synced_ous)} OUs.")
+    print_success(
+        f"Phase 2: {len(report.synced_ous)} OUs in place "
+        f"({len(report.created_ous)} created, {len(report.existing_ous)} already existed)."
+    )
 
     if bundle.org.service_control_policies and bundle.org.service_control_policies.enabled:
         scp_service = _get_service("SCPService", SCPService)(session_mgr)
@@ -434,7 +437,7 @@ def _ensure_delegated_admin(session_mgr: AwsSessionManager, bundle: ConfigBundle
     org_service = _get_service("OrganizationService", OrganizationService)(session_mgr)
     delegated_res = org_service.configure_root_access(root_mgmt)
     if delegated_res.get("delegated_admin"):
-        print_success(f"Delegated administrator ({root_mgmt.delegated_admin_account}) registered for IAM.")
+        print_success(f"Delegated administrator ({root_mgmt.delegated_admin_account}) for IAM is in place.")
 
 
 def _deploy_backend_stack(

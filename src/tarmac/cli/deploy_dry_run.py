@@ -1,18 +1,41 @@
 """Simulation and dry-run plan rendering for the deployment pipeline."""
 
+import functools
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from rich.panel import Panel
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.config_schema import OUDef
 from ..services.accounts import AccountService
 from ..services.ou import OUService
-from .ui import console, create_table, print_info
+from .ui import console, create_table, print_info, print_warning
 
 logger = logging.getLogger(__name__)
+
+
+def _records_plan(phase: int) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    """Record in the run log that a phase plan was previewed, so a dry run is never an empty log."""
+
+    def decorator(render: Callable[..., None]) -> Callable[..., None]:
+        @functools.wraps(render)
+        def wrapper(*args: Any, **kwargs: Any) -> None:
+            render(*args, **kwargs)
+            audit(
+                "plan",
+                f"phase:{phase}",
+                Outcome.SIMULATED,
+                f"[DRY-RUN] Previewed the phase {phase} plan; nothing was executed",
+                dry_run=True,
+            )
+
+        return wrapper
+
+    return decorator
 
 
 def _collect_ou_tree(ous: list[OUDef], parent: str = "Root") -> list[tuple[str, str, str]]:
@@ -33,6 +56,7 @@ def _format_policy_name(policy_arn_or_name: str) -> str:
     return policy_arn_or_name
 
 
+@_records_plan(0)
 def _render_phase_0_dry_run(bundle: ConfigBundle) -> None:
     table = create_table(title="Phase 0 Plan: Pre-Flight Operational Readiness Scope")
     table.add_column("Category", style="cyan")
@@ -83,6 +107,7 @@ def _render_phase_0_dry_run(bundle: ConfigBundle) -> None:
     print_info("Live diagnostics bypassed in dry-run mode. Run 'tarmac preflight' to evaluate against AWS.")
 
 
+@_records_plan(1)
 def _render_phase_1_dry_run(bundle: ConfigBundle) -> None:
     table = create_table(title="Phase 1 Plan: Organization Bootstrap & Management Baseline")
     table.add_column("Component", style="cyan")
@@ -137,6 +162,7 @@ def _render_phase_1_dry_run(bundle: ConfigBundle) -> None:
     console.print(table)
 
 
+@_records_plan(2)
 def _render_phase_2_dry_run(bundle: ConfigBundle) -> None:
     ou_items = _collect_ou_tree(bundle.org.ou_structure)
     table_ou = create_table(title="Phase 2 Plan: Organizational Units Hierarchy")
@@ -165,6 +191,7 @@ def _render_phase_2_dry_run(bundle: ConfigBundle) -> None:
         print_info("Service Control Policies (SCPs) are disabled or none declared in configuration.")
 
 
+@_records_plan(3)
 def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     table = create_table(title="Phase 3 Plan: Foundational Organization CloudTrail")
     table.add_column("Property", style="cyan")
@@ -212,6 +239,7 @@ def _fetch_live_account_plan(session_mgr: AwsSessionManager, bundle: ConfigBundl
     return []
 
 
+@_records_plan(4)
 def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
     table = create_table(title="Phase 4 Plan: Account Factory Provisioning & Baselining")
     table.add_column("Account Name", style="cyan")
@@ -257,6 +285,14 @@ def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle
                 budget_str,
                 controls_str,
             )
+            audit(
+                "plan",
+                f"account:{item.name}",
+                Outcome.SIMULATED,
+                f"[DRY-RUN] Account '{item.name}' would be {item.action} (target OU {item.ou})",
+                dry_run=True,
+                planned_action=item.action,
+            )
     else:
         for acct in bundle.accounts.accounts:
             budget_str = (
@@ -281,11 +317,19 @@ def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle
             )
 
     console.print(table)
+    quarantined = [i.name for i in plan_items if i.action == "SUSPEND"] if plan_items else []
+    if quarantined:
+        print_warning(
+            f"{len(quarantined)} account(s) are tagged as managed by Tarmac but are missing from accounts.yaml "
+            f"and would be moved to the Suspended OU: {', '.join(quarantined)}. Add them to accounts.yaml to keep "
+            "them where they are, or set 'quarantine_removed_accounts: false' to turn this off."
+        )
     print_info(
         "Account IDs, access credentials, and baselines will be exported to 'outputs/accounts-inventory.json' during live execution."
     )
 
 
+@_records_plan(5)
 def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     table = create_table(title="Phase 5 Plan: Foundation Infrastructure & Security Delegation")
     table.add_column("Component / Stack", style="cyan")
@@ -336,6 +380,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     console.print(table)
 
 
+@_records_plan(6)
 def _render_phase_6_dry_run(bundle: ConfigBundle, region_override: str | None) -> None:
     id_cfg = bundle.identity.identity_center
     target_region = region_override or id_cfg.region or bundle.org.organization.primary_region

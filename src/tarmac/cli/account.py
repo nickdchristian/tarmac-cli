@@ -203,10 +203,13 @@ def apply_accounts(
         )
 
         console.print(results_table)
-        project_root = bundle.config_dir.parent
-        output_dir = project_root / "outputs"
-        export_path = service.export_inventory(bundle.accounts, ou_map, output_dir)
-        print_success(f"Updated inventory export at [cyan]{export_path}[/cyan]")
+        if dry_run:
+            print_info("Dry run: the inventory export was not updated.")
+        else:
+            project_root = bundle.config_dir.parent
+            output_dir = project_root / "outputs"
+            export_path = service.export_inventory(bundle.accounts, ou_map, output_dir)
+            print_success(f"Updated inventory export at [cyan]{export_path}[/cyan]")
 
     except GovernanceError as e:
         error_console.print(

@@ -18,7 +18,9 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
 from ..core.exceptions import GovernanceError
 from ..core.logging import setup_logging, start_run
+from ..core.placeholders import find_placeholder_values
 from ..services.drift import DriftService
+from ..services.identity import SUPPORTED_SSO_REGIONS, _probe_region_for_instance
 from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
 from . import access, account, baseline, deploy, identity, org, ou
@@ -184,6 +186,7 @@ def validate_config(
             "valid": not bool(errors or bundle is None),
             "summary": _build_validation_summary(bundle),
             "errors": errors or [],
+            "warnings": find_placeholder_values(bundle) if bundle is not None else [],
         }
         print(json.dumps(payload, indent=2))
         if errors or bundle is None:
@@ -207,6 +210,14 @@ def validate_config(
 
     _print_validation_table(bundle)
     print_success("All configuration files and logical cross-references are valid!")
+    placeholders = find_placeholder_values(bundle)
+    if placeholders:
+        print_warning(
+            "The configuration still contains sample values from 'tarmac init'. Replace them before a real "
+            "deployment (AWS never lets a closed account's email be reused):"
+        )
+        for problem in placeholders:
+            console.print(f"  [yellow]•[/yellow] {problem}")
 
 
 @app.command("apply")
@@ -255,6 +266,24 @@ def _fetch_sso_instance(session_mgr: AwsSessionManager, region: str) -> str:
         return ""
 
 
+def _find_sso_instance(session_mgr: AwsSessionManager, region: str) -> tuple[str, str]:
+    """Find the IAM Identity Center instance, trying the given region first and then the others.
+
+    Identity Center lives in exactly one Region, and it is often not the Region the shell happens to use.
+    Returns (instance ARN, Region it was found in), or ("", region) when there is none.
+    """
+    arn = _fetch_sso_instance(session_mgr, region)
+    if arn:
+        return arn, region
+    for candidate in SUPPORTED_SSO_REGIONS:
+        if candidate == region:
+            continue
+        found = _probe_region_for_instance(session_mgr, candidate)
+        if found:
+            return found[0], candidate
+    return "", region
+
+
 def _resolve_sso_region(default_region: str) -> str:
     try:
         bundle, _ = load_all_configs()
@@ -267,19 +296,21 @@ def _resolve_sso_region(default_region: str) -> str:
 
 @app.command("info")
 def show_info(
-    region: str | None = typer.Option("eu-west-1", "--region", "-r", help="Primary AWS region"),
+    region: str | None = typer.Option(
+        None, "--region", "-r", help="AWS region (default: AWS_REGION / AWS_DEFAULT_REGION, else us-east-1)"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Show current AWS authentication details, caller identity, and Organization status."""
 
-    resolved_region = region or "eu-west-1"
     try:
-        session_mgr = AwsSessionManager(region_name=resolved_region)
+        session_mgr = AwsSessionManager(region_name=region)
+        resolved_region = str(session_mgr.default_region)
         caller = session_mgr.get_caller_identity()
         caller_acct = caller.get("Account", "Unknown")
         org_info, org_err = _fetch_org_details(session_mgr)
         sso_region = _resolve_sso_region(resolved_region)
-        sso_arn = _fetch_sso_instance(session_mgr, sso_region)
+        sso_arn, sso_found_region = _find_sso_instance(session_mgr, sso_region)
 
         if json_output:
             payload = {
@@ -319,9 +350,13 @@ def show_info(
             table.add_row("Organization", f"[yellow]Not accessible / not enabled: {org_err}[/yellow]")
 
         if sso_arn:
-            table.add_row("Identity Center", f"[green]Enabled ({sso_arn})[/green]")
+            table.add_row("Identity Center", f"[green]Enabled in {sso_found_region} ({sso_arn})[/green]")
         else:
-            table.add_row("Identity Center", "[yellow]Not enabled / not accessible[/yellow]")
+            table.add_row(
+                "Identity Center",
+                "[yellow]Not found in any supported Region. Enable it in the console, or check that this "
+                "identity may call sso-admin.[/yellow]",
+            )
 
         console.print(table)
     except GovernanceError as e:
