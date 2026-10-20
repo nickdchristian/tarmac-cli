@@ -164,6 +164,7 @@ Resources:
           - Sid: RootAccessManagement
             Effect: Allow
             Action:
+              - iam:ListOrganizationsFeatures
               - iam:EnableOrganizationsRootCredentialsManagement
               - iam:EnableOrganizationsRootSessions
             Resource: '*'

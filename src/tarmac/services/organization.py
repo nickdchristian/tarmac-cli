@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .. import __version__
 from ..core.audit import Outcome, audit
@@ -95,6 +95,15 @@ class OrganizationService:
         updated = []
 
         for contact_type, contact_data in contact_map.items():
+            if self._contact_already_set(contact_type, contact_data):
+                audit(
+                    "update",
+                    f"alternate-contact:{contact_type}",
+                    Outcome.UNCHANGED,
+                    f"{contact_type} alternate contact is already {contact_data.email}",
+                    contact_type=contact_type,
+                )
+                continue
             try:
                 self.account_client.put_alternate_contact(
                     AlternateContactType=contact_type,
@@ -126,12 +135,61 @@ class OrganizationService:
 
         return updated
 
+    def _contact_already_set(self, contact_type: str, desired: Any) -> bool:
+        """True when the management account already has this exact alternate contact."""
+        try:
+            response = self.account_client.get_alternate_contact(AlternateContactType=contact_type)
+        except (ClientError, BotoCoreError):  # not set yet, or not readable: just write it
+            return False
+        current = response.get("AlternateContact") if isinstance(response, dict) else None
+        if not isinstance(current, dict):
+            return False
+        wanted = {
+            "Name": desired.name,
+            "Title": desired.title,
+            "EmailAddress": desired.email,
+            "PhoneNumber": desired.phone,
+        }
+        return all(str(current.get(key, "")).strip() == str(value).strip() for key, value in wanted.items())
+
+    def _enabled_service_principals(self) -> set[str]:
+        """Service principals that already have trusted access (empty when it cannot be read)."""
+        try:
+            paginator = self.org_client.get_paginator("list_aws_service_access_for_organization")
+            return {
+                str(item.get("ServicePrincipal", ""))
+                for page in paginator.paginate()
+                for item in page.get("EnabledServicePrincipals", [])
+            }
+        except (ClientError, BotoCoreError, TypeError, AttributeError):
+            return set()
+
+    def _enabled_root_features(self) -> set[str]:
+        """Centralized root access features that are already on (empty when they cannot be read)."""
+        try:
+            response = self.iam_client.list_organizations_features()
+        except (ClientError, BotoCoreError, TypeError, AttributeError):
+            return set()
+        features = response.get("EnabledFeatures", []) if isinstance(response, dict) else []
+        return {str(f) for f in features} if isinstance(features, list) else set()
+
     def enable_trusted_services(self, services: list[str] | None = None) -> list[str]:
         """Enable trusted service access for foundational AWS services in Organizations."""
         target_services = services or DEFAULT_TRUSTED_SERVICES
         enabled = []
+        already_enabled = self._enabled_service_principals()
 
         for service in target_services:
+            if service in already_enabled:
+                audit(
+                    "enable",
+                    f"trusted-access:{service}",
+                    Outcome.UNCHANGED,
+                    f"Trusted service access for {service} is already enabled",
+                    service=service,
+                )
+                enabled.append(service)
+                continue
             try:
                 self.org_client.enable_aws_service_access(ServicePrincipal=service)
                 audit(
@@ -161,13 +219,18 @@ class OrganizationService:
             }
 
         resolved_map = self._resolve_account_id_map(account_id_map) if config.delegated_admin_account else {}
+        enabled_features = self._enabled_root_features()
 
         return {
             "iam_trusted_access": self._enable_iam_trusted_access(),
             "root_credentials_management": (
-                self._enable_root_credentials() if config.enable_root_credentials_management else False
+                self._enable_root_credentials(enabled_features)
+                if config.enable_root_credentials_management
+                else False
             ),
-            "root_sessions": self._enable_root_sessions() if config.enable_root_sessions else False,
+            "root_sessions": (
+                self._enable_root_sessions(enabled_features) if config.enable_root_sessions else False
+            ),
             "delegated_admin": (
                 self._register_delegated_admin(config.delegated_admin_account, resolved_map)
                 if config.delegated_admin_account and resolved_map
@@ -192,6 +255,14 @@ class OrganizationService:
             return {}
 
     def _enable_iam_trusted_access(self) -> bool:
+        if "iam.amazonaws.com" in self._enabled_service_principals():
+            audit(
+                "enable",
+                "trusted-access:iam.amazonaws.com",
+                Outcome.UNCHANGED,
+                "Trusted service access for IAM is already enabled",
+            )
+            return True
         try:
             self.org_client.enable_aws_service_access(ServicePrincipal="iam.amazonaws.com")
             audit(
@@ -207,7 +278,15 @@ class OrganizationService:
             logger.warning("IAM trusted access: %s", msg)
             return False
 
-    def _enable_root_credentials(self) -> bool:
+    def _enable_root_credentials(self, enabled_features: set[str] | None = None) -> bool:
+        if "RootCredentialsManagement" in (enabled_features or set()):
+            audit(
+                "enable",
+                "root-credentials-management",
+                Outcome.UNCHANGED,
+                "Centralized root credentials management is already enabled",
+            )
+            return True
         try:
             self.iam_client.enable_organizations_root_credentials_management()
             audit(
@@ -223,7 +302,15 @@ class OrganizationService:
             logger.warning("Root credentials management: %s", msg)
             return False
 
-    def _enable_root_sessions(self) -> bool:
+    def _enable_root_sessions(self, enabled_features: set[str] | None = None) -> bool:
+        if "RootSessions" in (enabled_features or set()):
+            audit(
+                "enable",
+                "root-sessions",
+                Outcome.UNCHANGED,
+                "Privileged root sessions for member accounts are already enabled",
+            )
+            return True
         try:
             self.iam_client.enable_organizations_root_sessions()
             audit(

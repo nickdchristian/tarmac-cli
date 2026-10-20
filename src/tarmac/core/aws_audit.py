@@ -35,8 +35,20 @@ READ_ONLY_PREFIXES = (
     "Assume",
 )
 
-# Change-type calls that are safe, and expected, while previewing: CloudFormation change sets are how a plan is built.
-DRY_RUN_ALLOWED = frozenset({"CreateChangeSet", "DeleteChangeSet"})
+# Change-type calls that are safe, and expected, while previewing. CloudFormation change sets are how a plan is
+# built, and sso-oidc.CreateToken is botocore silently refreshing an expired IAM Identity Center login token.
+# Entries are either a bare operation name or "service.Operation".
+DRY_RUN_ALLOWED = frozenset({"CreateChangeSet", "DeleteChangeSet", "sso-oidc.CreateToken"})
+
+# AWS answers some calls with an error that only means "already done". Tarmac handles these itself and records the
+# result as UNCHANGED, so the call recorder keeps them out of the warnings.
+_BENIGN_ERROR_CODES = frozenset({"AccountAlreadyRegisteredException"})
+_BENIGN_ERROR_TEXT = (
+    "No updates are to be performed",
+    "already exists",
+    "already a delegated administrator",
+    "already a member",
+)
 
 _BLOB_KEYS = frozenset(
     {"TemplateBody", "PolicyDocument", "Content", "Body", "Document", "ZipFile", "UserData"}
@@ -49,6 +61,16 @@ _SESSION_UNIQUE_ID = "tarmac-aws-audit"
 
 def is_read_only(operation: str) -> bool:
     return operation.startswith(READ_ONLY_PREFIXES)
+
+
+def is_benign_error(error: dict[str, Any]) -> bool:
+    """True for an error that only reports that the requested state already holds."""
+    if not error:
+        return False
+    if error.get("Code") in _BENIGN_ERROR_CODES:
+        return True
+    message = str(error.get("Message", ""))
+    return any(text in message for text in _BENIGN_ERROR_TEXT)
 
 
 def summarize_params(value: Any, depth: int = 0) -> Any:
@@ -115,7 +137,8 @@ def _log_call(
     if error:
         data["error_code"] = error.get("Code")
         data["error_message"] = redact(str(error.get("Message", "")))
-    if current_context().get("dry_run") and not read_only and operation not in DRY_RUN_ALLOWED:
+    allowed = operation in DRY_RUN_ALLOWED or f"{service}.{operation}" in DRY_RUN_ALLOWED
+    if current_context().get("dry_run") and not read_only and not allowed:
         logger.error(
             "Dry-run made a state-changing AWS call: %s.%s",
             service,
@@ -127,7 +150,10 @@ def _log_call(
     where = f" in {data['region']}" if data["region"] else ""
     detail = f": {data['error_code']} {data.get('error_message', '')}".rstrip() if error else ""
     message = f"{service}.{operation} {outcome}{where}{detail}"
-    level = logging.DEBUG if read_only else logging.WARNING if outcome == "failed" else logging.INFO
+    if read_only or (error and is_benign_error(error)):
+        level = logging.DEBUG
+    else:
+        level = logging.WARNING if outcome == "failed" else logging.INFO
     logger.log(level, "%s", message, extra={"event": "aws_call", "data": data})
 
 
