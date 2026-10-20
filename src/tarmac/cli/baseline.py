@@ -13,7 +13,12 @@ from ..core.models import StackDeployReport
 from ..core.templates import resolve_resource_path
 from ..services.baseline import BaselineService
 from ..services.cloudformation import CloudFormationService
-from .common import get_active_account_id_map, load_configs_or_exit, parse_tags_or_exit
+from .common import (
+    get_active_account_id_map,
+    load_configs_or_exit,
+    log_archive_parameters,
+    parse_tags_or_exit,
+)
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
 
 logger = logging.getLogger(__name__)
@@ -159,12 +164,7 @@ def _deploy_log_archive_stack(
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=bundle.config_dir.parent
     )
-    params = {
-        "OrganizationId": org_id,
-        "OrgName": bundle.org.organization.name,
-        "EnableKmsEncryption": "true" if bundle.org.cloudtrail.enable_kms else "false",
-        "LogRetentionDays": str(bundle.org.cloudtrail.retention_days or 0),
-    }
+    params = log_archive_parameters(bundle, org_id)
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     report = service.deploy_stack(
         cfn_client,

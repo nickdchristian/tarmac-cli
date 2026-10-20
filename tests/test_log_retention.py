@@ -124,7 +124,7 @@ def test_baseline_command_passes_retention(retention, expected):
     bundle = SimpleNamespace(
         org=SimpleNamespace(
             organization=SimpleNamespace(name="acme"),
-            cloudtrail=SimpleNamespace(enable_kms=True, retention_days=retention),
+            cloudtrail=SimpleNamespace(enable_kms=True, retention_days=retention, object_lock=None),
         ),
         config_dir=ROOT / "examples" / "config",
         get_log_archive_account_name=lambda: "log-archive",

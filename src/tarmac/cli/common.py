@@ -81,3 +81,18 @@ def parse_tags_or_exit(tags: list[str] | None) -> dict[str, str]:
     except ValueError as e:
         error_console.print(f"[red]✗ Invalid tag option:[/red] {e}")
         raise typer.Exit(code=1)
+
+
+def log_archive_parameters(bundle: ConfigBundle, org_id: str) -> dict[str, str]:
+    """CloudFormation parameters for the log-archive hardening stack (shared by deploy and baseline)."""
+    cloudtrail = bundle.org.cloudtrail
+    params = {
+        "OrganizationId": org_id,
+        "OrgName": bundle.org.organization.name,
+        "EnableKmsEncryption": "true" if cloudtrail.enable_kms else "false",
+        "LogRetentionDays": str(cloudtrail.retention_days or 0),
+    }
+    if cloudtrail.object_lock:
+        params["ObjectLockMode"] = cloudtrail.object_lock.mode
+        params["ObjectLockRetentionDays"] = str(cloudtrail.object_lock.retention_days)
+    return params

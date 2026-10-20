@@ -307,6 +307,26 @@ cloudtrail:
 
 Deleted objects are purged for good seven days later and cannot be recovered, so pick a value that meets your audit and compliance requirements (many frameworks ask for a year or more). `tarmac deploy run --dry-run` shows the retention that will be applied. The setting is applied to the log archive stack; changing it re-deploys that stack.
 
+### Locking CloudTrail logs (S3 Object Lock)
+
+Off by default. To stop log files being deleted or overwritten for a period, set a default retention on the log bucket:
+
+```yaml
+cloudtrail:
+  object_lock:
+    mode: GOVERNANCE      # or COMPLIANCE
+    retention_days: 365
+```
+
+`GOVERNANCE` can be bypassed by principals with `s3:BypassGovernanceRetention`. `COMPLIANCE` cannot be shortened or
+removed by anyone, including the root user, until each object's period ends. It can be turned on for an existing
+bucket, but the lock then applies only to objects written afterwards.
+
+This changes teardown. `tarmac deploy destroy` retries locked deletes with the governance bypass, so GOVERNANCE
+locks do not block it (the audit log records it). COMPLIANCE locks cannot be removed: destroy stops with an error
+and the log bucket stays until the retention period ends. Use `GOVERNANCE` with a short period in test organizations.
+Lifecycle expiry (`retention_days`) cannot delete a version before its lock ends.
+
 ### Encryption of the log archive
 
 `cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.

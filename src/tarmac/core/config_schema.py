@@ -1,7 +1,7 @@
 """Pydantic data models for validating AWS Governance configuration files."""
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -79,6 +79,18 @@ class OUDef(BaseModel):
     children: list["OUDef"] = Field(default_factory=list)
 
 
+class ObjectLockConfig(BaseModel):
+    mode: Literal["GOVERNANCE", "COMPLIANCE"] = Field(
+        description=(
+            "GOVERNANCE can be bypassed by principals with s3:BypassGovernanceRetention. COMPLIANCE cannot be "
+            "shortened or removed by anyone, including root, until the retention period ends."
+        )
+    )
+    retention_days: int = Field(
+        ge=1, le=36500, description="Days each new CloudTrail log object is locked for."
+    )
+
+
 class CloudTrailConfig(BaseModel):
     trail_name: str = Field(default="organization-trail")
     bucket_prefix: str = Field(default="org-cloudtrail")
@@ -101,6 +113,15 @@ class CloudTrailConfig(BaseModel):
             "Delete CloudTrail log files this many days after they are written, to cap storage cost. "
             "Leave unset to keep them indefinitely. Logs cannot be recovered once purged, so choose a value "
             "that meets your audit and compliance requirements."
+        ),
+    )
+
+    object_lock: ObjectLockConfig | None = Field(
+        default=None,
+        description=(
+            "Optional S3 Object Lock default retention on the CloudTrail log bucket, so logs cannot be deleted "
+            "or overwritten during the retention period. Off by default. COMPLIANCE mode also blocks teardown "
+            "from deleting the logs until the period ends; use GOVERNANCE with a short period for test organizations."
         ),
     )
 
