@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
-from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code
+from ..core.exceptions import GovernanceError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
 from ..core.templates import resolve_resource_path
 from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
@@ -112,7 +112,7 @@ class SCPService:
         """Parse and re-dump JSON to normalize spacing/keys for comparison."""
         try:
             return json.dumps(json.loads(content), sort_keys=True)
-        except AWS_ERRORS:
+        except ValueError:
             return content.strip()
 
     def _ensure_ownership_tag(self, policy_id: str) -> None:
@@ -256,6 +256,7 @@ class SCPService:
 
         attached_now: list[str] = []
         newly_attached: list[str] = []
+        unresolved: list[str] = []
 
         live_targets = self.list_targets_for_policy(policy_id) if policy_id != "DRY-RUN-POLICY-ID" else []
 
@@ -263,6 +264,7 @@ class SCPService:
             resolved = self._resolve_target_id(target, root_id, ou_map)
             if not resolved:
                 logger.warning("Target '%s' not found in Root or OUs for policy %s", target, scp_def.name)
+                unresolved.append(target)
                 continue
             tid, tname = resolved
             attached_now.append(f"{tname} ({tid})")
@@ -276,7 +278,8 @@ class SCPService:
             action_taken=action,
             attached_targets=attached_now,
             newly_attached_targets=newly_attached,
-            status="SUCCEEDED",
+            status="FAILED" if unresolved else "SUCCEEDED",
+            unresolved_targets=unresolved,
         )
 
     def reconcile_all(

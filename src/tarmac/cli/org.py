@@ -261,10 +261,15 @@ def _execute_scp_reconciliation(
             config=scp_config,
             root_id=root_id,
             ou_map=ou_map,
-            project_root=Path.cwd(),
+            project_root=bundle.config_dir.parent,
             dry_run=dry_run,
         )
         _render_scp_results(results)
+        unresolved = {r.name: r.unresolved_targets for r in results if r.unresolved_targets}
+        if unresolved:
+            details = "; ".join(f"{name}: {', '.join(targets)}" for name, targets in unresolved.items())
+            error_console.print(f"[red]✗[/red] SCP targets not found in the organization: {details}")
+            raise typer.Exit(code=1)
     except GovernanceError as e:
         error_console.print(
             Panel(str(e), title="[bold red]SCP Reconciliation Failed[/bold red]", border_style="red")

@@ -610,3 +610,50 @@ def test_scp_reconcile_via_cfn_raises_on_deployment_error(tmp_path: Path):
         )
 
     assert "Waiter timed out" in str(exc_info.value)
+
+
+def test_reconcile_scp_marks_unresolved_targets_as_failed(tmp_path: Path):
+    policy_file = tmp_path / "policies" / "scp" / "deny-root.json"
+    policy_file.parent.mkdir(parents=True, exist_ok=True)
+    policy_file.write_text('{"Version":"2012-10-17"}', encoding="utf-8")
+    client = MagicMock()
+    session = MagicMock()
+    session.get_client.return_value = client
+    client.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-new"}}}
+    client.list_targets_for_policy.return_value = {"Targets": []}
+    scp_def = SCPDef(
+        name="Guard", description="d", policy_file="policies/scp/deny-root.json", targets=["Typo"]
+    )
+
+    result = SCPService(session).reconcile_scp(scp_def, {}, "r-root1", {"Security": "ou-1"}, tmp_path)
+
+    assert result.status == "FAILED"
+    assert result.unresolved_targets == ["Typo"]
+
+
+def test_normalize_json_falls_back_for_invalid_json():
+    service = SCPService(MagicMock())
+    assert service._normalize_json("  {not json  ") == "{not json"
+    assert service._normalize_json("") == ""
+
+
+def test_sync_policy_updates_when_live_policy_cannot_be_read():
+    """A failed describe_policy yields empty content; that must be treated as drift, not crash."""
+    from botocore.exceptions import ClientError
+
+    mock_client = MagicMock()
+    mock_session = MagicMock()
+    mock_session.get_client.return_value = mock_client
+    mock_client.describe_policy.side_effect = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "DescribePolicy"
+    )
+    service = SCPService(mock_session)
+
+    policy_id, action = service.sync_policy(
+        name="Guard",
+        description="d",
+        content='{"Version":"2012-10-17","Statement":[]}',
+        existing_scps={"Guard": {"Id": "p-1", "Name": "Guard"}},
+    )
+
+    assert (policy_id, action) == ("p-1", "UPDATED")
