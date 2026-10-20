@@ -28,7 +28,12 @@ from ..services.preflight import PreflightService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
 from ..services.teardown import TeardownItemReport, TeardownService
-from .common import get_active_account_id_map, load_configs_or_exit, parse_tags_or_exit
+from .common import (
+    get_active_account_id_map,
+    load_configs_or_exit,
+    parse_tags_or_exit,
+    require_credentials_or_exit,
+)
 from .deploy_dry_run import (
     _build_dry_run_plan_dict,
     _collect_ou_tree,
@@ -180,9 +185,10 @@ def _confirm_deployment(dry_run: bool, yes: bool) -> None:
 
 
 def _refuse_root_identity(session_mgr: AwsSessionManager, dry_run: bool = False) -> None:
-    """Stop live runs made with root credentials (they cannot assume member-account roles)."""
+    """Stop live runs with unusable credentials, or with root credentials (they cannot assume member roles)."""
     if dry_run:
         return
+    require_credentials_or_exit(session_mgr)
     try:
         is_root = session_mgr.is_root_identity()
     except Exception as e:  # unauthenticated: let the phases report it in context
@@ -541,6 +547,7 @@ def _execute_teardown(
 
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
+    require_credentials_or_exit(session_mgr)
 
     def _cli_on_phase(phase_title: str) -> None:
         console.print(f"\n[bold blue]─── {phase_title} ───[/bold blue]")
