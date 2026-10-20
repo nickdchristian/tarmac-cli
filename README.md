@@ -309,25 +309,27 @@ Deleted objects are purged for good seven days later and cannot be recovered, so
 
 ### Locking CloudTrail logs (S3 Object Lock)
 
-On by default: the log bucket gets a default retention so log files cannot be deleted or overwritten for a year.
+**Recommended, but off unless you set it.** Object Lock gives the log bucket a default retention so log files cannot be
+deleted or overwritten for that period, which is what makes the audit trail trustworthy. tarmac does not turn it on by
+itself because S3 cannot disable Object Lock on a bucket once it is on. While it is unset, `deploy` and `baseline` print
+a warning and the dry run shows it as off.
 
 ```yaml
 cloudtrail:
   object_lock:
     mode: GOVERNANCE      # or COMPLIANCE
     retention_days: 365
-  # object_lock: null     # turn it off
+  # object_lock: null     # decided against it: hides the warning
 ```
 
 `GOVERNANCE` can be bypassed by principals with `s3:BypassGovernanceRetention`. `COMPLIANCE` cannot be shortened or
 removed by anyone, including the root user, until each object's period ends. The lock applies to objects written after
-it is enabled. S3 does not let you disable Object Lock on a bucket once it is on, so set `object_lock: null` before the
-first deploy if you do not want it. If `retention_days` (log expiry) is shorter than the lock, the default lock shrinks
-to match; an explicit lock longer than `retention_days` is rejected, because lifecycle cannot delete locked versions.
+it is enabled, and can be added to an existing log bucket later by setting it and re-running deploy. A lock longer than
+`cloudtrail.retention_days` (log expiry) is rejected, because lifecycle cannot delete locked versions.
 
 This changes teardown. `tarmac deploy destroy` retries locked deletes with the governance bypass, so GOVERNANCE
 locks do not block it (the audit log records it). COMPLIANCE locks cannot be removed: destroy stops with an error
-and the log bucket stays until the retention period ends. Keep `GOVERNANCE` (the default) in test organizations.
+and the log bucket stays until the retention period ends. Use `GOVERNANCE` in test organizations.
 
 ### Encryption of the log archive
 

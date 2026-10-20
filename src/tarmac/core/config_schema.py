@@ -117,12 +117,13 @@ class CloudTrailConfig(BaseModel):
     )
 
     object_lock: ObjectLockConfig | None = Field(
-        default_factory=lambda: ObjectLockConfig(mode="GOVERNANCE", retention_days=365),
+        default=None,
         description=(
             "S3 Object Lock default retention on the CloudTrail log bucket, so logs cannot be deleted or "
-            "overwritten during the period (default: GOVERNANCE for 365 days). Set to null to turn it off, "
-            "before the first deploy: S3 does not allow Object Lock to be disabled on a bucket once it is on. "
-            "COMPLIANCE mode also blocks teardown from deleting the logs until the period ends."
+            "overwritten during the period. Off unless set, because S3 does not allow Object Lock to be "
+            "disabled on a bucket once it is on. Recommended: mode GOVERNANCE, retention_days 365 (tarmac "
+            "warns on deploy while it is unset; write `object_lock: null` to acknowledge and silence the "
+            "warning). COMPLIANCE mode also blocks teardown from deleting the logs until the period ends."
         ),
     )
 
@@ -131,23 +132,16 @@ class CloudTrailConfig(BaseModel):
         return _validate_bucket_prefix(v)
 
     @model_validator(mode="after")
-    def fit_object_lock_to_log_retention(self) -> "CloudTrailConfig":
-        """Keep Object Lock and the lifecycle expiry consistent.
-
-        Lifecycle cannot delete a version while it is locked, so a lock longer than ``retention_days`` would
-        silently keep logs longer than asked. The default lock shrinks to ``retention_days``; a lock the user
-        wrote down explicitly that is longer is an error.
-        """
+    def object_lock_must_not_outlast_log_retention(self) -> "CloudTrailConfig":
+        """Lifecycle cannot delete a locked version, so a lock longer than ``retention_days`` would silently
+        keep logs longer than asked."""
         lock = self.object_lock
-        if lock is None or self.retention_days is None or lock.retention_days <= self.retention_days:
-            return self
-        if "object_lock" in self.model_fields_set:
+        if lock is not None and self.retention_days is not None and lock.retention_days > self.retention_days:
             raise ValueError(
                 f"cloudtrail.object_lock.retention_days ({lock.retention_days}) is longer than "
                 f"cloudtrail.retention_days ({self.retention_days}): logs would be kept for the lock period "
-                "anyway. Shorten the lock, lengthen retention_days, or set object_lock to null."
+                "anyway. Shorten the lock, lengthen retention_days, or remove object_lock."
             )
-        self.object_lock = lock.model_copy(update={"retention_days": self.retention_days})
         return self
 
 

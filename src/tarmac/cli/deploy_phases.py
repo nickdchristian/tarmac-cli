@@ -22,7 +22,7 @@ from ..services.preflight import PreflightService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
 from ..services.teardown import cleanup_orphaned_bucket
-from .common import get_active_account_id_map, log_archive_parameters
+from .common import get_active_account_id_map, log_archive_parameters, warn_if_object_lock_unset
 from .deploy_dry_run import (
     _render_phase_0_dry_run,
     _render_phase_1_dry_run,
@@ -214,6 +214,7 @@ def _deploy_log_archive_hardening_stack(
 ) -> StackDeployReport:
     """Deploy the Log Archive account hardening stack containing the centralized S3 sink & KMS key."""
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
+    warn_if_object_lock_unset(bundle)
     cfn_client = session_mgr.get_member_client(log_archive_id, "cloudformation", region_name=target_region)
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=project_root

@@ -18,6 +18,7 @@ from .common import (
     load_configs_or_exit,
     log_archive_parameters,
     parse_tags_or_exit,
+    warn_if_object_lock_unset,
 )
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
 
@@ -158,6 +159,7 @@ def _deploy_log_archive_stack(
     dry_run: bool,
     tags: dict[str, str] | None = None,
 ) -> None:
+    warn_if_object_lock_unset(bundle)
     print_info(f"Deploying hardening to Log-Archive ({log_archive_id})...")
     cfn_client = session_mgr.get_member_client(log_archive_id, "cloudformation", region_name=target_region)
     stack_name = f"{bundle.org.organization.name}-log-archive-hardening"

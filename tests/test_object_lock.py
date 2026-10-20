@@ -7,7 +7,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from tarmac.cli.common import log_archive_parameters
+from tarmac.cli.common import log_archive_parameters, warn_if_object_lock_unset
 from tarmac.core.config_schema import CloudTrailConfig
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,18 +37,10 @@ def _bundle(**cloudtrail) -> SimpleNamespace:
     )
 
 
-def test_object_lock_is_governance_for_a_year_by_default():
-    lock = CloudTrailConfig().object_lock
-    assert lock is not None
-    assert (lock.mode, lock.retention_days) == ("GOVERNANCE", 365)
+def test_object_lock_is_off_by_default_and_adds_no_parameters():
+    """It cannot be undone, so tarmac never enables it unasked."""
+    assert CloudTrailConfig().object_lock is None
     params = log_archive_parameters(_bundle(), "o-abc1234567")  # type: ignore[arg-type]
-    assert params["ObjectLockMode"] == "GOVERNANCE"
-    assert params["ObjectLockRetentionDays"] == "365"
-
-
-def test_object_lock_can_be_turned_off_and_then_adds_no_parameters():
-    assert CloudTrailConfig(object_lock=None).object_lock is None
-    params = log_archive_parameters(_bundle(object_lock=None), "o-abc1234567")  # type: ignore[arg-type]
     assert "ObjectLockMode" not in params
     assert "ObjectLockRetentionDays" not in params
 
@@ -60,15 +52,58 @@ def test_object_lock_parameters_are_passed_when_configured():
     assert params["ObjectLockRetentionDays"] == "30"
 
 
-def test_default_lock_shrinks_to_a_shorter_log_retention():
-    """Lifecycle cannot delete a locked version, so the default must not outlast retention_days."""
-    assert CloudTrailConfig(retention_days=90).object_lock.retention_days == 90  # type: ignore[union-attr]
-    assert CloudTrailConfig(retention_days=730).object_lock.retention_days == 365  # type: ignore[union-attr]
-
-
 def test_explicit_lock_longer_than_log_retention_is_rejected():
     with pytest.raises(ValidationError, match="longer than"):
         CloudTrailConfig(retention_days=90, object_lock={"mode": "GOVERNANCE", "retention_days": 365})
+
+
+def test_lock_equal_to_log_retention_is_accepted():
+    config = CloudTrailConfig(retention_days=90, object_lock={"mode": "GOVERNANCE", "retention_days": 90})
+    assert config.object_lock is not None
+
+
+@pytest.mark.parametrize(
+    ("config", "warns"),
+    [
+        ({}, True),  # unset: recommend it
+        ({"object_lock": None}, False),  # written down as null: decided against, stay quiet
+        ({"object_lock": {"mode": "GOVERNANCE", "retention_days": 365}}, False),
+    ],
+)
+def test_warns_to_enable_object_lock_only_while_it_is_unset(monkeypatch, config, warns):
+    messages: list[str] = []
+    monkeypatch.setattr("tarmac.cli.common.print_warning", messages.append)
+
+    warn_if_object_lock_unset(_bundle(**config))  # type: ignore[arg-type]
+
+    assert bool(messages) is warns
+    if warns:
+        assert "GOVERNANCE" in messages[0]
+        assert "object_lock: null" in messages[0]
+
+
+def test_dry_run_plan_shows_object_lock_state(monkeypatch):
+    from io import StringIO
+
+    from rich.console import Console
+
+    from tarmac.cli import deploy_dry_run
+
+    def plan(**cloudtrail) -> str:
+        buffer = StringIO()
+        monkeypatch.setattr(deploy_dry_run, "console", Console(file=buffer, width=200))
+        bundle = SimpleNamespace(
+            org=SimpleNamespace(
+                organization=SimpleNamespace(name="acme"),
+                cloudtrail=CloudTrailConfig(**cloudtrail),
+            ),
+            get_log_archive_account_name=lambda: "log-archive",
+        )
+        deploy_dry_run._render_phase_3_dry_run(bundle, "eu-west-1")  # type: ignore[arg-type]
+        return buffer.getvalue()
+
+    assert "RECOMMENDED: GOVERNANCE" in plan()
+    assert "GOVERNANCE, 365 days" in plan(object_lock={"mode": "GOVERNANCE", "retention_days": 365})
 
 
 @pytest.mark.parametrize(
