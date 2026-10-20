@@ -17,6 +17,7 @@ jobs:
   code-quality:
     name: Code Quality & Static Analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -34,7 +35,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Lint Python with Ruff
         run: uv run ruff check .
@@ -51,6 +52,7 @@ jobs:
   test:
     name: Pytest Suite (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     strategy:
@@ -72,7 +74,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --frozen --python ${{ matrix.python-version }}
+        run: uv sync --locked --python ${{ matrix.python-version }}
 
       - name: Run Pytest Test Suite
         run: uv run --python ${{ matrix.python-version }} pytest -v --cov=tarmac --cov-report=term
@@ -80,6 +82,7 @@ jobs:
   validate-config:
     name: Validate Governance Configurations
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -97,7 +100,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Validate Example Governance Configuration
         run: uv run tarmac validate --config-dir examples/config
@@ -105,6 +108,7 @@ jobs:
   build-package:
     name: Build & Package Validation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -122,10 +126,13 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Build distributions
         run: uv build
 
       - name: Validate package metadata with Twine
         run: uv run twine check dist/*
+
+      - name: Smoke test the built wheel in a clean environment
+        run: scripts/smoke-test-wheel.sh dist/*.whl
