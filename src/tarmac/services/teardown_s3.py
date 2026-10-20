@@ -6,6 +6,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.exceptions import AWS_ERRORS, GovernanceError
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ def empty_s3_bucket(
         ) from e
 
     msg = f"Purging all contents, versions, and delete markers from bucket '{bucket_name}'..."
-    logger.info(msg)
+    logger.debug(msg)
     if on_progress is not None:
         on_progress(msg)
 
@@ -111,7 +112,13 @@ def empty_s3_bucket(
     total_deleted += _purge_unversioned_objects(s3_client, bucket_name, on_progress, total_deleted)
 
     if total_deleted > 0:
-        logger.info("Successfully purged %d items from bucket '%s'.", total_deleted, bucket_name)
+        audit(
+            "purge",
+            f"S3 Bucket:{bucket_name}",
+            Outcome.SUCCEEDED,
+            f"Permanently deleted {total_deleted} object version(s) from S3 bucket '{bucket_name}'",
+            objects_deleted=total_deleted,
+        )
     return total_deleted
 
 
@@ -171,16 +178,26 @@ def cleanup_orphaned_bucket(s3_client: Any, bucket_name: str, account_id: str = 
         return False
 
     if is_s3_bucket_empty(s3_client, clean_name):
-        logger.info(
+        logger.debug(
             "Deleting orphaned empty S3 bucket '%s' before stack creation to satisfy CloudFormation pre-deployment validation...",
             clean_name,
         )
         try:
             s3_client.delete_bucket(Bucket=clean_name)
-            logger.info("Successfully deleted orphaned empty S3 bucket '%s'.", clean_name)
+            audit(
+                "delete",
+                f"S3 Bucket:{clean_name}",
+                Outcome.SUCCEEDED,
+                f"Deleted empty S3 bucket '{clean_name}' left behind by an earlier stack so it can be recreated",
+            )
             return True
         except ClientError as e:
-            logger.warning("Failed to delete orphaned empty S3 bucket '%s': %s", clean_name, e)
+            audit(
+                "delete",
+                f"S3 Bucket:{clean_name}",
+                Outcome.FAILED,
+                f"Could not delete empty S3 bucket '{clean_name}': {e}",
+            )
             return False
     else:
         acct_msg = f" in account {account_id}" if account_id else ""

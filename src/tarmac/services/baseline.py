@@ -65,7 +65,7 @@ class BaselineService:
         target_regions = regions if regions is not None else self.get_enabled_regions(account_id)
         reports: list[VpcCleanupReport] = []
 
-        logger.info(
+        logger.debug(
             "Scanning for default VPCs in account '%s' (%s) across %d region(s)...",
             account_name,
             account_id,
@@ -304,7 +304,7 @@ class BaselineService:
                     )
                     resp = budgets_client.describe_budget(AccountId=account_id, BudgetName=budget_name)
                     if isinstance(resp, dict) and "Budget" in resp:
-                        logger.info(
+                        logger.debug(
                             "Found pre-existing unmanaged budget '%s' in account '%s' (%s). "
                             "Removing orphan budget to allow CloudFormation to manage it...",
                             budget_name,
@@ -556,7 +556,7 @@ class BaselineService:
                 anomaly_cfg.notification_emails,
             )
         except ClientError as e:
-            logger.info("Could not set up local anomaly monitor in %s: %s", account_name, e)
+            logger.warning("Could not set up local anomaly monitor in %s: %s", account_name, e)
 
     def _get_or_create_anomaly_monitor(
         self, ce_client: Any, monitor_name: str, account_id: str
