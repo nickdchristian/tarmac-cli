@@ -196,7 +196,6 @@ def test_bundled_scp_policies_are_valid_json_and_under_size_limit():
 
 def test_template_parity_and_export_consistency():
     """Verify 100% parity between root and packaged templates, and consistent stack exports."""
-    from pathlib import Path
 
     import yaml
 
@@ -288,3 +287,32 @@ def test_log_archive_template_hardening(base: str):
     assert enc[0]["ServerSideEncryptionByDefault"]["SSEAlgorithm"] == "AES256"
     sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"]]
     assert "AllowS3LogDeliveryEncrypt" not in sids
+
+
+def _denied_actions(policy_name: str) -> set[str]:
+    import json
+
+    from tarmac.core.templates import resolve_resource_path
+
+    doc = json.loads(resolve_resource_path(f"policies/scp/{policy_name}").read_text())
+    actions: set[str] = set()
+    for stmt in doc["Statement"]:
+        if stmt["Effect"] == "Deny" and "Condition" not in stmt:
+            actions.update([stmt["Action"]] if isinstance(stmt["Action"], str) else stmt["Action"])
+    return actions
+
+
+@pytest.mark.parametrize("policy_name", ["deny-leave-organization.json", "foundational-guardrails.json"])
+def test_shipped_scps_deny_leaving_the_organization_and_closing_accounts(policy_name: str):
+    """AWS recommends denying both so member accounts cannot leave or close without management approval."""
+    assert {"organizations:LeaveOrganization", "account:CloseAccount"} <= _denied_actions(policy_name)
+
+
+def test_bundled_scps_match_the_repository_copies():
+
+    import tarmac
+
+    repo_policies = Path(__file__).resolve().parents[1] / "policies" / "scp"
+    bundled = Path(tarmac.__file__).parent / "templates" / "policies" / "scp"
+    for f in sorted(repo_policies.glob("*.json")):
+        assert (bundled / f.name).read_text() == f.read_text(), f.name

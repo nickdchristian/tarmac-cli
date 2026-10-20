@@ -8,6 +8,14 @@
         "organizations:LeaveOrganization"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "DenyAccountClosure",
+      "Effect": "Deny",
+      "Action": [
+        "account:CloseAccount"
+      ],
+      "Resource": "*"
     }
   ]
 }

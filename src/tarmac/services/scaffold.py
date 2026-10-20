@@ -48,7 +48,7 @@ service_control_policies:
   enabled: true
   policies:
     - name: "FoundationalGuardrails"
-      description: "Consolidated foundational guardrails: denies member account root user activity and prevents leaving the organization"
+      description: "Consolidated foundational guardrails: denies member account root user activity and stops member accounts leaving the organization or closing themselves"
       policy_file: "policies/scp/foundational-guardrails.json"
       targets:
         - "root"
