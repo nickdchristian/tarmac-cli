@@ -3,6 +3,8 @@
 import logging
 from pathlib import Path
 
+from ..core.templates import export_bundled_templates
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_ORGANIZATION_YAML = """# Organization Master Configuration
@@ -204,7 +206,6 @@ def scaffold_project(
     target_dir: Path, force: bool = False, with_templates: bool = False
 ) -> tuple[list[Path], list[Path]]:
     """Create starter configuration files in target_dir. Returns (created_files, skipped_files)."""
-    from ..core.templates import export_bundled_templates
 
     target_dir.mkdir(parents=True, exist_ok=True)
     templates = {

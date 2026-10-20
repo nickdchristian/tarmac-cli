@@ -18,6 +18,7 @@ from .config_schema import (
     OUDef,
 )
 from .exceptions import ConfigurationError
+from .tagging import merge_tags
 from .templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
@@ -191,7 +192,6 @@ class ConfigBundle:
 
     def _check_inline_policies(self) -> list[str]:
         """Check that referenced inline policy files exist."""
-        from .templates import resolve_resource_path
 
         errors: list[str] = []
         for ps in self.identity.identity_center.permission_sets:
@@ -315,7 +315,6 @@ class ConfigBundle:
 
         Default System Tags -> Organization Tags -> Account Tags -> Custom Tags
         """
-        from .tagging import merge_tags
 
         return merge_tags(
             self.get_organization_tags(),
