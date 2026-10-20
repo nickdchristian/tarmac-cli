@@ -2,11 +2,13 @@
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
+from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_schema import AccountDef, AccountsCatalog
 from tarmac.core.exceptions import AccountProvisioningError
 from tarmac.services.accounts import AccountService
@@ -747,3 +749,63 @@ def test_move_account_updates_parent_cache_so_it_is_not_moved_twice():
         AccountId="111111111111", SourceParentId="r-root", DestinationParentId="ou-target"
     )
     org.list_parents.assert_called_once()
+
+
+def _acct_service(existing: dict[str, dict[str, Any]]):
+    from tarmac.services.accounts import AccountService
+
+    mgr = MagicMock(spec=AwsSessionManager)
+    org = MagicMock()
+    mgr.get_client.return_value = org
+    svc = AccountService(mgr)
+    svc.list_existing_accounts = MagicMock(return_value=existing)  # type: ignore[method-assign]
+    return svc, org
+
+
+def _acct_def(name: str, email: str, ou: str = "Workloads"):
+    from tarmac.core.config_schema import AccountDef
+
+    return AccountDef(name=name, email=email, ou=ou)
+
+
+def test_find_existing_account_prefers_email_over_name():
+    svc, _ = _acct_service({})
+    existing = {
+        "Prod App": {"Id": "111111111111", "Email": "other@example.com", "Status": "ACTIVE"},
+        "renamed": {"Id": "222222222222", "Email": "prod@example.com", "Status": "ACTIVE"},
+    }
+    found = svc.find_existing_account("prod-app", existing, email="prod@example.com")
+    assert found is not None
+    assert found["Id"] == "222222222222"
+
+
+def test_provision_refuses_to_adopt_name_match_with_different_email():
+    svc, org = _acct_service(
+        {"Prod App": {"Id": "111111111111", "Email": "other@example.com", "Status": "ACTIVE"}}
+    )
+    with pytest.raises(Exception, match="could not be provisioned") as exc:
+        svc.provision_accounts([_acct_def("prod-app", "prod@example.com")], {"Workloads": "ou-1"})
+
+    assert "email" in str(getattr(exc.value, "details", "")).lower()
+    org.move_account.assert_not_called()
+    org.create_account.assert_not_called()
+
+
+def test_provision_continues_after_one_create_failure_then_aggregates():
+    svc, org = _acct_service({})
+    org.create_account.side_effect = [
+        ClientError({"Error": {"Code": "ConstraintViolation", "Message": "quota"}}, "CreateAccount"),
+        {"CreateAccountStatus": {"Id": "car-2"}},
+    ]
+    svc._describe_create_status = MagicMock(return_value=("SUCCEEDED", "333333333333", ""))  # type: ignore[method-assign]
+    svc.move_account_if_needed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    svc.sync_account_tags = MagicMock(return_value=False)  # type: ignore[method-assign]
+
+    accounts = [_acct_def("a", "a@example.com"), _acct_def("b", "b@example.com")]
+    with pytest.raises(Exception, match="1 account") as exc:
+        svc.provision_accounts(accounts, {"Workloads": "ou-1"}, poll_delay_sec=0, max_poll_attempts=2)
+
+    assert "quota" in str(getattr(exc.value, "details", ""))
+    # The second account was still polled, moved and tagged despite the first one failing.
+    svc.move_account_if_needed.assert_called_once()
+    svc.sync_account_tags.assert_called_once()

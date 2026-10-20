@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tarmac.core.exceptions import ConfigurationError
 from tarmac.core.templates import (
@@ -265,3 +266,25 @@ def test_scp_policy_parity():
         root_text = (root_scp_dir / filename).read_text(encoding="utf-8")
         pkg_text = (pkg_scp_dir / filename).read_text(encoding="utf-8")
         assert root_text == pkg_text, f"SCP policy content mismatch for {filename}"
+
+
+@pytest.mark.parametrize("base", ["cloudformation", "src/tarmac/templates/cloudformation"])
+def test_log_archive_template_hardening(base: str):
+    root = Path(__file__).resolve().parents[1]
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    _Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
+    doc = yaml.load((root / base / "log-archive-hardening.yaml").read_text(), Loader=_Loader)
+    res = doc["Resources"]
+
+    key = res["LogArchiveKmsKey"]
+    assert key["DeletionPolicy"] == "Retain"
+    assert key["UpdateReplacePolicy"] == "Retain"
+    assert "DeletionPolicy" not in res["LogArchiveKmsAlias"]
+
+    enc = res["AccessLogsBucket"]["Properties"]["BucketEncryption"]["ServerSideEncryptionConfiguration"]
+    assert enc[0]["ServerSideEncryptionByDefault"]["SSEAlgorithm"] == "AES256"
+    sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"]]
+    assert "AllowS3LogDeliveryEncrypt" not in sids

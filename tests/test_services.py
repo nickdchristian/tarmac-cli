@@ -1403,3 +1403,66 @@ def test_register_service_delegated_administrators_treats_already_registered_as_
     )
 
     assert OrganizationService(mgr).register_service_delegated_administrators("1", ["a", "b"]) == ["a", "b"]
+
+
+def _identity_service(mock_sso: MagicMock, mock_cfn: MagicMock) -> IdentityService:
+    mgr = MagicMock()
+    mgr.get_client.side_effect = lambda name, **_: mock_sso if name == "sso-admin" else mock_cfn
+    mock_sso.list_instances.return_value = {
+        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-1", "IdentityStoreId": "d-1"}]
+    }
+    return IdentityService(mgr)
+
+
+def test_import_failure_raises_and_never_deletes_permission_sets(tmp_path: Path):
+    mock_sso, mock_cfn = MagicMock(), MagicMock()
+    service = _identity_service(mock_sso, mock_cfn)
+    paginator = MagicMock()
+    paginator.paginate.return_value = [{"PermissionSets": ["arn:aws:sso:::permissionSet/ssoins-1/ps-1"]}]
+    mock_sso.get_paginator.return_value = paginator
+    mock_sso.describe_permission_set.return_value = {"PermissionSet": {"Name": "AdministratorAccess"}}
+    mock_cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    mock_cfn.create_change_set.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "boom"}}, "CreateChangeSet"
+    )
+
+    with pytest.raises(IdentityCenterError) as exc:
+        service.sync_permission_sets_via_cloudformation(
+            [PermissionSetDef(name="AdministratorAccess", managed_policies=[])],
+            project_root=tmp_path,
+            org_name="myorg",
+        )
+
+    assert "AdministratorAccess" in str(exc.value)
+    mock_sso.delete_permission_set.assert_not_called()
+    mock_sso.delete_account_assignment.assert_not_called()
+    mock_cfn.create_stack.assert_not_called()
+
+
+def test_permission_set_template_carries_ownership_tag_unless_importing():
+    service = _identity_service(MagicMock(), MagicMock())
+    defs = [PermissionSetDef(name="Ops", managed_policies=[])]
+    tagged = service.synthesize_permission_sets_template("arn:inst", defs)
+    untagged = service.synthesize_permission_sets_template("arn:inst", defs, include_ownership_tag=False)
+    assert tagged["Resources"]["PermissionSetOps"]["Properties"]["Tags"] == [
+        {"Key": "tarmac:managed-by", "Value": "tarmac"}
+    ]
+    assert "Tags" not in untagged["Resources"]["PermissionSetOps"]["Properties"]
+
+
+def test_is_tarmac_managed_permission_set_fails_closed():
+    mock_sso = MagicMock()
+    service = _identity_service(mock_sso, MagicMock())
+    paginator = MagicMock()
+    mock_sso.get_paginator.return_value = paginator
+
+    paginator.paginate.return_value = [{"Tags": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}]
+    assert service.is_tarmac_managed_permission_set("i", "p") is True
+
+    paginator.paginate.return_value = [{"Tags": [{"Key": "Team", "Value": "x"}]}]
+    assert service.is_tarmac_managed_permission_set("i", "p") is False
+
+    paginator.paginate.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "x")
+    assert service.is_tarmac_managed_permission_set("i", "p") is False
