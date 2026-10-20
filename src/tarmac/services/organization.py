@@ -45,24 +45,33 @@ class OrganizationService:
     def ensure_organization(self) -> str:
         """Ensure AWS Organizations is enabled with ALL features. Returns Org ID."""
         try:
-            resp = self.org_client.describe_organization()
-            org_id = resp["Organization"]["Id"]
-            logger.info("AWS Organization already active: %s", org_id)
-            return org_id
+            return self._describe_organization_id()
         except self.org_client.exceptions.AWSOrganizationsNotInUseException:
-            logger.info("Creating new AWS Organization with FeatureSet='ALL'...")
-            try:
-                resp = self.org_client.create_organization(FeatureSet="ALL")
-                org_id = resp["Organization"]["Id"]
-                logger.info("Created AWS Organization: %s", org_id)
-                return org_id
-            except ClientError as e:
-                raise GovernanceError("Failed to create AWS Organization", details=str(e)) from e
+            return self._create_organization()
+        except ClientError as e:
+            raise GovernanceError("Failed to describe AWS Organization", details=aws_error_message(e)) from e
+
+    def _describe_organization_id(self) -> str:
+        org_id = self.org_client.describe_organization()["Organization"]["Id"]
+        logger.info("AWS Organization active: %s", org_id)
+        return str(org_id)
+
+    def _create_organization(self) -> str:
+        logger.info("Creating new AWS Organization with FeatureSet='ALL'...")
+        try:
+            org_id = self.org_client.create_organization(FeatureSet="ALL")["Organization"]["Id"]
         except ClientError as e:
             if aws_error_code(e) == "AlreadyInOrganizationException":
-                resp = self.org_client.describe_organization()
-                return resp["Organization"]["Id"]
-            raise GovernanceError("Failed to describe AWS Organization", details=str(e)) from e
+                # Another run created it between our describe and create calls.
+                try:
+                    return self._describe_organization_id()
+                except ClientError as describe_error:
+                    raise GovernanceError(
+                        "Failed to describe AWS Organization", details=aws_error_message(describe_error)
+                    ) from describe_error
+            raise GovernanceError("Failed to create AWS Organization", details=aws_error_message(e)) from e
+        logger.info("Created AWS Organization: %s", org_id)
+        return str(org_id)
 
     def set_account_contacts(self, contacts: ContactsConfig) -> list[str]:
         """Configure alternate contacts (Billing, Operations, Security) on the management account.
@@ -213,8 +222,8 @@ class OrganizationService:
             logger.info("Registered %s (%s) as IAM delegated admin", admin_account, admin_acct_id)
             return True
         except ClientError as e:
-            err_code = e.response.get("Error", {}).get("Code", "")
-            err_msg = e.response.get("Error", {}).get("Message", "")
+            err_code = aws_error_code(e)
+            err_msg = aws_error_message(e)
             if err_code == "AccountAlreadyRegisteredException":
                 logger.info("Account %s is already registered as IAM delegated admin", admin_acct_id)
                 return True
@@ -238,11 +247,11 @@ class OrganizationService:
                 self.org_client.register_delegated_administrator(AccountId=account_id, ServicePrincipal=sp)
                 registered.append(sp)
             except ClientError as e:
-                err_code = e.response.get("Error", {}).get("Code", "")
+                err_code = aws_error_code(e)
                 if err_code == "AccountAlreadyRegisteredException":
                     registered.append(sp)
                 else:
-                    msg = e.response.get("Error", {}).get("Message", str(e))
+                    msg = aws_error_message(e)
                     logger.warning("Delegated admin registration for %s failed: [%s] %s", sp, err_code, msg)
                     failures.append(f"{sp}: [{err_code}] {msg}")
         if failures:

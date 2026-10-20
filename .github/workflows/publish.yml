@@ -21,6 +21,7 @@ jobs:
   test:
     name: Run Quality Gates
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -38,7 +39,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies from lockfile
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Lint with Ruff
         run: uv run ruff check . && uv run ruff format --check .
@@ -53,6 +54,7 @@ jobs:
     name: Build and Publish to PyPI
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: ${{ github.event.inputs.target || 'pypi' }}
       url: ${{ github.event.inputs.target == 'testpypi' && 'https://test.pypi.org/p/tarmac-cli' || 'https://pypi.org/p/tarmac-cli' }}
@@ -75,13 +77,16 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies from lockfile
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Build distributions
         run: uv build
 
       - name: Check package metadata with Twine
         run: uv run twine check dist/*
+
+      - name: Smoke test the built wheel in a clean environment
+        run: scripts/smoke-test-wheel.sh dist/*.whl
 
       - name: Publish to TestPyPI
         if: github.event.inputs.target == 'testpypi'
