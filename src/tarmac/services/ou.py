@@ -6,6 +6,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import OUDef
 from ..core.exceptions import OUManagementError, aws_error_code, aws_error_message
@@ -111,13 +112,36 @@ class OUService:
                 Name=ou_name,
             )
             ou_id: str = resp["OrganizationalUnit"]["Id"]
-            logger.info("Successfully created OU '%s' (ID: %s)", ou_name, ou_id)
+            audit(
+                "create",
+                f"ou:{ou_name}",
+                Outcome.SUCCEEDED,
+                f"Created organizational unit '{ou_name}' ({ou_id}) under parent {parent_id}",
+                ou_id=ou_id,
+                parent_id=parent_id,
+            )
             return ou_id
         except ClientError as e:
             if aws_error_code(e) == "DuplicateOrganizationalUnitException":
                 refreshed = self.list_existing_ous_for_parent(parent_id)
                 if ou_name in refreshed:
+                    audit(
+                        "create",
+                        f"ou:{ou_name}",
+                        Outcome.UNCHANGED,
+                        f"Organizational unit '{ou_name}' was created concurrently; using {refreshed[ou_name]}",
+                        ou_id=refreshed[ou_name],
+                        parent_id=parent_id,
+                    )
                     return refreshed[ou_name]
+            audit(
+                "create",
+                f"ou:{ou_name}",
+                Outcome.FAILED,
+                f"Could not create organizational unit '{ou_name}' under parent {parent_id}: "
+                f"{aws_error_message(e)}",
+                parent_id=parent_id,
+            )
             raise OUManagementError(
                 f"Failed to create OU '{ou_name}' under parent '{parent_id}'",
                 details=aws_error_message(e),

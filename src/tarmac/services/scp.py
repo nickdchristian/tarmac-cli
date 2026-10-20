@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
 from ..core.exceptions import GovernanceError, aws_error_code
@@ -45,7 +46,13 @@ class SCPService:
 
         try:
             self.org_client.enable_policy_type(RootId=root_id, PolicyType="SERVICE_CONTROL_POLICY")
-            logger.info("Initiated enabling SERVICE_CONTROL_POLICY on root %s", root_id)
+            audit(
+                "enable",
+                f"policy-type:SERVICE_CONTROL_POLICY@{root_id}",
+                Outcome.SUCCEEDED,
+                f"Enabled service control policies on organization root {root_id}",
+                root_id=root_id,
+            )
         except ClientError as e:
             code = aws_error_code(e)
             if code not in ["PolicyTypeAlreadyEnabledException", "ConcurrentModificationException"]:
@@ -145,7 +152,14 @@ class SCPService:
                 return pol_id, "NOOP"
 
             if dry_run:
-                logger.info("[DRY-RUN] Would update SCP '%s' (%s)", name, pol_id)
+                audit(
+                    "update",
+                    f"scp:{name}",
+                    Outcome.SUCCEEDED,
+                    f"Would update service control policy '{name}' ({pol_id}); content differs from AWS",
+                    dry_run=True,
+                    policy_id=pol_id,
+                )
                 return pol_id, "SIMULATED_UPDATE"
 
             try:
@@ -155,14 +169,26 @@ class SCPService:
                     Description=description,
                     Content=content,
                 )
-                logger.info("Updated SCP '%s' (%s)", name, pol_id)
+                audit(
+                    "update",
+                    f"scp:{name}",
+                    Outcome.SUCCEEDED,
+                    f"Updated service control policy '{name}' ({pol_id}) to match the policy file",
+                    policy_id=pol_id,
+                )
                 self._ensure_ownership_tag(pol_id)
                 return pol_id, "UPDATED"
             except ClientError as e:
                 raise GovernanceError(f"Failed to update SCP '{name}'", details=str(e)) from e
 
         if dry_run:
-            logger.info("[DRY-RUN] Would create SCP '%s'", name)
+            audit(
+                "create",
+                f"scp:{name}",
+                Outcome.SUCCEEDED,
+                f"Would create service control policy '{name}'",
+                dry_run=True,
+            )
             return "DRY-RUN-POLICY-ID", "SIMULATED_CREATE"
 
         try:
@@ -174,7 +200,13 @@ class SCPService:
                 Tags=[{"Key": TAG_MANAGED_BY, "Value": "tarmac"}],
             )
             new_id = resp["Policy"]["PolicySummary"]["Id"]
-            logger.info("Created SCP '%s' (%s)", name, new_id)
+            audit(
+                "create",
+                f"scp:{name}",
+                Outcome.SUCCEEDED,
+                f"Created service control policy '{name}' ({new_id})",
+                policy_id=new_id,
+            )
             return new_id, "CREATED"
         except ClientError as e:
             raise GovernanceError(f"Failed to create SCP '{name}'", details=str(e)) from e
@@ -195,15 +227,28 @@ class SCPService:
             return False
 
         if dry_run:
-            logger.info(
-                "[DRY-RUN] Would attach policy %s to target '%s' (%s)", policy_id, target_name, target_id
+            audit(
+                "attach",
+                f"scp:{policy_id}->{target_id}",
+                Outcome.SUCCEEDED,
+                f"Would attach policy {policy_id} to '{target_name}' ({target_id})",
+                dry_run=True,
+                policy_id=policy_id,
+                target_id=target_id,
             )
             return True
 
         for attempt in range(retries):
             try:
                 self.org_client.attach_policy(PolicyId=policy_id, TargetId=target_id)
-                logger.info("Attached policy %s to target '%s' (%s)", policy_id, target_name, target_id)
+                audit(
+                    "attach",
+                    f"scp:{policy_id}->{target_id}",
+                    Outcome.SUCCEEDED,
+                    f"Attached policy {policy_id} to '{target_name}' ({target_id})",
+                    policy_id=policy_id,
+                    target_id=target_id,
+                )
                 return True
             except ClientError as e:
                 code = aws_error_code(e)
