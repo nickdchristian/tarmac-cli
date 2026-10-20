@@ -1,9 +1,11 @@
 """Tests for AccountBaseliner module."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
+from helpers import CfnLoader
 
 from tarmac.core.config_schema import (
     AccountBaselineConfig,
@@ -86,7 +88,45 @@ def test_setup_account_budget_creates_stack():
     assert param_dict["NotificationEmail"] == "test@example.com"
 
 
-def test_setup_account_budget_maps_multiple_emails_to_parameters():
+@pytest.mark.parametrize(("forecast", "expected"), [(None, None), (100.0, "100.0")])
+def test_forecast_alert_is_only_passed_to_the_stack_when_configured(forecast, expected):
+    mgr, cfn = MagicMock(), MagicMock()
+    mgr.get_member_client.return_value = cfn
+    mgr.default_region = "eu-west-1"
+    cfn.describe_stacks.side_effect = [
+        ClientError(
+            {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+        ),
+        {"Stacks": [{"Outputs": []}]},
+    ]
+    cfg = BudgetConfig(
+        monthly_limit_usd=100.0, notification_emails=["a@b.co"], forecast_alert_threshold_percent=forecast
+    )
+
+    BaselineService(mgr).setup_account_budget("123456789012", "ProdAccount", cfg, dry_run=False)
+
+    params = {p["ParameterKey"]: p["ParameterValue"] for p in cfn.create_stack.call_args[1]["Parameters"]}
+    assert params.get("ForecastThresholdPercent") == expected
+
+
+def test_forecast_alert_must_be_positive():
+    with pytest.raises(ValueError):
+        BudgetConfig(monthly_limit_usd=100.0, forecast_alert_threshold_percent=0)
+
+
+def test_budget_template_adds_the_forecast_notification_only_when_asked():
+    import yaml
+
+    template = yaml.load(
+        (Path(__file__).resolve().parent.parent / "cloudformation" / "account-budget.yaml").read_text(),
+        Loader=CfnLoader,
+    )
+    assert template["Parameters"]["ForecastThresholdPercent"]["Default"] == 0
+    assert "HasForecastAlert" in template["Conditions"]
+    notifications = template["Resources"]["MonthlyBudget"]["Properties"]["NotificationsWithSubscribers"]
+    assert len(notifications) == 2  # the actual alert plus the conditional forecast alert
+    assert "FORECASTED" in str(notifications[1])
+
     """Verify that multiple emails configure the primary email on NotificationEmail for the SNS topic."""
     mock_session_mgr = MagicMock()
     mock_cfn = MagicMock()

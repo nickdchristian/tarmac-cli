@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 from botocore.exceptions import ClientError
+from helpers import CfnLoader
 from typer.testing import CliRunner
 
 from tarmac.cli.deploy import _refuse_root_identity
@@ -201,20 +202,6 @@ def test_bootstrap_dry_run_and_failure() -> None:
 # least-privilege policy
 
 
-class _CfnLoader(yaml.SafeLoader):
-    pass
-
-
-def _construct(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> object:
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node, deep=True)
-    return loader.construct_mapping(node, deep=True)  # type: ignore[arg-type]
-
-
-_CfnLoader.add_multi_constructor("!", _construct)
-
 # IAM prefix -> botocore service name (where they differ), plus actions whose IAM name is not an API operation.
 _PREFIX_TO_SERVICE = {"sso": "sso-admin", "servicequotas": "service-quotas"}
 _NON_OPERATION_ACTIONS = {"s3:ListBucket", "sso-directory:DescribeDirectory", "sso-directory:SearchUsers"}
@@ -223,7 +210,7 @@ _NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups"}
 
 def _policy_statements() -> list[dict[str, object]]:
     path = Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml"
-    template = yaml.load(path.read_text(encoding="utf-8"), Loader=_CfnLoader)
+    template = yaml.load(path.read_text(encoding="utf-8"), Loader=CfnLoader)
     return template["Resources"]["TarmacPolicy"]["Properties"]["PolicyDocument"]["Statement"]
 
 
