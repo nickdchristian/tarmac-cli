@@ -198,6 +198,22 @@ tarmac --log-file run.jsonl run --yes
 jq -r 'select(.event=="audit") | "\(.ts) \(.data.outcome) \(.message)"' run.jsonl
 ```
 
+### Reading a log back
+
+`tarmac logs` turns a log file into something a person can review without `jq`:
+
+```bash
+tarmac logs run.jsonl                       # one line per run: status, what changed, what failed
+tarmac logs run.jsonl --run latest          # what the last run did, plus any warnings and errors
+tarmac logs run.jsonl --run 20261020T1      # a run by id or id prefix
+tarmac logs run.jsonl --outcome failed      # only actions that failed
+tarmac logs run.jsonl --account dev --phase accounts
+tarmac logs run.jsonl --run latest --all    # every record, including AWS calls
+tarmac logs run.jsonl --run latest --json   # matching records, one JSON object per line
+```
+
+With `TARMAC_LOG_FILE` set, the file argument can be left out. Reading a log never writes to it. A run shows as `incomplete` if the process was killed before it could write its final record.
+
 ### AWS calls and CloudTrail
 
 Every AWS call is recorded with its service, operation, Region, outcome, duration, request id and a redacted summary of its parameters. Calls that change something (`Create*`, `Put*`, `Delete*`, `Enable*`, ...) are logged at INFO, so they are in the log file and shown by `-v`; read-only calls (`Describe*`, `List*`, `Get*`) appear with `--debug`.
