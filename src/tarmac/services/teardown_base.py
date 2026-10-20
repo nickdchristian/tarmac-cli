@@ -7,6 +7,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
@@ -15,15 +16,57 @@ from .cloudformation import CloudFormationService
 logger = logging.getLogger(__name__)
 
 
-class _ReportingList(list[TeardownItemReport]):
-    """Internal list that immediately notifies a callback when items are appended."""
+_ACTION_OUTCOMES = {
+    "DELETED": Outcome.SUCCEEDED,
+    "EMPTY": Outcome.SUCCEEDED,
+    "SIMULATED": Outcome.SUCCEEDED,
+    "NOT_FOUND": Outcome.UNCHANGED,
+    "SKIPPED": Outcome.SKIPPED,
+    "FAILED": Outcome.FAILED,
+}
 
-    def __init__(self, callback: Callable[[TeardownItemReport], None] | None = None) -> None:
+
+def audit_teardown_item(item: TeardownItemReport, phase: str | None = None) -> None:
+    """Record one teardown result as an audit event."""
+    outcome = _ACTION_OUTCOMES.get(item.action, Outcome.SKIPPED)
+    where = f" in {item.account_name}" if item.account_name else ""
+    detail = f": {item.message}" if item.message else ""
+    verb = {"DELETED": "Deleted", "EMPTY": "Emptied", "NOT_FOUND": "Did not find"}.get(item.action)
+    if item.action == "SIMULATED":
+        text = f"Would delete {item.resource_type} '{item.resource_name}'{where}{detail}"
+    elif item.action == "FAILED":
+        text = f"Could not delete {item.resource_type} '{item.resource_name}'{where}{detail}"
+    elif item.action == "SKIPPED":
+        text = f"Skipped {item.resource_type} '{item.resource_name}'{where}{detail}"
+    else:
+        text = f"{verb or item.action.title()} {item.resource_type} '{item.resource_name}'{where}{detail}"
+    audit(
+        "delete",
+        f"{item.resource_type}:{item.resource_name}",
+        outcome,
+        text,
+        dry_run=item.action == "SIMULATED",
+        account_id=item.account_id or None,
+        account_name=item.account_name or None,
+        teardown_phase=phase,
+    )
+
+
+class _ReportingList(list[TeardownItemReport]):
+    """Internal list that audits each item and immediately notifies a callback when items are appended."""
+
+    def __init__(
+        self,
+        callback: Callable[[TeardownItemReport], None] | None = None,
+        phase: Callable[[], str | None] | None = None,
+    ) -> None:
         super().__init__()
         self._callback = callback
+        self._phase = phase
 
     def append(self, item: TeardownItemReport) -> None:
         super().append(item)
+        audit_teardown_item(item, self._phase() if self._phase else None)
         if self._callback is not None:
             self._callback(item)
 
@@ -59,9 +102,10 @@ class TeardownBase:
         self.on_progress = on_progress
         self.on_item = on_item
         self.on_phase = on_phase
+        self._current_phase: str | None = None
 
     def _new_results_list(self) -> _ReportingList:
-        return _ReportingList(self.on_item)
+        return _ReportingList(self.on_item, lambda: self._current_phase)
 
     def _notify_progress(self, message: str) -> None:
         logger.info(message)
@@ -69,6 +113,7 @@ class TeardownBase:
             self.on_progress(message)
 
     def _notify_phase(self, phase_name: str) -> None:
+        self._current_phase = phase_name
         logger.info("=== %s ===", phase_name)
         if self.on_phase is not None:
             self.on_phase(phase_name)
@@ -114,7 +159,13 @@ class TeardownBase:
         """Delete a bucket CloudFormation retained. Returns report items only for failures."""
         try:
             s3_client.delete_bucket(Bucket=bucket)
-            logger.info("Deleted retained S3 bucket '%s' in %s.", bucket, account_name)
+            audit(
+                "delete",
+                f"S3 Bucket:{bucket}",
+                Outcome.SUCCEEDED,
+                f"Deleted retained S3 bucket '{bucket}' in {account_name}",
+                account_id=account_id,
+            )
             return []
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
