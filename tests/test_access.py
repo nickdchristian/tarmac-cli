@@ -303,3 +303,27 @@ def test_policy_covers_every_management_account_api_call() -> None:
             if xform_name(op) in used and not _is_allowed(f"{prefix}:{op}"):
                 missing.append(f"{prefix}:{op}")
     assert not missing, f"Policy does not allow API calls tarmac makes: {sorted(missing)}"
+
+
+def test_aws_error_helpers_tolerate_missing_fields() -> None:
+    from tarmac.core.exceptions import aws_error_code, aws_error_message
+
+    full = ClientError({"Error": {"Code": "Throttling", "Message": "slow down"}}, "Op")
+    assert aws_error_code(full) == "Throttling"
+    assert aws_error_message(full) == "slow down"
+    bare = ClientError({}, "Op")  # type: ignore[arg-type]
+    assert aws_error_code(bare) == ""
+    assert "Op" in aws_error_message(bare)
+
+
+def test_caller_identity_keeps_only_known_string_fields() -> None:
+    with patch("boto3.Session") as session_cls:
+        sts = session_cls.return_value.client.return_value
+        sts.get_caller_identity.return_value = {
+            "Account": "1",
+            "Arn": "arn:aws:iam::1:root",
+            "UserId": "U",
+            "ResponseMetadata": {"HTTPStatusCode": 200},
+        }
+        identity = AwsSessionManager(region_name="us-east-1").get_caller_identity()
+    assert identity == {"Account": "1", "Arn": "arn:aws:iam::1:root", "UserId": "U"}

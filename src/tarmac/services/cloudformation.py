@@ -9,7 +9,7 @@ from typing import Any, Literal
 from botocore.exceptions import ClientError, WaiterError
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import AWS_ERRORS, DeploymentError
+from ..core.exceptions import AWS_ERRORS, DeploymentError, aws_error_message
 from ..core.models import StackDeployReport
 from ..core.tagging import merge_tags, to_cfn_tags
 
@@ -191,7 +191,7 @@ class CloudFormationService:
                 return str(stacks[0].get("StackStatus", ""))
             return None
         except ClientError as e:
-            if "does not exist" not in e.response["Error"]["Message"]:
+            if "does not exist" not in aws_error_message(e):
                 raise DeploymentError(f"Failed inspecting stack {stack_name}", details=str(e)) from e
             return None
 
@@ -315,12 +315,12 @@ class CloudFormationService:
             return action
 
         except ClientError as e:
-            if "No updates are to be performed" in e.response["Error"]["Message"]:
+            if "No updates are to be performed" in aws_error_message(e):
                 logger.info("Stack '%s' is already up to date (no changes).", stack_name)
                 return "NO_CHANGES"
             raise DeploymentError(
                 f"Failed to deploy stack '{stack_name}'",
-                details=e.response["Error"].get("Message", str(e)),
+                details=aws_error_message(e),
             ) from e
         except WaiterError as e:
             reasons = self._fetch_failure_reasons(cfn_client, stack_name)

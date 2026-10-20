@@ -47,3 +47,13 @@ class DeploymentError(GovernanceError):
 
 AWS_ERRORS = (ClientError, BotoCoreError, GovernanceError)
 """Failures expected when calling AWS; anything else is a bug and should propagate."""
+
+
+def aws_error_code(error: ClientError) -> str:
+    """Return the AWS error code of a ClientError, or an empty string when absent."""
+    return str(error.response.get("Error", {}).get("Code", ""))
+
+
+def aws_error_message(error: ClientError) -> str:
+    """Return the AWS error message of a ClientError, falling back to the exception text."""
+    return str(error.response.get("Error", {}).get("Message") or error)

@@ -22,8 +22,9 @@ OWNED = [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
 
 
 def _client(service: str) -> Any:
+    name: Any = service
     return boto3.client(
-        service,
+        name,
         region_name="us-east-1",
         aws_access_key_id="testing",
         aws_secret_access_key="testing",

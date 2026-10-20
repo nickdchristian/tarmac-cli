@@ -10,7 +10,7 @@ from .. import __version__
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import ContactsConfig, RootAccessConfig
-from ..core.exceptions import AWS_ERRORS, GovernanceError
+from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
 from ..core.models import (
     STATUS_IN_PROGRESS,
     STATUS_READY,
@@ -59,7 +59,7 @@ class OrganizationService:
             except ClientError as e:
                 raise GovernanceError("Failed to create AWS Organization", details=str(e)) from e
         except ClientError as e:
-            if e.response["Error"]["Code"] == "AlreadyInOrganizationException":
+            if aws_error_code(e) == "AlreadyInOrganizationException":
                 resp = self.org_client.describe_organization()
                 return resp["Organization"]["Id"]
             raise GovernanceError("Failed to describe AWS Organization", details=str(e)) from e
@@ -91,7 +91,7 @@ class OrganizationService:
                 logger.error("Failed to set %s contact: %s", contact_type, e)
                 raise GovernanceError(
                     f"Failed to set {contact_type} contact",
-                    details=e.response["Error"].get("Message", str(e)),
+                    details=aws_error_message(e),
                 ) from e
 
         return updated
@@ -107,7 +107,7 @@ class OrganizationService:
                 logger.info("Enabled trusted service access for %s", service)
                 enabled.append(service)
             except ClientError as e:
-                logger.warning("Could not enable %s: %s", service, e.response["Error"].get("Message"))
+                logger.warning("Could not enable %s: %s", service, aws_error_message(e))
 
         return enabled
 
@@ -161,7 +161,7 @@ class OrganizationService:
             logger.info("Enabled trusted access for IAM in Organizations")
             return True
         except ClientError as e:
-            msg = e.response["Error"].get("Message", str(e))
+            msg = aws_error_message(e)
             self.last_error["iam_trusted_access"] = msg
             logger.warning("IAM trusted access: %s", msg)
             return False
@@ -172,7 +172,7 @@ class OrganizationService:
             logger.info("Enabled Organizations root credentials management")
             return True
         except ClientError as e:
-            msg = e.response["Error"].get("Message", str(e))
+            msg = aws_error_message(e)
             self.last_error["root_credentials_management"] = msg
             logger.warning("Root credentials management: %s", msg)
             return False
@@ -183,7 +183,7 @@ class OrganizationService:
             logger.info("Enabled Organizations privileged root sessions")
             return True
         except ClientError as e:
-            msg = e.response["Error"].get("Message", str(e))
+            msg = aws_error_message(e)
             self.last_error["root_sessions"] = msg
             logger.warning("Root sessions: %s", msg)
             return False

@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import AccountBaselineConfig, AccountDef, AccountsCatalog
-from ..core.exceptions import AccountProvisioningError
+from ..core.exceptions import AccountProvisioningError, aws_error_message
 from ..core.models import (
     STATUS_SUSPENDED,
     TAG_MANAGED_BY,
@@ -336,7 +336,7 @@ class AccountService:
         except ClientError as e:
             raise AccountProvisioningError(
                 f"Failed to move account '{account_name}' to OU '{target_ou_id}'",
-                details=e.response["Error"].get("Message", str(e)),
+                details=aws_error_message(e),
             ) from e
 
     def get_account_tags(self, account_id: str) -> dict[str, str]:
@@ -398,7 +398,7 @@ class AccountService:
             logger.info("Successfully updated tags on account '%s'", account_name)
             return True
         except ClientError as e:
-            msg = str(e.response["Error"].get("Message", str(e)))
+            msg = aws_error_message(e)
             if "pattern" in msg.lower():
                 msg += (
                     " (Note: AWS Organizations tags only permit letters, numbers, spaces, "
@@ -498,7 +498,7 @@ class AccountService:
                     }
                 )
             except ClientError as e:
-                detail = e.response["Error"].get("Message", str(e))
+                detail = aws_error_message(e)
                 logger.error("Failed to request creation of account '%s': %s", name, detail)
                 failures.append(f"Failed to request creation of account '{name}': {detail}")
 

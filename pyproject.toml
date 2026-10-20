@@ -65,6 +65,7 @@ dev = [
     "cfn-lint>=1.20.0",
     "basedpyright>=1.40.2",
     "twine>=6.0.0",
+    "boto3-stubs[account,budgets,ce,cloudformation,cloudtrail,ec2,guardduty,iam,identitystore,kms,organizations,s3,securityhub,service-quotas,sns,sso-admin,sts,support]>=1.43.115",
 ]
 
 [tool.uv]

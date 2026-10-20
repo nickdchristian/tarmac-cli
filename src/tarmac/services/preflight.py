@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
-from ..core.exceptions import AWS_ERRORS
+from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 
 logger = logging.getLogger(__name__)
@@ -230,7 +230,7 @@ class PreflightService:
                 action_required=f"Enable IAM Identity Center in '{home_region}' via AWS Console",
             )
         except ClientError as e:
-            msg = e.response["Error"].get("Message", str(e))
+            msg = aws_error_message(e)
             return PreflightCheckResult(
                 name="IAM Identity Center (SSO)",
                 target=f"Region {home_region}",
@@ -267,7 +267,7 @@ class PreflightService:
                 live_value="Active",
             )
         except ClientError as e:
-            msg = e.response["Error"].get("Message", str(e))
+            msg = aws_error_message(e)
             if "not enabled" in msg.lower() or "DataUnavailableException" in str(e):
                 return PreflightCheckResult(
                     name="AWS Cost Explorer",
