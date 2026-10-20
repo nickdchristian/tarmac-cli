@@ -11,12 +11,7 @@
       "prerelease": false,
       "include-component-in-tag": false,
       "extra-files": [
-        "src/tarmac/__init__.py",
-        {
-          "type": "toml",
-          "path": "uv.lock",
-          "jsonpath": "$.package[?(@.name=='tarmac-cli')].version"
-        }
+        "src/tarmac/__init__.py"
       ]
     }
   }
