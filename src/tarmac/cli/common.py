@@ -7,6 +7,7 @@ from typing import Any
 import typer
 
 from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_configs
+from ..core.tagging import parse_cli_tags
 from .ui import error_console
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,6 @@ def get_active_account_id_map(session_mgr: Any) -> dict[str, str]:
 
 def parse_tags_or_exit(tags: list[str] | None) -> dict[str, str]:
     """Parse Key=Value CLI tags, exiting with code 1 on validation error."""
-    from ..core.tagging import parse_cli_tags
 
     try:
         return parse_cli_tags(tags)
