@@ -100,6 +100,18 @@ class BaselineService:
                 return VpcCleanupReport(region=region, skipped=True, message="No default VPC found.")
 
             vpc_id = str(vpcs[0]["VpcId"])
+            in_use = ec2.describe_network_interfaces(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}], MaxResults=5
+            ).get("NetworkInterfaces", [])
+            if in_use:
+                logger.warning(
+                    "[%s] Default VPC %s has network interfaces in use; leaving it intact", region, vpc_id
+                )
+                return VpcCleanupReport(
+                    region=region,
+                    skipped=True,
+                    message=f"Default VPC {vpc_id} is in use (network interfaces attached); not deleted.",
+                )
             if dry_run:
                 logger.info("[DRY-RUN] [%s] Would delete default VPC: %s", region, vpc_id)
                 return VpcCleanupReport(
