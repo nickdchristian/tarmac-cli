@@ -95,7 +95,8 @@ class OrganizationService:
         updated = []
 
         for contact_type, contact_data in contact_map.items():
-            if self._contact_already_set(contact_type, contact_data):
+            previous = self._current_contact(contact_type)
+            if self._contact_matches(previous, contact_data):
                 audit(
                     "update",
                     f"alternate-contact:{contact_type}",
@@ -118,6 +119,7 @@ class OrganizationService:
                     Outcome.SUCCEEDED,
                     f"Set {contact_type} alternate contact on the management account to {contact_data.email}",
                     contact_type=contact_type,
+                    replaced_existing=previous is not None,
                 )
                 updated.append(contact_type)
             except ClientError as e:
@@ -135,14 +137,18 @@ class OrganizationService:
 
         return updated
 
-    def _contact_already_set(self, contact_type: str, desired: Any) -> bool:
-        """True when the management account already has this exact alternate contact."""
+    def _current_contact(self, contact_type: str) -> dict[str, Any] | None:
+        """The alternate contact now set on the management account, or None (not set, or not readable)."""
         try:
             response = self.account_client.get_alternate_contact(AlternateContactType=contact_type)
-        except (ClientError, BotoCoreError):  # not set yet, or not readable: just write it
-            return False
+        except (ClientError, BotoCoreError):
+            return None
         current = response.get("AlternateContact") if isinstance(response, dict) else None
-        if not isinstance(current, dict):
+        return current if isinstance(current, dict) else None
+
+    @staticmethod
+    def _contact_matches(current: dict[str, Any] | None, desired: Any) -> bool:
+        if current is None:
             return False
         wanted = {
             "Name": desired.name,
@@ -151,6 +157,10 @@ class OrganizationService:
             "PhoneNumber": desired.phone,
         }
         return all(str(current.get(key, "")).strip() == str(value).strip() for key, value in wanted.items())
+
+    def _contact_already_set(self, contact_type: str, desired: Any) -> bool:
+        """True when the management account already has this exact alternate contact."""
+        return self._contact_matches(self._current_contact(contact_type), desired)
 
     def _enabled_service_principals(self) -> set[str]:
         """Service principals that already have trusted access (empty when it cannot be read)."""

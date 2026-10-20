@@ -4,6 +4,8 @@ import logging
 from enum import StrEnum
 from typing import Any
 
+from . import inventory
+
 logger = logging.getLogger("tarmac.audit")
 
 
@@ -48,3 +50,10 @@ def audit(
             },
         },
     )
+
+    recorder = inventory.active()
+    if recorder is not None:
+        try:
+            recorder.observe(action, resource, outcome.value, dry_run, details)
+        except Exception:
+            logger.debug("Could not update the inventory", exc_info=True)

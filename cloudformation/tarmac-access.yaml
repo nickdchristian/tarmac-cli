@@ -82,6 +82,7 @@ Resources:
             Action:
               - organizations:CreateOrganization
               - organizations:CreateOrganizationalUnit
+              - organizations:DeleteOrganizationalUnit
               - organizations:CreateAccount
               - organizations:CloseAccount
               - organizations:MoveAccount
@@ -92,6 +93,7 @@ Resources:
               - organizations:DetachPolicy
               - organizations:EnablePolicyType
               - organizations:EnableAWSServiceAccess
+              - organizations:DisableAWSServiceAccess
               - organizations:RegisterDelegatedAdministrator
               - organizations:DeregisterDelegatedAdministrator
               - organizations:TagResource
@@ -150,6 +152,7 @@ Resources:
               - ce:*
               - account:GetAlternateContact
               - account:PutAlternateContact
+              - account:DeleteAlternateContact
               - support:DescribeSeverityLevels
               - servicequotas:GetServiceQuota
               - servicequotas:ListServiceQuotas
@@ -167,6 +170,8 @@ Resources:
               - iam:ListOrganizationsFeatures
               - iam:EnableOrganizationsRootCredentialsManagement
               - iam:EnableOrganizationsRootSessions
+              - iam:DisableOrganizationsRootCredentialsManagement
+              - iam:DisableOrganizationsRootSessions
             Resource: '*'
           - Sid: ServiceLinkedRoles
             Effect: Allow

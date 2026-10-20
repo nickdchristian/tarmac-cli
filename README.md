@@ -226,7 +226,7 @@ tarmac deploy run --phase 4   # Run only Account Factory provisioning
 | **`tarmac status`** | Inspect live landing zone reconciliation and phase completion status. |
 | **`tarmac drift`** | Audit IAM Identity Center permission sets and member account budget drift. |
 | **`tarmac import`** | Read an existing organization (read-only) and write matching configuration files. |
-| **`tarmac deploy destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). |
+| **`tarmac deploy destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the access role. |
 
 <details>
 <summary><strong>Granular Service Commands</strong></summary>
@@ -339,10 +339,43 @@ sets, milestone tags) so `tarmac deploy run` can rebuild it. It deliberately **k
   the delegated administrators, deletes the GuardDuty detectors and disables Security Hub in the audit,
   management and declared member accounts). **This deletes finding history**, so it is opt-in. Failures per
   account/region are reported, and a failed step makes the command exit non-zero;
-* IAM Identity Center users and groups (always kept; remove them in the console or your identity provider).
+* IAM Identity Center users and groups, OUs, organization settings and the access role (kept unless you pass
+  `--everything`, below).
 
 The log-archive KMS key is scheduled for deletion (30-day window, cancel with `aws kms cancel-key-deletion`)
 once its buckets have been purged and deleted; if any log-archive cleanup failed the key is kept.
+
+### Removing everything tarmac did
+
+```bash
+tarmac deploy destroy --everything --dry-run     # preview
+tarmac deploy destroy --everything               # asks you to type the organization name
+```
+
+On top of a normal destroy, `--everything` removes, in dependency order: the Identity Center users and groups
+tarmac created (and their assignments), the OUs tarmac created (only when empty), the organization settings tarmac
+enabled (delegated administrators, root credentials management and root sessions, trusted service access,
+alternate contacts, cost-allocation-tag activation), the milestone tags, and finally the `tarmac-access` stack
+(`TarmacDeploymentRole`) and the `tarmac-bootstrap` IAM user with its keys and MFA device.
+
+What counts as "created by tarmac" is decided by evidence, never by name:
+
+* Stacks, SCPs, permission sets and accounts carry the `tarmac:managed-by=tarmac` tag.
+* OUs, users, groups and organization settings cannot be tagged, so tarmac records each one in
+  `<config dir>/.tarmac/inventory.json` the moment it changes it. Things that already existed (an event logged
+  as "unchanged") are never recorded and therefore never removed. `tarmac deploy inventory` shows the record.
+* For a deployment that predates the inventory, rebuild it from a run log:
+  `tarmac deploy destroy --everything --inventory-from-log "$TARMAC_LOG_FILE"` (or
+  `tarmac deploy inventory --from-log FILE` to inspect it first).
+
+**Member accounts are never closed by this command.** It lists the accounts tarmac manages with the exact
+`tarmac account suspend NAME --close` command for each. An alternate contact that replaced one which already existed is
+left in place (tarmac cannot restore the old one), and the `tarmac-bootstrap` user is only deleted when it carries
+the `tarmac:managed-by=tarmac` tag. Disabling Identity Center trusted access is also left to you, because it can
+delete the Identity Center instance. If you run the teardown as `TarmacDeploymentRole`, the
+access stack's deletion is started but not awaited. The role cannot manage IAM users, so when the access stack
+contains a bootstrap user the stack is kept and the command tells you to remove the user as an administrator
+(for example your SSO admin) and run it again.
 
 If a teardown leaves a CloudFormation stack in `DELETE_FAILED` (for example a bucket that could not be emptied),
 fix the cause and re-run teardown or deploy: both now delete and recreate stacks stuck in `DELETE_FAILED`,

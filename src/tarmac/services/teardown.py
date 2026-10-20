@@ -8,8 +8,10 @@ from collections.abc import Callable, Sequence
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
+from ..core.inventory import Inventory
 from ..core.models import TeardownItemReport
 from .teardown_base import TeardownBase, TeardownReport
+from .teardown_everything import EverythingTeardown
 from .teardown_governance import GovernanceTeardown
 from .teardown_logging import LoggingTeardown
 from .teardown_s3 import cleanup_orphaned_bucket, empty_s3_bucket, is_s3_bucket_empty, normalize_bucket_name
@@ -30,7 +32,7 @@ __all__ = [
 ]
 
 
-class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown):
+class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown, EverythingTeardown):
     """Orchestrates comprehensive teardown of Tarmac governance resources."""
 
     def teardown_phase(
@@ -79,8 +81,13 @@ class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown):
         phases: Sequence[int] | None = None,
         preserve_backend: bool = False,
         disable_security_services: bool = False,
+        inventory: Inventory | None = None,
     ) -> TeardownReport:
-        """Tear down all deployment resources across all phases in safe dependency order."""
+        """Tear down all deployment resources across all phases in safe dependency order.
+
+        With an ``inventory`` the run is a full teardown: it also removes the Identity Center users and groups,
+        OUs and organization settings recorded as created by tarmac, then the access role. Accounts are kept.
+        """
         region = target_region or bundle.org.organization.primary_region
         accts = self._get_active_accounts()
         mgmt_id = self._get_management_account_id()
@@ -124,13 +131,29 @@ class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown):
             self._notify_phase("Phase 6 | IAM Identity Center Permission Sets")
             items.extend(self.teardown_identity(bundle, region, dry_run=dry_run))
 
+        if inventory is not None:
+            self._notify_phase("Identity Center users and groups created by tarmac")
+            items.extend(self.teardown_identity_principals(bundle, region, inventory, dry_run=dry_run))
+
         if 2 in phases_set:
             self._notify_phase("Phase 2 | Service Control Policies")
             items.extend(self.teardown_scps(bundle, dry_run=dry_run))
 
+        if inventory is not None:
+            self._notify_phase("Organizational Units created by tarmac")
+            items.extend(self.teardown_ous(inventory, dry_run=dry_run))
+            self._notify_phase("Phase 1 | Organization settings")
+            items.extend(self.teardown_org_settings(bundle, inventory, dry_run=dry_run))
+
         if phases is None and mgmt_id:
             self._notify_phase("Milestones | Resetting Deployment Tags")
             items.extend(self.reset_milestones(mgmt_id, dry_run=dry_run))
+
+        if inventory is not None:
+            self._notify_phase("Member accounts (kept)")
+            items.extend(self.report_accounts_kept(dry_run=dry_run))
+            self._notify_phase("Tarmac access role and bootstrap user")
+            items.extend(self.teardown_access(region, dry_run=dry_run))
 
         status = (
             "SIMULATED"
