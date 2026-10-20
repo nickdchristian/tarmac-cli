@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.7...v0.1.8) (2026-10-20)
+
+
+### Bug Fixes
+
+* **ci:** tolerate release runs that open no pull request ([#53](https://github.com/nickdchristian/tarmac-cli/issues/53)) ([1468092](https://github.com/nickdchristian/tarmac-cli/commit/14680921cd634ee8a9fe0fbf08c1a1905a7e269f))
+
 ## [0.1.7](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.6...v0.1.7) (2026-10-20)
 
 
