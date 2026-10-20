@@ -1359,3 +1359,47 @@ def test_status_service_handles_member_role_assumption_failure(sample_config_dir
 
     status = StatusService(mock_session_mgr).inspect(bundle, "eu-west-1")
     assert status.backend_status == "ACCESS_ERROR"
+
+
+def test_register_service_delegated_administrators_attempts_all_then_reports_failures():
+    from tarmac.core.exceptions import GovernanceError
+    from tarmac.services.organization import OrganizationService
+
+    mgr = MagicMock()
+    org = MagicMock()
+    mgr.get_client.return_value = org
+    org.register_delegated_administrator.side_effect = [
+        {},
+        ClientError(
+            {"Error": {"Code": "AccountAlreadyRegisteredException", "Message": "dup"}},
+            "RegisterDelegatedAdministrator",
+        ),
+        ClientError(
+            {"Error": {"Code": "ServiceException", "Message": "config trusted access is off"}},
+            "RegisterDelegatedAdministrator",
+        ),
+    ]
+    svc = OrganizationService(mgr)
+
+    with pytest.raises(GovernanceError, match="1 service") as exc:
+        svc.register_service_delegated_administrators(
+            "111122223333", ["a.amazonaws.com", "b.amazonaws.com", "c.amazonaws.com"]
+        )
+
+    assert org.register_delegated_administrator.call_count == 3
+    assert "c.amazonaws.com" in str(exc.value.details)
+    assert "config trusted access is off" in str(exc.value.details)
+
+
+def test_register_service_delegated_administrators_treats_already_registered_as_success():
+    from tarmac.services.organization import OrganizationService
+
+    mgr = MagicMock()
+    org = MagicMock()
+    mgr.get_client.return_value = org
+    org.register_delegated_administrator.side_effect = ClientError(
+        {"Error": {"Code": "AccountAlreadyRegisteredException", "Message": "dup"}},
+        "RegisterDelegatedAdministrator",
+    )
+
+    assert OrganizationService(mgr).register_service_delegated_administrators("1", ["a", "b"]) == ["a", "b"]

@@ -156,7 +156,7 @@ def test_teardown_log_archive(test_bundle):
     service = TeardownService(mock_session_mgr)
     reports = service.teardown_log_archive(test_bundle, "us-east-1", dry_run=False, account_id_map=acct_map)
 
-    deleted = [r for r in reports if r.action == "DELETED"]
+    deleted = [r for r in reports if r.action == "DELETED" and r.resource_type == "CloudFormation Stack"]
     assert len(deleted) == 1
     assert deleted[0].resource_name == f"{test_bundle.org.organization.name}-log-archive-hardening"
     mock_cfn.delete_stack.assert_called_once()

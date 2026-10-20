@@ -229,8 +229,13 @@ class OrganizationService:
     def register_service_delegated_administrators(
         self, account_id: str, service_principals: list[str]
     ) -> list[str]:
-        """Register an account as delegated administrator for the given AWS service principals."""
+        """Register an account as delegated administrator for the given AWS service principals.
+
+        Every principal is attempted. Raises GovernanceError listing the ones that failed (an
+        already-registered principal counts as success).
+        """
         registered: list[str] = []
+        failures: list[str] = []
         for sp in service_principals:
             try:
                 self.org_client.register_delegated_administrator(AccountId=account_id, ServicePrincipal=sp)
@@ -240,9 +245,15 @@ class OrganizationService:
                 if err_code == "AccountAlreadyRegisteredException":
                     registered.append(sp)
                 else:
-                    logger.debug("Delegated admin registration for %s: %s", sp, e)
-            except Exception as e:
-                logger.debug("Delegated admin registration for %s: %s", sp, e)
+                    msg = e.response.get("Error", {}).get("Message", str(e))
+                    logger.warning("Delegated admin registration for %s failed: [%s] %s", sp, err_code, msg)
+                    failures.append(f"{sp}: [{err_code}] {msg}")
+        if failures:
+            raise GovernanceError(
+                f"Could not register account {account_id} as delegated administrator for "
+                f"{len(failures)} service(s).",
+                details="\n".join(failures),
+            )
         return registered
 
     def get_completed_phases(self, mgmt_account_id: str) -> set[str]:

@@ -278,3 +278,118 @@ def test_guardduty_and_securityhub_report_failed_when_all_regions_fail():
     )
     assert sh_report.status == "FAILED"
     assert sh_report.regions == []
+
+
+# --- per-region failures must be visible, never averaged into success ---------------------------
+
+
+def _ce(code: str, msg: str = "boom") -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": msg}}, "Op")
+
+
+def _gd_service(fail_regions: dict[str, ClientError]) -> SecurityServicesService:
+    mgr = MagicMock()
+    mgr.get_client.return_value.list_organization_admin_accounts.return_value = {
+        "AdminAccounts": [{"AdminAccountId": "111122223333", "AdminStatus": "ENABLED"}]
+    }
+
+    def member_client(acct: str, svc: str, region_name: str | None = None, **kw):
+        gd = MagicMock()
+        if region_name in fail_regions:
+            gd.list_detectors.side_effect = fail_regions[region_name]
+        else:
+            gd.list_detectors.return_value = {"DetectorIds": ["d1"]}
+        return gd
+
+    mgr.get_member_client.side_effect = member_client
+    return SecurityServicesService(mgr)
+
+
+def test_guardduty_all_regions_ok_is_enabled():
+    report = _gd_service({}).configure_guardduty(
+        "111122223333", "us-east-1", ["us-east-1", "eu-west-1"], GuardDutyConfig(enabled=True)
+    )
+    assert report.status == "ENABLED"
+    assert report.regions == ["us-east-1", "eu-west-1"]
+
+
+def test_guardduty_partial_region_failure_is_reported_as_failed():
+    service = _gd_service({"eu-west-1": _ce("AccessDeniedException", "no perms in eu-west-1")})
+
+    report = service.configure_guardduty(
+        "111122223333", "us-east-1", ["us-east-1", "eu-west-1"], GuardDutyConfig(enabled=True)
+    )
+
+    assert report.status == "FAILED"
+    assert report.regions == ["us-east-1"]
+    assert "eu-west-1" in report.message
+    assert "no perms in eu-west-1" in report.message
+
+
+def _sh_service(
+    *,
+    fail_update: bool = False,
+    standards: list[dict] | None = None,
+    aggregator_error: ClientError | None = None,
+) -> SecurityServicesService:
+    mgr = MagicMock()
+    mgr.get_client.return_value.list_organization_admin_accounts.return_value = {
+        "AdminAccounts": [{"AccountId": "111122223333", "Status": "ENABLED"}]
+    }
+    sh = MagicMock()
+    sh.describe_hub.return_value = {}
+    sh.describe_standards.return_value = {
+        "Standards": standards
+        or [
+            {
+                "StandardsArn": "arn:aws:securityhub:::standards/aws-foundational-security-best-practices/v/1.0.0",
+                "Name": "AWS Foundational Security Best Practices v1.0.0",
+            }
+        ]
+    }
+    sh.get_enabled_standards.return_value = {"StandardsSubscriptions": []}
+    if fail_update:
+        sh.update_organization_configuration.side_effect = _ce(
+            "AccessDeniedException", "cannot set auto-enable"
+        )
+    if aggregator_error:
+        sh.list_finding_aggregators.side_effect = aggregator_error
+    else:
+        sh.list_finding_aggregators.return_value = {"FindingAggregators": [{"x": 1}]}
+    mgr.get_member_client.return_value = sh
+    return SecurityServicesService(mgr)
+
+
+def test_securityhub_success_is_enabled():
+    report = _sh_service().configure_securityhub(
+        "111122223333", "us-east-1", ["us-east-1"], SecurityHubConfig(enabled=True)
+    )
+    assert report.status == "ENABLED"
+
+
+def test_securityhub_auto_enable_failure_fails_the_region():
+    report = _sh_service(fail_update=True).configure_securityhub(
+        "111122223333", "us-east-1", ["us-east-1"], SecurityHubConfig(enabled=True)
+    )
+    assert report.status == "FAILED"
+    assert "cannot set auto-enable" in report.message
+
+
+def test_securityhub_unknown_standard_is_a_failure_not_a_silent_noop():
+    report = _sh_service().configure_securityhub(
+        "111122223333",
+        "us-east-1",
+        ["us-east-1"],
+        SecurityHubConfig(enabled=True, standards=["cis-typo-benchmark"]),
+    )
+    assert report.status == "FAILED"
+    assert "Unknown Security Hub standard 'cis-typo-benchmark'" in report.message
+
+
+def test_securityhub_finding_aggregator_failure_is_reported():
+    report = _sh_service(
+        aggregator_error=_ce("AccessDeniedException", "no aggregator perms")
+    ).configure_securityhub("111122223333", "us-east-1", ["us-east-1"], SecurityHubConfig(enabled=True))
+    assert report.status == "FAILED"
+    assert "finding aggregator" in report.message
+    assert "no aggregator perms" in report.message

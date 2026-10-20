@@ -325,6 +325,25 @@ _TEARDOWN_ACTION_STYLES = {
 }
 
 
+_TEARDOWN_RETAINED = (
+    "Organizational Units and member accounts (use `tarmac account suspend --close` per account; "
+    "AWS reserves a closed account's email, so reuse needs a new email)",
+    "GuardDuty / Security Hub / AWS Config delegation and member detectors "
+    "(pass --disable-security-services to remove them; this deletes findings)",
+    "IAM Identity Center users and groups (permission sets and their assignments are removed)",
+    "Trusted service access and cost-allocation-tag activation in AWS Organizations",
+)
+
+
+def _print_teardown_retained_notice(security_disabled: bool = False) -> None:
+    """Tell the user what a full teardown intentionally does not remove, so 'start over' is predictable."""
+    print_info("Not removed by teardown (a redeploy reuses or reconciles these):")
+    for line in _TEARDOWN_RETAINED:
+        if security_disabled and "GuardDuty" in line:
+            continue
+        console.print(f"  [dim]• {escape(line)}[/dim]")
+
+
 def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None:
     """Refuse to tear down an organization tagged as production unless --force is given."""
     is_prod = _is_production_tagged(bundle.get_organization_tags()) or _is_production_tagged(
@@ -392,6 +411,7 @@ def _execute_teardown(
     json_output: bool,
     force: bool = False,
     preserve_backend: bool = False,
+    disable_security_services: bool = False,
 ) -> None:
     _validate_phase(phase, range(2, 7))
     _require_yes_for_json(dry_run, yes, json_output)
@@ -402,7 +422,13 @@ def _execute_teardown(
     if not (dry_run or yes):
         confirm = typer.confirm(
             "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
-            "remove AWS Budgets, and detach SCPs. Continue?",
+            "remove AWS Budgets, and detach SCPs"
+            + (
+                ", and DISABLE GuardDuty/Security Hub/Config delegation (finding history is deleted)"
+                if disable_security_services
+                else ""
+            )
+            + ". Continue?",
             default=False,
         )
         if not confirm:
@@ -442,6 +468,7 @@ def _execute_teardown(
         dry_run=dry_run,
         phases=phases,
         preserve_backend=preserve_backend,
+        disable_security_services=disable_security_services,
     )
 
     if not json_output:
@@ -480,6 +507,8 @@ def _execute_teardown(
         print_info("Teardown dry-run simulation complete.")
     else:
         print_success(f"Teardown complete: {report.deleted_count} resource(s) removed.")
+        if phase is None:
+            _print_teardown_retained_notice(security_disabled=disable_security_services)
 
 
 @app.command("teardown")
@@ -493,10 +522,28 @@ def teardown_pipeline(
     preserve_backend: bool = typer.Option(
         False, "--preserve-backend", help="Preserve Terraform backend state bucket and lock table"
     ),
+    disable_security_services: bool = typer.Option(
+        False,
+        "--disable-security-services",
+        help=(
+            "Also disable GuardDuty/Security Hub/Config delegation tarmac set up (runs with Phase 5). "
+            "Deletes finding history."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Tear down and delete deployed resources across phases."""
-    _execute_teardown(phase, config_dir, region, dry_run, yes, json_output, force, preserve_backend)
+    _execute_teardown(
+        phase,
+        config_dir,
+        region,
+        dry_run,
+        yes,
+        json_output,
+        force,
+        preserve_backend,
+        disable_security_services,
+    )
 
 
 @app.command("destroy")
@@ -510,7 +557,25 @@ def destroy_pipeline(
     preserve_backend: bool = typer.Option(
         False, "--preserve-backend", help="Preserve Terraform backend state bucket and lock table"
     ),
+    disable_security_services: bool = typer.Option(
+        False,
+        "--disable-security-services",
+        help=(
+            "Also disable GuardDuty/Security Hub/Config delegation tarmac set up (runs with Phase 5). "
+            "Deletes finding history."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Alias for 'tarmac deploy teardown': delete all deployment resources."""
-    _execute_teardown(phase, config_dir, region, dry_run, yes, json_output, force, preserve_backend)
+    _execute_teardown(
+        phase,
+        config_dir,
+        region,
+        dry_run,
+        yes,
+        json_output,
+        force,
+        preserve_backend,
+        disable_security_services,
+    )

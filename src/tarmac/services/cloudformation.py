@@ -16,6 +16,12 @@ from ..core.tagging import merge_tags, to_cfn_tags
 logger = logging.getLogger(__name__)
 
 
+# Stacks in these states can never be updated in place; they must be deleted and recreated.
+UNUSABLE_STACK_STATES = frozenset(
+    {"ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS", "CREATE_FAILED", "DELETE_FAILED"}
+)
+
+
 class CloudFormationService:
     """Deploys and manages foundational CloudFormation stacks with robust waiters and output retrieval."""
 
@@ -60,7 +66,7 @@ class CloudFormationService:
         cfn_tags = to_cfn_tags(resolved_tags)
 
         stack_status = self._get_stack_status(cfn_client, stack_name)
-        if stack_status in ("ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS"):
+        if stack_status in UNUSABLE_STACK_STATES:
             logger.warning(
                 "Stack '%s' is in %s state and cannot be updated. Deleting broken/unexecuted stack...",
                 stack_name,
@@ -108,7 +114,7 @@ class CloudFormationService:
         change_set_name = f"import-{int(time.time())}"
 
         stack_status = self._get_stack_status(cfn_client, stack_name)
-        if stack_status in ("ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS"):
+        if stack_status in UNUSABLE_STACK_STATES:
             logger.warning(
                 "Stack '%s' is in %s state. Deleting broken/unexecuted stack before import...",
                 stack_name,
@@ -191,7 +197,7 @@ class CloudFormationService:
             return None
 
     def _delete_broken_stack(self, cfn_client: Any, stack_name: str) -> None:
-        """Delete a stack in ROLLBACK_COMPLETE or REVIEW_IN_PROGRESS state before recreating it."""
+        """Delete a stack in an unusable state (e.g. ROLLBACK_COMPLETE, DELETE_FAILED) before recreating it."""
         try:
             logger.info("Deleting broken stack '%s'...", stack_name)
             cfn_client.delete_stack(StackName=stack_name)
@@ -200,7 +206,7 @@ class CloudFormationService:
             logger.info("Successfully deleted broken stack '%s'.", stack_name)
         except (ClientError, WaiterError) as e:
             raise DeploymentError(
-                f"Failed to delete broken stack '{stack_name}' in ROLLBACK_COMPLETE state",
+                f"Failed to delete broken stack '{stack_name}'",
                 details=str(e),
             ) from e
 

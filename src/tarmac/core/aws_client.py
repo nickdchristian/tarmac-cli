@@ -84,11 +84,7 @@ class AwsSessionManager:
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
         logger.debug("Assuming cross-account role: %s", role_arn)
         try:
-            response = self._sts_client.assume_role(
-                RoleArn=role_arn,
-                RoleSessionName=session_name,
-                DurationSeconds=3600,
-            )
+            response = self._assume_role_with_propagation_retry(role_arn, session_name)
             creds = response["Credentials"]
             assumed_session = boto3.Session(
                 aws_access_key_id=creds["AccessKeyId"],
@@ -109,6 +105,29 @@ class AwsSessionManager:
                 f"Failed to assume role '{role_arn}' in target account {account_id}.",
                 details=msg,
             ) from e
+
+    # OrganizationAccountAccessRole is created asynchronously after CreateAccount reports SUCCEEDED, so
+    # the first AssumeRole into a brand-new account commonly fails with AccessDenied for a short while.
+    ASSUME_ROLE_RETRY_SECONDS: float = 120.0
+    ASSUME_ROLE_RETRY_DELAY: float = 5.0
+
+    def _assume_role_with_propagation_retry(self, role_arn: str, session_name: str) -> dict[str, Any]:
+        deadline = time.monotonic() + self.ASSUME_ROLE_RETRY_SECONDS
+        while True:
+            try:
+                return self._sts_client.assume_role(
+                    RoleArn=role_arn, RoleSessionName=session_name, DurationSeconds=3600
+                )
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                if code != "AccessDenied" or time.monotonic() + self.ASSUME_ROLE_RETRY_DELAY > deadline:
+                    raise
+                logger.info(
+                    "AssumeRole into %s denied (role may still be propagating); retrying in %.0fs...",
+                    role_arn,
+                    self.ASSUME_ROLE_RETRY_DELAY,
+                )
+                time.sleep(self.ASSUME_ROLE_RETRY_DELAY)
 
     def get_member_client(
         self,

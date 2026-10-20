@@ -68,6 +68,19 @@ tarmac deploy run --dry-run
 tarmac deploy run
 ```
 
+### Starting from a brand-new AWS account
+
+Tarmac runs as the **management account** of the organization it creates. A fresh account needs a few
+one-time manual steps that AWS does not allow to be automated:
+
+1. Sign in as the root user, enable **MFA**, and add a payment method (`tarmac preflight` checks this).
+2. Create an admin identity (an IAM Identity Center user, or a temporary admin role) and configure AWS credentials for it.
+3. Run `tarmac deploy run --phase 1` (or `tarmac org bootstrap`) to create the organization.
+4. Enable **IAM Identity Center** once in the AWS console (it requires an existing organization). Phase 6 fails without it.
+5. Run `tarmac deploy run` for the remaining phases. Phases are idempotent, so a failed run can simply be repeated.
+
+Each member account needs a **unique email address**; AWS never lets a closed account's email be reused.
+
 ---
 
 ## Deployment Pipeline
@@ -133,7 +146,8 @@ For targeted management outside the end-to-end pipeline:
 ## Safe Teardown
 
 Tarmac includes built-in safeguards to prevent accidental infrastructure or state loss:
-* **Production Environment Lock**: Refuses to destroy any environment tagged with `production` or `prod` unless `--force` is explicitly provided.
+* **Production Environment Lock**: Refuses to destroy any environment whose `Environment`/`Env`/`Stage` tag is `production`, `prod` or `prd` unless `--force` is explicitly provided.
+* **Ownership checks**: SCPs, the standalone CloudTrail trail and Identity Center permission sets that tarmac did not create (no `tarmac:managed-by=tarmac` tag) are skipped, not deleted.
 * **Remote State Preservation**: Pass `--preserve-backend` to destroy infrastructure while protecting remote Terraform state buckets and lock tables.
 * **Non-Empty Bucket Protection**: Halts if unmanaged data exists in S3 buckets unless explicitly confirmed.
 
@@ -144,6 +158,30 @@ tarmac deploy destroy --dry-run
 # Execute teardown preserving Terraform state
 tarmac deploy destroy --preserve-backend
 ```
+
+### Starting over
+
+A full `tarmac deploy destroy` removes everything tarmac deployed (stacks, buckets, budgets, SCPs, permission
+sets, milestone tags) so `tarmac deploy run` can rebuild it. It deliberately **keeps**:
+
+* the organization, **OUs and member accounts** (closing an account is irreversible and AWS reserves its email, so
+  use `tarmac account suspend --close` per account and declare a new email if you want a truly fresh account);
+* GuardDuty / Security Hub / AWS Config delegation and member detectors, which keep billing until disabled.
+  Pass `--disable-security-services` to turn them off as part of Phase 5 (it turns off auto-enable, deregisters
+  the delegated administrators, deletes the GuardDuty detectors and disables Security Hub in the audit,
+  management and declared member accounts). **This deletes finding history**, so it is opt-in. Failures per
+  account/region are reported, and a failed step makes the command exit non-zero;
+* IAM Identity Center users and groups (always kept; remove them in the console or your identity provider).
+
+The log-archive KMS key is scheduled for deletion (30-day window, cancel with `aws kms cancel-key-deletion`)
+once its buckets have been purged and deleted; if any log-archive cleanup failed the key is kept.
+
+If a teardown leaves a CloudFormation stack in `DELETE_FAILED` (for example a bucket that could not be emptied),
+fix the cause and re-run teardown or deploy: both now delete and recreate stacks stuck in `DELETE_FAILED`,
+`CREATE_FAILED` or `ROLLBACK_COMPLETE`.
+
+> Templates exported with `tarmac init --with-templates` take precedence over the ones bundled with the CLI.
+> After upgrading tarmac, delete or diff your local `cloudformation/` and `policies/` copies against the bundled ones to pick up fixes. (Do not use `tarmac init --force` for this: it also overwrites your YAML configuration.)
 
 ---
 

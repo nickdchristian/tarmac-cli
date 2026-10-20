@@ -190,3 +190,15 @@ class SecurityServiceReport:
     status: str
     regions: list[str] = field(default_factory=list)
     message: str = ""
+
+
+@dataclass
+class TeardownItemReport:
+    """Status of a single torn-down resource."""
+
+    resource_type: str
+    resource_name: str
+    account_name: str
+    account_id: str
+    action: str  # DELETED, EMPTY, NOT_FOUND, SKIPPED, FAILED, SIMULATED
+    message: str = ""

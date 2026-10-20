@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GuardDutyConfig, SecurityHubConfig, SecurityServicesConfig
+from ..core.exceptions import GovernanceError
 from ..core.models import SecurityServiceReport
 
 logger = logging.getLogger(__name__)
@@ -104,21 +105,32 @@ class SecurityServicesService:
             )
 
         configured_regions: list[str] = []
+        failed_regions: dict[str, str] = {}
         for reg in all_regions:
             try:
                 self._configure_guardduty_region(audit_id, reg, config)
                 configured_regions.append(reg)
             except ClientError as e:
                 logger.warning("Could not configure GuardDuty in region %s: %s", reg, e)
+                failed_regions[reg] = str(e)
 
-        status = "ENABLED" if configured_regions or not all_regions else "FAILED"
         return SecurityServiceReport(
             service_name="GuardDuty",
             delegated_account=audit_id,
-            status=status,
+            status="FAILED" if failed_regions else "ENABLED",
             regions=configured_regions,
-            message=f"Delegated to {audit_id} with auto-enable in {len(configured_regions)} region(s)",
+            message=self._region_message(
+                f"Delegated to {audit_id} with auto-enable", configured_regions, failed_regions
+            ),
         )
+
+    @staticmethod
+    def _region_message(prefix: str, configured: list[str], failed: dict[str, str]) -> str:
+        """Summarize per-region results; any failed region must be visible, never averaged away."""
+        if not failed:
+            return f"{prefix} in {len(configured)} region(s)"
+        details = "; ".join(f"{region}: {reason}" for region, reason in failed.items())
+        return f"{prefix} configured in {len(configured)} region(s) but FAILED in {len(failed)}: {details}"
 
     def _ensure_guardduty_admin(self, audit_id: str, primary_region: str) -> None:
         """Enable GuardDuty organization admin in the Management Account if not already registered."""
@@ -181,12 +193,14 @@ class SecurityServicesService:
             )
 
         configured_regions: list[str] = []
+        failed_regions: dict[str, str] = {}
         for reg in all_regions:
             try:
                 self._configure_securityhub_region(audit_id, reg, config)
                 configured_regions.append(reg)
-            except ClientError as e:
+            except (ClientError, GovernanceError) as e:
                 logger.warning("Could not configure Security Hub in region %s: %s", reg, e)
+                failed_regions[reg] = str(e)
 
         try:
             sh_primary = self.session_mgr.get_member_client(
@@ -195,14 +209,18 @@ class SecurityServicesService:
             self._ensure_finding_aggregator(sh_primary)
         except ClientError as e:
             logger.warning("Could not setup Security Hub finding aggregator in %s: %s", primary_region, e)
+            failed_regions[f"{primary_region} (finding aggregator)"] = str(e)
 
-        status = "ENABLED" if configured_regions or not all_regions else "FAILED"
         return SecurityServiceReport(
             service_name="SecurityHub",
             delegated_account=audit_id,
-            status=status,
+            status="FAILED" if failed_regions else "ENABLED",
             regions=configured_regions,
-            message=f"Delegated to {audit_id} with standards {config.standards} in {len(configured_regions)} region(s)",
+            message=self._region_message(
+                f"Delegated to {audit_id} with standards {config.standards}",
+                configured_regions,
+                failed_regions,
+            ),
         )
 
     def _ensure_securityhub_admin(self, audit_id: str, primary_region: str) -> None:
@@ -232,41 +250,44 @@ class SecurityServicesService:
         self._ensure_standards(sh_audit, config.standards)
 
         if config.auto_enable_members:
-            try:
-                sh_audit.update_organization_configuration(AutoEnable=True, AutoEnableStandards="NONE")
-            except ClientError as e:
-                logger.warning("Could not set Security Hub auto-enable in %s: %s", region, e)
+            sh_audit.update_organization_configuration(AutoEnable=True, AutoEnableStandards="NONE")
 
     def _ensure_standards(self, sh_client: Any, desired_standards: list[str]) -> None:
-        """Ensure declared compliance standards (e.g. FSBP) are subscribed."""
-        try:
-            available = sh_client.describe_standards().get("Standards", [])
-            enabled_resp = sh_client.get_enabled_standards().get("StandardsSubscriptions", [])
-            enabled_arns = {s.get("StandardsArn") for s in enabled_resp}
+        """Ensure declared compliance standards (e.g. FSBP) are subscribed.
 
-            for desired in desired_standards:
-                norm_desired = desired.lower().replace("_", "-")
-                matching_arn: str | None = None
-                for std in available:
-                    std_arn = str(std.get("StandardsArn", ""))
-                    std_name = str(std.get("Name", "")).lower()
-                    if norm_desired in std_arn.lower() or norm_desired in std_name:
-                        matching_arn = std_arn
-                        break
-                if matching_arn and matching_arn not in enabled_arns:
-                    sh_client.batch_enable_standards(
-                        StandardsSubscriptionRequests=[{"StandardsArn": matching_arn}]
-                    )
-                    logger.info("Enabled Security Hub standard: %s", matching_arn)
-        except ClientError as e:
-            logger.warning("Could not reconcile Security Hub standards: %s", e)
+        Raises ClientError if AWS rejects a call and GovernanceError if a declared standard does not
+        exist, so the region is reported as failed instead of silently lacking its standards.
+        """
+        available = sh_client.describe_standards().get("Standards", [])
+        enabled_resp = sh_client.get_enabled_standards().get("StandardsSubscriptions", [])
+        enabled_arns = {s.get("StandardsArn") for s in enabled_resp}
+
+        for desired in desired_standards:
+            norm_desired = desired.lower().replace("_", "-")
+            matching_arn: str | None = None
+            for std in available:
+                std_arn = str(std.get("StandardsArn", ""))
+                std_name = str(std.get("Name", "")).lower()
+                if norm_desired in std_arn.lower() or norm_desired in std_name:
+                    matching_arn = std_arn
+                    break
+            if matching_arn is None:
+                raise GovernanceError(
+                    f"Unknown Security Hub standard '{desired}'.",
+                    details="Check security_services.securityhub.standards in organization.yaml.",
+                )
+            if matching_arn not in enabled_arns:
+                sh_client.batch_enable_standards(
+                    StandardsSubscriptionRequests=[{"StandardsArn": matching_arn}]
+                )
+                logger.info("Enabled Security Hub standard: %s", matching_arn)
 
     def _ensure_finding_aggregator(self, sh_client: Any) -> None:
-        """Ensure a Finding Aggregator is created in the primary region linking all member regions."""
-        try:
-            aggregators = sh_client.list_finding_aggregators().get("FindingAggregators", [])
-            if not aggregators:
-                sh_client.create_finding_aggregator(RegionLinkingMode="ALL_REGIONS")
-                logger.info("Created Security Hub Finding Aggregator linking ALL_REGIONS.")
-        except ClientError as e:
-            logger.warning("Could not create Security Hub finding aggregator: %s", e)
+        """Ensure a Finding Aggregator exists in the primary region linking all member regions.
+
+        ClientError propagates so the caller can report the Security Hub setup as incomplete.
+        """
+        aggregators = sh_client.list_finding_aggregators().get("FindingAggregators", [])
+        if not aggregators:
+            sh_client.create_finding_aggregator(RegionLinkingMode="ALL_REGIONS")
+            logger.info("Created Security Hub Finding Aggregator linking ALL_REGIONS.")

@@ -21,24 +21,13 @@ from botocore.exceptions import BotoCoreError, ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import GovernanceError
-from ..core.models import TAG_MANAGED_BY
+from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from .cloudformation import CloudFormationService
 from .identity import IdentityService
 from .scp import SCPService
+from .teardown_security import SecurityServicesTeardown
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class TeardownItemReport:
-    """Status of a single torn-down resource."""
-
-    resource_type: str
-    resource_name: str
-    account_name: str
-    account_id: str
-    action: str  # DELETED, EMPTY, NOT_FOUND, SKIPPED, FAILED, SIMULATED
-    message: str = ""
 
 
 class _ReportingList(list[TeardownItemReport]):
@@ -525,6 +514,7 @@ class TeardownService:
                 f"{bundle.org.organization.name}-org-cloudtrail-logs-{log_acct_id}",
                 f"{bundle.org.organization.name}-log-archive-access-logs-{log_acct_id}",
             }
+            key_id = self._log_archive_key_id(cfn_client, stack_name) if status else None
             if status:
                 outputs = self.cfn_service._fetch_stack_outputs(cfn_client, stack_name)
                 for k, v in outputs.items():
@@ -618,6 +608,18 @@ class TeardownService:
                 for b in sorted(buckets_to_empty):
                     results.extend(self._delete_retained_bucket(s3_client, b, log_acct_name, log_acct_id))
 
+            if key_id:
+                results.extend(
+                    self._schedule_log_key_deletion(
+                        log_acct_id,
+                        log_acct_name,
+                        key_id,
+                        target_region,
+                        dry_run,
+                        any_failed=any(r.action == "FAILED" for r in results),
+                    )
+                )
+
         except Exception as e:
             results.append(
                 TeardownItemReport(
@@ -631,6 +633,76 @@ class TeardownService:
             )
 
         return results
+
+    @staticmethod
+    def _log_archive_key_id(cfn_client: Any, stack_name: str) -> str | None:
+        """Physical ID of the log-archive KMS key (it is retained when the stack is deleted)."""
+        try:
+            detail = cfn_client.describe_stack_resource(
+                StackName=stack_name, LogicalResourceId="LogArchiveKmsKey"
+            )
+            return str(detail["StackResourceDetail"].get("PhysicalResourceId") or "") or None
+        except (ClientError, KeyError):
+            return None
+
+    def _schedule_log_key_deletion(
+        self,
+        account_id: str,
+        account_name: str,
+        key_id: str,
+        region: str,
+        dry_run: bool,
+        any_failed: bool,
+    ) -> list[TeardownItemReport]:
+        """Schedule the retained log-archive key for deletion (30-day window, cancellable).
+
+        Only done when the log buckets were purged and deleted cleanly, because the key is what makes
+        any remaining archived logs readable.
+        """
+        name = f"KMS key {key_id}"
+        if any_failed:
+            return [
+                TeardownItemReport(
+                    "KMS Key",
+                    name,
+                    account_name,
+                    account_id,
+                    "SKIPPED",
+                    "Kept: log archive cleanup had failures, so archived logs may still need this key",
+                )
+            ]
+        if dry_run:
+            return [
+                TeardownItemReport(
+                    "KMS Key",
+                    name,
+                    account_name,
+                    account_id,
+                    "SIMULATED",
+                    "Would schedule deletion in 30 days (cancellable)",
+                )
+            ]
+        try:
+            kms = self.session_mgr.get_member_client(account_id, "kms", region_name=region)
+            if kms.describe_key(KeyId=key_id)["KeyMetadata"].get("KeyState") == "PendingDeletion":
+                return []
+            kms.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=30)
+        except ClientError as e:
+            return [
+                TeardownItemReport(
+                    "KMS Key", name, account_name, account_id, "FAILED", f"Could not schedule deletion: {e}"
+                )
+            ]
+        return [
+            TeardownItemReport(
+                "KMS Key",
+                name,
+                account_name,
+                account_id,
+                "DELETED",
+                "Scheduled for deletion in 30 days (cancel with `aws kms cancel-key-deletion`)",
+            )
+        ]
 
     def teardown_budgets(
         self,
@@ -1268,6 +1340,22 @@ class TeardownService:
 
         return results
 
+    def teardown_security_services(
+        self,
+        bundle: ConfigBundle,
+        target_region: str,
+        account_id_map: dict[str, str],
+        dry_run: bool = False,
+    ) -> list[TeardownItemReport]:
+        """Opt-in: disable GuardDuty/Security Hub/Config/IAM delegation tarmac set up (see module docs)."""
+        return SecurityServicesTeardown(self.session_mgr, self._new_results_list, self._notify_progress).run(
+            bundle,
+            target_region,
+            account_id_map,
+            self._get_management_account_id(),
+            dry_run=dry_run,
+        )
+
     def reset_milestones(self, mgmt_account_id: str, dry_run: bool = False) -> list[TeardownItemReport]:
         """Remove tarmac deployment tags and reset milestones on the Management Account."""
         results: list[TeardownItemReport] = self._new_results_list()
@@ -1329,6 +1417,7 @@ class TeardownService:
         target_region: str,
         dry_run: bool = False,
         account_id_map: dict[str, str] | None = None,
+        disable_security_services: bool = False,
     ) -> list[TeardownItemReport]:
         """Tear down resources belonging to a specific phase."""
         accts = account_id_map or self._get_active_accounts()
@@ -1349,6 +1438,8 @@ class TeardownService:
         if phase == 5:
             self._notify_phase("Phase 5 | Backend & Security Services Deployments")
             items = []
+            if disable_security_services:
+                items.extend(self.teardown_security_services(bundle, target_region, accts, dry_run=dry_run))
             items.extend(self.teardown_backend(bundle, target_region, dry_run=dry_run, account_id_map=accts))
             items.extend(self.teardown_audit(bundle, target_region, dry_run=dry_run, account_id_map=accts))
             return items
@@ -1364,6 +1455,7 @@ class TeardownService:
         dry_run: bool = False,
         phases: Sequence[int] | None = None,
         preserve_backend: bool = False,
+        disable_security_services: bool = False,
     ) -> TeardownReport:
         """Tear down all deployment resources across all phases in safe dependency order."""
         region = target_region or bundle.org.organization.primary_region
@@ -1391,6 +1483,8 @@ class TeardownService:
         # 4. Terraform Backend S3 bucket & stack
         if 5 in phases_set:
             self._notify_phase("Phase 5 | Terraform Backend & Audit Hardening")
+            if disable_security_services:
+                items.extend(self.teardown_security_services(bundle, region, accts, dry_run=dry_run))
             if not preserve_backend:
                 items.extend(self.teardown_backend(bundle, region, dry_run=dry_run, account_id_map=accts))
             else:
@@ -1440,6 +1534,7 @@ def teardown_deployment(
     on_item: Callable[[TeardownItemReport], None] | None = None,
     on_phase: Callable[[str], None] | None = None,
     preserve_backend: bool = False,
+    disable_security_services: bool = False,
 ) -> TeardownReport:
     """Convenience function to tear down deployment resources."""
     target_region = region or bundle.org.organization.primary_region
@@ -1456,4 +1551,5 @@ def teardown_deployment(
         dry_run=dry_run,
         phases=phases,
         preserve_backend=preserve_backend,
+        disable_security_services=disable_security_services,
     )

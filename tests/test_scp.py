@@ -539,10 +539,15 @@ def test_scp_reconcile_via_cfn_fallback_when_preexisting_and_broken_stack(tmp_pa
         dry_run=False,
     )
 
-    mock_cfn.delete_stack.assert_called_once_with(StackName="myorg-organization-scps")
+    mock_cfn.delete_stack.assert_any_call(StackName="myorg-organization-scps")
     mock_cfn.create_change_set.assert_called_once()
     call_kwargs = mock_cfn.create_change_set.call_args.kwargs
     assert call_kwargs["ChangeSetType"] == "IMPORT"
+    # IMPORT cannot change tags, so the import template is untagged; the ownership tag is applied by
+    # the normal stack deployment that follows.
+    assert "tarmac:managed-by" not in call_kwargs["TemplateBody"]
+    final_body = (mock_cfn.create_stack.call_args or mock_cfn.update_stack.call_args).kwargs["TemplateBody"]
+    assert "tarmac:managed-by" in final_body
     assert call_kwargs["ResourcesToImport"][0]["ResourceType"] == "AWS::Organizations::Policy"
     assert call_kwargs["ResourcesToImport"][0]["ResourceIdentifier"] == {"Id": "p-existing"}
     mock_cfn.execute_change_set.assert_called_once()
