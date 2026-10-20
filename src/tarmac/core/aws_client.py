@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import boto3
 from botocore.config import Config
@@ -124,8 +124,11 @@ class AwsSessionManager:
         deadline = time.monotonic() + self.ASSUME_ROLE_RETRY_SECONDS
         while True:
             try:
-                return self._sts_client.assume_role(
-                    RoleArn=role_arn, RoleSessionName=session_name, DurationSeconds=3600
+                return cast(
+                    dict[str, Any],
+                    self._sts_client.assume_role(
+                        RoleArn=role_arn, RoleSessionName=session_name, DurationSeconds=3600
+                    ),
                 )
             except ClientError as e:
                 code = e.response.get("Error", {}).get("Code", "")

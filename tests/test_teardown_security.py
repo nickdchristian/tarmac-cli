@@ -33,7 +33,8 @@ def bundle(tmp_path: Path):
 
 
 def _real(service: str) -> Any:
-    return boto3.client(service, region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x")
+    name: Any = service
+    return boto3.client(name, region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x")
 
 
 def _security_service(clients: dict[str, Any]) -> TeardownService:
