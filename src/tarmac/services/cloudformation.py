@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from botocore.exceptions import ClientError, WaiterError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, DeploymentError, aws_error_message
 from ..core.models import StackDeployReport
@@ -48,7 +49,14 @@ class CloudFormationService:
         """
         template_name = template_file.name if template_file else "synthesized-template"
         if dry_run:
-            logger.info("[DRY-RUN] Would deploy stack '%s' using template '%s'", stack_name, template_name)
+            audit(
+                "deploy",
+                f"stack:{stack_name}",
+                Outcome.SUCCEEDED,
+                f"Would deploy CloudFormation stack '{stack_name}' from template '{template_name}'",
+                dry_run=True,
+                template=template_name,
+            )
             return StackDeployReport(
                 stack_name=stack_name, action="SIMULATED", outputs={}, status="SIMULATED"
             )
@@ -101,10 +109,13 @@ class CloudFormationService:
     ) -> StackDeployReport:
         """Create a CloudFormation stack by importing pre-existing AWS resources."""
         if dry_run:
-            logger.info(
-                "[DRY-RUN] Would create CloudFormation stack '%s' importing %d pre-existing resources",
-                stack_name,
-                len(resources_to_import),
+            audit(
+                "import",
+                f"stack:{stack_name}",
+                Outcome.SUCCEEDED,
+                f"Would create CloudFormation stack '{stack_name}' importing "
+                f"{len(resources_to_import)} existing resource(s)",
+                dry_run=True,
             )
             return StackDeployReport(stack_name=stack_name, action="IMPORTED", outputs={}, status="SUCCEEDED")
 
@@ -151,7 +162,14 @@ class CloudFormationService:
                 StackName=stack_name,
                 WaiterConfig={"Delay": 5, "MaxAttempts": 60},
             )
-            logger.info("Successfully imported resources into stack '%s'.", stack_name)
+            audit(
+                "import",
+                f"stack:{stack_name}",
+                Outcome.SUCCEEDED,
+                f"Imported {len(resources_to_import)} existing resource(s) into CloudFormation stack "
+                f"'{stack_name}'",
+                resource_count=len(resources_to_import),
+            )
 
             if cfn_tags:
                 try:
@@ -178,6 +196,12 @@ class CloudFormationService:
         except (ClientError, WaiterError) as e:
             reasons = self._fetch_failure_reasons(cfn_client, stack_name)
             detail = f"{e} (Root cause: {reasons})" if reasons else str(e)
+            audit(
+                "import",
+                f"stack:{stack_name}",
+                Outcome.FAILED,
+                f"Could not import resources into CloudFormation stack '{stack_name}': {detail}",
+            )
             raise DeploymentError(
                 f"Failed to import resources into stack '{stack_name}'", details=detail
             ) from e
@@ -202,7 +226,12 @@ class CloudFormationService:
             cfn_client.delete_stack(StackName=stack_name)
             waiter = cfn_client.get_waiter("stack_delete_complete")
             waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": 30})
-            logger.info("Successfully deleted broken stack '%s'.", stack_name)
+            audit(
+                "delete",
+                f"stack:{stack_name}",
+                Outcome.SUCCEEDED,
+                f"Deleted CloudFormation stack '{stack_name}' that was stuck in an unusable state",
+            )
         except (ClientError, WaiterError) as e:
             raise DeploymentError(
                 f"Failed to delete broken stack '{stack_name}'",
@@ -234,11 +263,24 @@ class CloudFormationService:
             if wait:
                 waiter = cfn_client.get_waiter("stack_delete_complete")
                 waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": 60})
-            logger.info("Successfully deleted CloudFormation stack '%s'.", stack_name)
+            audit(
+                "delete",
+                f"stack:{stack_name}",
+                Outcome.SUCCEEDED if wait else Outcome.SKIPPED,
+                f"Deleted CloudFormation stack '{stack_name}'"
+                if wait
+                else f"Requested deletion of CloudFormation stack '{stack_name}' without waiting",
+            )
             return True
         except (ClientError, WaiterError) as e:
             reasons = self._fetch_failure_reasons(cfn_client, stack_name)
             detail = f"{e} (Root cause: {reasons})" if reasons else str(e)
+            audit(
+                "delete",
+                f"stack:{stack_name}",
+                Outcome.FAILED,
+                f"Could not delete CloudFormation stack '{stack_name}': {detail}",
+            )
             raise DeploymentError(f"Failed to delete stack '{stack_name}'", details=detail) from e
 
     def _fetch_failure_reasons(self, cfn_client: Any, stack_name: str) -> str:
@@ -311,13 +353,30 @@ class CloudFormationService:
 
             logger.info("Waiting for stack '%s' to complete...", stack_name)
             waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 10, "MaxAttempts": 60})
-            logger.info("Stack '%s' deployed successfully.", stack_name)
+            audit(
+                "create" if action == "CREATED" else "update",
+                f"stack:{stack_name}",
+                Outcome.SUCCEEDED,
+                f"{'Created' if action == 'CREATED' else 'Updated'} CloudFormation stack '{stack_name}'",
+            )
             return action
 
         except ClientError as e:
             if "No updates are to be performed" in aws_error_message(e):
-                logger.info("Stack '%s' is already up to date (no changes).", stack_name)
+                audit(
+                    "update",
+                    f"stack:{stack_name}",
+                    Outcome.UNCHANGED,
+                    f"CloudFormation stack '{stack_name}' is already up to date",
+                )
                 return "NO_CHANGES"
+            audit(
+                "create" if action == "CREATED" else "update",
+                f"stack:{stack_name}",
+                Outcome.FAILED,
+                f"Could not {'create' if action == 'CREATED' else 'update'} CloudFormation stack "
+                f"'{stack_name}': {aws_error_message(e)}",
+            )
             raise DeploymentError(
                 f"Failed to deploy stack '{stack_name}'",
                 details=aws_error_message(e),
@@ -325,6 +384,12 @@ class CloudFormationService:
         except WaiterError as e:
             reasons = self._fetch_failure_reasons(cfn_client, stack_name)
             detail = f"{e} (Root cause: {reasons})" if reasons else str(e)
+            audit(
+                "create" if action == "CREATED" else "update",
+                f"stack:{stack_name}",
+                Outcome.FAILED,
+                f"CloudFormation stack '{stack_name}' did not finish: {detail}",
+            )
             raise DeploymentError(f"Waiter timed out waiting for stack '{stack_name}'", details=detail) from e
 
     def _fetch_stack_outputs(self, cfn_client: Any, stack_name: str) -> dict[str, str]:
