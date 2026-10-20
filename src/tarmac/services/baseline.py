@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import AccountDef, AnomalyDetectionConfig, BudgetConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
+from ..core.logging import with_current_context
 from ..core.models import (
     BASELINE_COMPLETED,
     TAG_BASELINE,
@@ -79,8 +80,10 @@ class BaselineService:
             with ThreadPoolExecutor(max_workers=min(8, len(target_regions))) as pool:
                 reports = list(
                     pool.map(
-                        lambda reg: self._cleanup_region_default_vpc(
-                            account_id, account_name, reg, dry_run=dry_run
+                        with_current_context(
+                            lambda reg: self._cleanup_region_default_vpc(
+                                account_id, account_name, reg, dry_run=dry_run
+                            )
                         ),
                         target_regions,
                     )

@@ -4,6 +4,7 @@ import dataclasses
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from .. import __version__
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
 from ..core.exceptions import GovernanceError
-from ..core.logging import setup_logging
+from ..core.logging import setup_logging, start_run
 from ..services.drift import DriftService
 from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
@@ -60,6 +61,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main_callback(
+    ctx: typer.Context,
     version: bool | None = typer.Option(
         None,
         "--version",
@@ -72,12 +74,25 @@ def main_callback(
     debug: bool = typer.Option(
         False, "--debug", "-d", help="Enable verbose debug logging and full tracebacks"
     ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Print every recorded action (INFO) to the terminal"
+    ),
+    log_file: Path | None = typer.Option(
+        None,
+        "--log-file",
+        envvar="TARMAC_LOG_FILE",
+        help="Append a JSON-lines record of this run (actions, outcomes, errors) to this file",
+    ),
 ) -> None:
     """Global CLI configuration callback."""
     if profile:
         os.environ["AWS_PROFILE"] = profile
 
-    setup_logging(debug=debug, console=error_console)
+    setup_logging(debug=debug, console=error_console, verbose=verbose, log_file=log_file)
+
+    if ctx.invoked_subcommand:
+        run = start_run(ctx.invoked_subcommand, __version__, sys.argv[1:])
+        ctx.call_on_close(lambda: run.finish(sys.exc_info()[1]))
 
 
 @app.command("init")
