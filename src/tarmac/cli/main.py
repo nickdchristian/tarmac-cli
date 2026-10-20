@@ -26,6 +26,7 @@ from ..services.status import StatusService
 from . import access, account, baseline, deploy, identity, org, ou
 from .account import apply_accounts
 from .common import load_configs_or_exit, warn_if_example_newer
+from .importer import import_command
 from .logs import logs_command
 from .preflight import run_preflight_checks
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
@@ -103,6 +104,9 @@ def main_callback(
     if ctx.invoked_subcommand and ctx.invoked_subcommand != "logs":
         run = start_run(ctx.invoked_subcommand, __version__, sys.argv[1:])
         ctx.call_on_close(lambda: run.finish(sys.exc_info()[1]))
+
+
+app.command("import")(import_command)
 
 
 @app.command("init")

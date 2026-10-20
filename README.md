@@ -109,8 +109,26 @@ CloudShell is the easiest place to run tarmac the first time, with a few quirks:
 
 ### Adopting an existing organization
 
-Tarmac can take over an organization that already has accounts, OUs and trails ("brown-field"), but a few
-rules keep that safe. Run `tarmac deploy run --dry-run` first and read the Phase 4 table.
+The quickest way to start is to let tarmac write the configuration for you:
+
+```bash
+tarmac import --config-dir my-lz          # read-only: nothing in AWS is changed
+cd my-lz && tarmac validate && tarmac drift
+tarmac deploy run --dry-run
+```
+
+`tarmac import` reads the OU tree, member accounts (name, email, OU, tags), customer-managed SCPs and where they
+are attached, alternate contacts, trusted services, any existing organization trail, and IAM Identity Center
+(users, groups, permission sets with their inline policies, and group assignments). It writes
+`organization.yaml`, `accounts.yaml`, `identity.yaml` and the policy documents under `policies/`, sets
+`delete_default_vpc: false` everywhere, and prints a list of things to review: accounts sitting directly under the
+root (skipped), SCP attachments tarmac cannot express, a pre-existing organization trail, and placeholder contacts.
+`organization.name` comes from existing tarmac stacks when there are any (so a re-import never orphans them),
+otherwise from `--name` or the management email domain. Use `--no-identity` to skip Identity Center and `--force`
+to overwrite existing files.
+
+Run `tarmac deploy run --dry-run` before the first real run and read the Phase 4 table. The rules that keep
+adoption safe:
 
 * **Declare the accounts you already have, with their real emails.** An existing account is matched by email first
   and then by name. If the name matches but the email differs, tarmac refuses to adopt or move it rather than guess.
