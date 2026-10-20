@@ -6,10 +6,11 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import AccountDef, AnomalyDetectionConfig, BudgetConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
-from ..core.logging import with_current_context
+from ..core.logging import bind, with_current_context
 from ..core.models import (
     BASELINE_COMPLETED,
     TAG_BASELINE,
@@ -94,7 +95,13 @@ class BaselineService:
     def _cleanup_region_default_vpc(
         self, account_id: str, account_name: str, region: str, dry_run: bool
     ) -> VpcCleanupReport:
-        """Helper to scan and clean default VPC in a single region."""
+        """Scan and clean the default VPC in a single region, tagging log records with the account and region."""
+        with bind(account_id=account_id, account_name=account_name, region=region):
+            return self._clean_default_vpc(account_id, account_name, region, dry_run)
+
+    def _clean_default_vpc(
+        self, account_id: str, account_name: str, region: str, dry_run: bool
+    ) -> VpcCleanupReport:
         try:
             ec2 = self.session_mgr.get_member_client(account_id, "ec2", region_name=region)
             vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}]).get("Vpcs", [])
@@ -107,8 +114,12 @@ class BaselineService:
                 Filters=[{"Name": "vpc-id", "Values": [vpc_id]}], MaxResults=5
             ).get("NetworkInterfaces", [])
             if in_use:
-                logger.warning(
-                    "[%s] Default VPC %s has network interfaces in use; leaving it intact", region, vpc_id
+                audit(
+                    "delete",
+                    f"default-vpc:{account_id}:{region}",
+                    Outcome.SKIPPED,
+                    f"Left default VPC {vpc_id} in {region} intact because network interfaces are attached",
+                    vpc_id=vpc_id,
                 )
                 return VpcCleanupReport(
                     region=region,
@@ -116,7 +127,14 @@ class BaselineService:
                     message=f"Default VPC {vpc_id} is in use (network interfaces attached); not deleted.",
                 )
             if dry_run:
-                logger.info("[DRY-RUN] [%s] Would delete default VPC: %s", region, vpc_id)
+                audit(
+                    "delete",
+                    f"default-vpc:{account_id}:{region}",
+                    Outcome.SUCCEEDED,
+                    f"Would delete default VPC {vpc_id} in {region}",
+                    dry_run=True,
+                    vpc_id=vpc_id,
+                )
                 return VpcCleanupReport(
                     region=region, vpc_id=vpc_id, skipped=True, message="Simulated VPC deletion"
                 )
@@ -124,7 +142,16 @@ class BaselineService:
             detached_igws = self._detach_and_delete_igws(ec2, vpc_id)
             deleted_subnets = self._delete_subnets(ec2, vpc_id)
             ec2.delete_vpc(VpcId=vpc_id)
-            logger.info("[%s] Successfully deleted default VPC %s", region, vpc_id)
+            audit(
+                "delete",
+                f"default-vpc:{account_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Deleted default VPC {vpc_id} in {region} "
+                f"({len(detached_igws)} internet gateway(s), {len(deleted_subnets)} subnet(s))",
+                vpc_id=vpc_id,
+                internet_gateways=detached_igws,
+                subnets=deleted_subnets,
+            )
 
             return VpcCleanupReport(
                 region=region,
@@ -140,7 +167,12 @@ class BaselineService:
             err_msg = aws_error_message(e)
             if err_code == "DependencyViolation":
                 err_msg = f"DependencyViolation: VPC has active network interfaces or dependent resources ({err_msg})"
-            logger.warning("[%s] Error cleaning default VPC in %s: %s", region, account_name, err_msg)
+            audit(
+                "delete",
+                f"default-vpc:{account_id}:{region}",
+                Outcome.FAILED,
+                f"Could not delete default VPC in {region}: {err_msg}",
+            )
             return VpcCleanupReport(
                 region=region,
                 skipped=True,
@@ -148,7 +180,12 @@ class BaselineService:
                 error=True,
             )
         except Exception as e:  # worker-thread boundary: one region's failure must not abort the others
-            logger.warning("[%s] Unexpected error cleaning default VPC in %s: %s", region, account_name, e)
+            audit(
+                "delete",
+                f"default-vpc:{account_id}:{region}",
+                Outcome.FAILED,
+                f"Unexpected error deleting default VPC in {region}: {e}",
+            )
             return VpcCleanupReport(
                 region=region,
                 skipped=True,
@@ -213,11 +250,14 @@ class BaselineService:
             1 if budget_cfg.incident_response_webhook_url else 0
         )
         if dry_run:
-            logger.info(
-                "[DRY-RUN] Would deploy budget stack '%s' ($%.2f/mo, %d subscribers)",
-                budget_name,
-                budget_cfg.monthly_limit_usd,
-                subscribers_count,
+            audit(
+                "deploy",
+                f"budget:{budget_name}",
+                Outcome.SUCCEEDED,
+                f"Would deploy budget '{budget_name}' (${budget_cfg.monthly_limit_usd:.2f}/month, "
+                f"{subscribers_count} subscriber(s)) in account '{account_name}'",
+                dry_run=True,
+                account_id=account_id,
             )
             return BudgetReport(
                 account_name=account_name,
@@ -272,6 +312,14 @@ class BaselineService:
                             account_id,
                         )
                         budgets_client.delete_budget(AccountId=account_id, BudgetName=budget_name)
+                        audit(
+                            "delete",
+                            f"budget:{budget_name}",
+                            Outcome.SUCCEEDED,
+                            f"Deleted unmanaged budget '{budget_name}' in account '{account_name}' "
+                            "so CloudFormation can manage it",
+                            account_id=account_id,
+                        )
                 except ClientError as e:
                     code = e.response.get("Error", {}).get("Code", "")
                     if code not in ("NotFoundException", "ResourceNotFoundException"):
@@ -308,7 +356,13 @@ class BaselineService:
                 message=f"Budget stack {status.lower()} via CloudFormation",
             )
         except AWS_ERRORS as e:
-            logger.warning("Failed to deploy budget stack in %s: %s", account_name, e)
+            audit(
+                "deploy",
+                f"budget:{budget_name}",
+                Outcome.FAILED,
+                f"Could not deploy budget '{budget_name}' in account '{account_name}': {e}",
+                account_id=account_id,
+            )
             return BudgetReport(
                 account_name=account_name,
                 account_id=account_id,
@@ -350,10 +404,13 @@ class BaselineService:
                         Protocol="email",
                         Endpoint=email,
                     )
-                    logger.info(
-                        "Subscribed additional budget alert email '%s' to SNS topic '%s'",
-                        email,
-                        resolved_topic_arn,
+                    audit(
+                        "subscribe",
+                        f"sns:{resolved_topic_arn}",
+                        Outcome.SUCCEEDED,
+                        f"Subscribed {email} to budget alert topic {resolved_topic_arn}; "
+                        "the recipient must confirm the subscription",
+                        email=email,
                     )
         except AWS_ERRORS as e:
             logger.warning(
@@ -384,6 +441,14 @@ class BaselineService:
             )
 
         if dry_run:
+            audit(
+                "create",
+                f"anomaly-monitor:{monitor_name}",
+                Outcome.SUCCEEDED,
+                f"Would set up cost anomaly monitor '{monitor_name}' for account '{account_name}'",
+                dry_run=True,
+                account_id=account_id,
+            )
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
@@ -398,6 +463,15 @@ class BaselineService:
 
         try:
             monitor_arn, status = self._get_or_create_anomaly_monitor(ce_client, monitor_name, account_id)
+            audit(
+                "create",
+                f"anomaly-monitor:{monitor_name}",
+                Outcome.SUCCEEDED if status == "CREATED" else Outcome.UNCHANGED,
+                f"Cost anomaly monitor '{monitor_name}' "
+                + ("created" if status == "CREATED" else "already exists")
+                + f" for account '{account_name}'",
+                account_id=account_id,
+            )
             self._ensure_anomaly_subscription(
                 ce_client, sub_name, monitor_arn, anomaly_cfg.threshold_usd, anomaly_cfg.notification_emails
             )
@@ -411,7 +485,13 @@ class BaselineService:
             )
         except ClientError as e:
             err_msg = aws_error_message(e)
-            logger.warning("Cost Anomaly setup error for %s: %s", account_name, err_msg)
+            audit(
+                "create",
+                f"anomaly-monitor:{monitor_name}",
+                Outcome.FAILED,
+                f"Could not set up cost anomaly monitor for account '{account_name}': {err_msg}",
+                account_id=account_id,
+            )
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
@@ -460,7 +540,13 @@ class BaselineService:
                     }
                 )
                 monitor_arn = resp["MonitorArn"]
-                logger.info("[%s] Created in-account Cost Anomaly Monitor %s", account_name, monitor_name)
+                audit(
+                    "create",
+                    f"anomaly-monitor:{monitor_name}",
+                    Outcome.SUCCEEDED,
+                    f"Created in-account cost anomaly monitor '{monitor_name}' in '{account_name}'",
+                    account_id=account_id,
+                )
 
             self._ensure_anomaly_subscription(
                 member_ce,
@@ -544,7 +630,13 @@ class BaselineService:
                     {"Key": TAG_MANAGED_BY, "Value": "tarmac"},
                 ],
             )
-            logger.info("Tagged account %s as %s=%s", account_id, TAG_BASELINE, BASELINE_COMPLETED)
+            audit(
+                "tag",
+                f"account:{account_id}",
+                Outcome.SUCCEEDED,
+                f"Marked account {account_id} as baselined ({TAG_BASELINE}={BASELINE_COMPLETED})",
+                account_id=account_id,
+            )
         except ClientError as e:
             logger.warning("Could not tag account %s as baselined: %s", account_id, e)
 

@@ -5,10 +5,12 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GuardDutyConfig, SecurityHubConfig, SecurityServicesConfig
 from ..core.exceptions import GovernanceError
+from ..core.logging import bind
 from ..core.models import SecurityServiceReport
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,14 @@ class SecurityServicesService:
     ) -> SecurityServiceReport:
         """Delegate and configure GuardDuty across all designated regions."""
         if dry_run:
+            audit(
+                "delegate",
+                f"guardduty:{audit_id}",
+                Outcome.SUCCEEDED,
+                f"Would delegate GuardDuty administration to account {audit_id} across {len(all_regions)} region(s)",
+                dry_run=True,
+                regions=all_regions,
+            )
             return SecurityServiceReport(
                 service_name="GuardDuty",
                 delegated_account=audit_id,
@@ -95,7 +105,12 @@ class SecurityServicesService:
         try:
             self._ensure_guardduty_admin(audit_id, primary_region)
         except ClientError as e:
-            logger.warning("Could not register GuardDuty delegated admin: %s", e)
+            audit(
+                "delegate",
+                f"guardduty:{audit_id}",
+                Outcome.FAILED,
+                f"Could not register account {audit_id} as GuardDuty delegated administrator: {e}",
+            )
             return SecurityServiceReport(
                 service_name="GuardDuty",
                 delegated_account=audit_id,
@@ -107,10 +122,17 @@ class SecurityServicesService:
         failed_regions: dict[str, str] = {}
         for reg in all_regions:
             try:
-                self._configure_guardduty_region(audit_id, reg, config)
+                with bind(region=reg):
+                    self._configure_guardduty_region(audit_id, reg, config)
                 configured_regions.append(reg)
             except ClientError as e:
-                logger.warning("Could not configure GuardDuty in region %s: %s", reg, e)
+                audit(
+                    "configure",
+                    f"guardduty:{audit_id}:{reg}",
+                    Outcome.FAILED,
+                    f"Could not configure GuardDuty in {reg}: {e}",
+                    region=reg,
+                )
                 failed_regions[reg] = str(e)
 
         return SecurityServiceReport(
@@ -140,7 +162,12 @@ class SecurityServicesService:
         )
         if not already_registered:
             gd_mgmt.enable_organization_admin_account(AdminAccountId=audit_id)
-            logger.info("Registered account %s as GuardDuty delegated administrator.", audit_id)
+            audit(
+                "delegate",
+                f"guardduty:{audit_id}",
+                Outcome.SUCCEEDED,
+                f"Registered account {audit_id} as GuardDuty delegated administrator",
+            )
 
     def _configure_guardduty_region(self, audit_id: str, region: str, config: GuardDutyConfig) -> None:
         """Create detector and configure auto-enrollment in the Audit account for a single region."""
@@ -149,7 +176,14 @@ class SecurityServicesService:
         if not detectors:
             create_resp = gd_audit.create_detector(Enable=True, FindingPublishingFrequency="FIFTEEN_MINUTES")
             detector_id = str(create_resp.get("DetectorId", ""))
-            logger.info("Created GuardDuty detector in %s (%s)", region, detector_id)
+            audit(
+                "create",
+                f"guardduty-detector:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Created GuardDuty detector {detector_id} in {region}",
+                detector_id=detector_id,
+                region=region,
+            )
         else:
             detector_id = str(detectors[0])
 
@@ -160,7 +194,13 @@ class SecurityServicesService:
                 )
             except ClientError:
                 gd_audit.update_organization_configuration(DetectorId=detector_id, AutoEnable=True)
-            logger.info("Configured GuardDuty auto-enable members in region %s", region)
+            audit(
+                "configure",
+                f"guardduty:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Turned on GuardDuty auto-enable for organization members in {region}",
+                region=region,
+            )
 
     def configure_securityhub(
         self,
@@ -172,6 +212,14 @@ class SecurityServicesService:
     ) -> SecurityServiceReport:
         """Delegate and configure Security Hub, standards, and finding aggregator."""
         if dry_run:
+            audit(
+                "delegate",
+                f"securityhub:{audit_id}",
+                Outcome.SUCCEEDED,
+                f"Would delegate Security Hub administration to account {audit_id} across {len(all_regions)} region(s)",
+                dry_run=True,
+                regions=all_regions,
+            )
             return SecurityServiceReport(
                 service_name="SecurityHub",
                 delegated_account=audit_id,
@@ -183,7 +231,12 @@ class SecurityServicesService:
         try:
             self._ensure_securityhub_admin(audit_id, primary_region)
         except ClientError as e:
-            logger.warning("Could not register Security Hub delegated admin: %s", e)
+            audit(
+                "delegate",
+                f"securityhub:{audit_id}",
+                Outcome.FAILED,
+                f"Could not register account {audit_id} as Security Hub delegated administrator: {e}",
+            )
             return SecurityServiceReport(
                 service_name="SecurityHub",
                 delegated_account=audit_id,
@@ -195,10 +248,17 @@ class SecurityServicesService:
         failed_regions: dict[str, str] = {}
         for reg in all_regions:
             try:
-                self._configure_securityhub_region(audit_id, reg, config)
+                with bind(region=reg):
+                    self._configure_securityhub_region(audit_id, reg, config)
                 configured_regions.append(reg)
             except (ClientError, GovernanceError) as e:
-                logger.warning("Could not configure Security Hub in region %s: %s", reg, e)
+                audit(
+                    "configure",
+                    f"securityhub:{audit_id}:{reg}",
+                    Outcome.FAILED,
+                    f"Could not configure Security Hub in {reg}: {e}",
+                    region=reg,
+                )
                 failed_regions[reg] = str(e)
 
         try:
@@ -207,7 +267,12 @@ class SecurityServicesService:
             )
             self._ensure_finding_aggregator(sh_primary)
         except ClientError as e:
-            logger.warning("Could not setup Security Hub finding aggregator in %s: %s", primary_region, e)
+            audit(
+                "create",
+                "securityhub-finding-aggregator",
+                Outcome.FAILED,
+                f"Could not set up the Security Hub finding aggregator in {primary_region}: {e}",
+            )
             failed_regions[f"{primary_region} (finding aggregator)"] = str(e)
 
         return SecurityServiceReport(
@@ -231,7 +296,12 @@ class SecurityServicesService:
         )
         if not already_registered:
             sh_mgmt.enable_organization_admin_account(AdminAccountId=audit_id)
-            logger.info("Registered account %s as Security Hub delegated administrator.", audit_id)
+            audit(
+                "delegate",
+                f"securityhub:{audit_id}",
+                Outcome.SUCCEEDED,
+                f"Registered account {audit_id} as Security Hub delegated administrator",
+            )
 
     def _configure_securityhub_region(self, audit_id: str, region: str, config: SecurityHubConfig) -> None:
         """Enable Security Hub, subscribe to standards, and configure auto-enrollment in a single region."""
@@ -242,7 +312,13 @@ class SecurityServicesService:
             err_code = e.response.get("Error", {}).get("Code", "")
             if err_code in ("ResourceNotFoundException", "InvalidAccessException"):
                 sh_audit.enable_security_hub(EnableDefaultStandards=False)
-                logger.info("Enabled Security Hub in region %s", region)
+                audit(
+                    "enable",
+                    f"securityhub:{audit_id}:{region}",
+                    Outcome.SUCCEEDED,
+                    f"Enabled Security Hub in {region}",
+                    region=region,
+                )
             else:
                 raise
 
@@ -250,6 +326,13 @@ class SecurityServicesService:
 
         if config.auto_enable_members:
             sh_audit.update_organization_configuration(AutoEnable=True, AutoEnableStandards="NONE")
+            audit(
+                "configure",
+                f"securityhub:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Turned on Security Hub auto-enable for organization members in {region}",
+                region=region,
+            )
 
     def _ensure_standards(self, sh_client: Any, desired_standards: list[str]) -> None:
         """Ensure declared compliance standards (e.g. FSBP) are subscribed.
@@ -279,7 +362,13 @@ class SecurityServicesService:
                 sh_client.batch_enable_standards(
                     StandardsSubscriptionRequests=[{"StandardsArn": matching_arn}]
                 )
-                logger.info("Enabled Security Hub standard: %s", matching_arn)
+                audit(
+                    "enable",
+                    f"securityhub-standard:{matching_arn}",
+                    Outcome.SUCCEEDED,
+                    f"Subscribed to Security Hub standard {matching_arn}",
+                    standard=matching_arn,
+                )
 
     def _ensure_finding_aggregator(self, sh_client: Any) -> None:
         """Ensure a Finding Aggregator exists in the primary region linking all member regions.
@@ -289,4 +378,9 @@ class SecurityServicesService:
         aggregators = sh_client.list_finding_aggregators().get("FindingAggregators", [])
         if not aggregators:
             sh_client.create_finding_aggregator(RegionLinkingMode="ALL_REGIONS")
-            logger.info("Created Security Hub Finding Aggregator linking ALL_REGIONS.")
+            audit(
+                "create",
+                "securityhub-finding-aggregator",
+                Outcome.SUCCEEDED,
+                "Created Security Hub finding aggregator linking all regions",
+            )
