@@ -6,6 +6,7 @@ from typing import Any
 
 import typer
 
+from ..core import inventory
 from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_configs
 from ..core.tagging import parse_cli_tags
 from .ui import error_console
@@ -41,6 +42,7 @@ def load_configs_or_exit(config_dir: Path | None = None) -> ConfigBundle:
         if not errors:
             error_console.print("[red]•[/red] Failed to load configuration files.")
         raise typer.Exit(code=1)
+    inventory.activate(config_dir or get_default_config_dir())
     return bundle
 
 

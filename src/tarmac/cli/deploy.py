@@ -10,8 +10,9 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
+from ..core import inventory as inventory_mod
 from ..core.aws_client import AwsSessionManager
-from ..core.config_loader import ConfigBundle
+from ..core.config_loader import ConfigBundle, get_default_config_dir
 from ..core.config_schema import OUDef
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
@@ -371,6 +372,15 @@ _TEARDOWN_RETAINED = (
 )
 
 
+_EVERYTHING_REMOVES = (
+    "Stacks, buckets, budgets, SCPs, the organization trail and permission sets (as a normal teardown)",
+    "Organizational Units tarmac created, if they are empty",
+    "Identity Center users and groups tarmac created, with their assignments",
+    "Trusted access, delegated administrators, root-access features, alternate contacts and cost tags tarmac enabled",
+    "The tarmac-access stack (TarmacDeploymentRole) and the tarmac-bootstrap IAM user",
+)
+
+
 def _print_teardown_retained_notice(security_disabled: bool = False) -> None:
     """Tell the user what a full teardown intentionally does not remove, so 'start over' is predictable."""
     print_info("Not removed by teardown (a redeploy reuses or reconciles these):")
@@ -438,24 +448,52 @@ def _teardown_json_payload(report: Any) -> dict[str, Any]:
     }
 
 
-def _execute_teardown(
-    phase: int | None,
-    config_dir: Path | None,
-    region: str | None,
+def _load_inventory(config_dir: Path | None, from_log: Path | None) -> inventory_mod.Inventory:
+    """The active inventory (recorded by earlier runs), topped up from a run log when one is given."""
+    inv = inventory_mod.active() or inventory_mod.activate(config_dir or get_default_config_dir())
+    if from_log is not None:
+        if not from_log.is_file():
+            error_console.print(f"[red]✗[/red] Log file not found: {from_log}")
+            raise typer.Exit(code=1)
+        found = inv.ingest_log(from_log)
+        print_info(f"Read {found} change(s) tarmac made from {from_log}.")
+    return inv
+
+
+def _confirm_everything(bundle: Any, inv: inventory_mod.Inventory) -> None:
+    console.print("\n[bold red]FULL TEARDOWN[/bold red] removes everything tarmac created, including:")
+    for line in _EVERYTHING_REMOVES:
+        console.print(f"  [red]• {escape(line)}[/red]")
+    console.print("Member accounts are [bold]never[/bold] closed by this command.")
+    if inv.count() == 0:
+        print_warning(
+            "No record of what tarmac created was found, so OUs, Identity Center users and groups and "
+            "organization settings will be left alone. Rebuild it with --inventory-from-log <run log>."
+        )
+    else:
+        console.print(f"[dim]Inventory: {inv.count()} item(s) recorded at {inv.path}[/dim]")
+    expected = bundle.org.organization.name
+    typed = typer.prompt(
+        f"Type the organization name ({expected}) to confirm", default="", show_default=False
+    )
+    if typed.strip() != expected:
+        print_info("Teardown cancelled: the name did not match.")
+        raise typer.Exit(code=0)
+
+
+def _confirm_teardown(
+    bundle: Any,
+    inv: inventory_mod.Inventory | None,
+    *,
     dry_run: bool,
     yes: bool,
-    json_output: bool,
-    force: bool = False,
-    preserve_backend: bool = False,
-    disable_security_services: bool = False,
+    disable_security_services: bool,
 ) -> None:
-    _validate_phase(phase, range(2, 7))
-    _require_yes_for_json(dry_run, yes, json_output)
-    bundle = load_configs_or_exit(config_dir)
-
-    _enforce_production_lock(bundle, dry_run=dry_run, force=force)
-
-    if not (dry_run or yes):
+    if dry_run or yes:
+        return
+    if inv is not None:
+        _confirm_everything(bundle, inv)
+        return
         confirm = typer.confirm(
             "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
             "remove AWS Budgets, and detach SCPs"
@@ -470,6 +508,36 @@ def _execute_teardown(
         if not confirm:
             print_info("Teardown cancelled by user.")
             raise typer.Exit(code=0)
+
+
+def _execute_teardown(
+    phase: int | None,
+    config_dir: Path | None,
+    region: str | None,
+    dry_run: bool,
+    yes: bool,
+    json_output: bool,
+    force: bool = False,
+    preserve_backend: bool = False,
+    disable_security_services: bool = False,
+    everything: bool = False,
+    inventory_from_log: Path | None = None,
+) -> None:
+    _validate_phase(phase, range(2, 7))
+    _require_yes_for_json(dry_run, yes, json_output)
+    if everything and phase is not None:
+        error_console.print(
+            "[red]✗[/red] --everything removes the whole deployment and cannot be combined with --phase."
+        )
+        raise typer.Exit(code=2)
+    bundle = load_configs_or_exit(config_dir)
+
+    _enforce_production_lock(bundle, dry_run=dry_run, force=force)
+
+    inv = _load_inventory(config_dir, inventory_from_log) if everything else None
+    _confirm_teardown(
+        bundle, inv, dry_run=dry_run, yes=yes, disable_security_services=disable_security_services
+    )
 
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
@@ -505,6 +573,7 @@ def _execute_teardown(
         phases=phases,
         preserve_backend=preserve_backend,
         disable_security_services=disable_security_services,
+        inventory=inv,
     )
 
     if not json_output:
@@ -543,8 +612,9 @@ def _execute_teardown(
         print_info("Teardown dry-run simulation complete.")
     else:
         print_success(f"Teardown complete: {report.deleted_count} resource(s) removed.")
-        if phase is None:
+        if phase is None and not everything:
             _print_teardown_retained_notice(security_disabled=disable_security_services)
+            print_info("Add --everything to also remove OUs, users, groups, settings and the access role.")
 
 
 @app.command("teardown")
@@ -566,6 +636,19 @@ def teardown_pipeline(
             "Deletes finding history."
         ),
     ),
+    everything: bool = typer.Option(
+        False,
+        "--everything",
+        help=(
+            "Full teardown: also remove OUs, Identity Center users/groups, organization settings and the "
+            "access role that tarmac created (never member accounts)"
+        ),
+    ),
+    inventory_from_log: Path | None = typer.Option(
+        None,
+        "--inventory-from-log",
+        help="With --everything: rebuild the record of what tarmac created from a run log (TARMAC_LOG_FILE)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Tear down and delete deployed resources across phases."""
@@ -579,6 +662,8 @@ def teardown_pipeline(
         force,
         preserve_backend,
         disable_security_services,
+        everything,
+        inventory_from_log,
     )
 
 
@@ -601,6 +686,19 @@ def destroy_pipeline(
             "Deletes finding history."
         ),
     ),
+    everything: bool = typer.Option(
+        False,
+        "--everything",
+        help=(
+            "Full teardown: also remove OUs, Identity Center users/groups, organization settings and the "
+            "access role that tarmac created (never member accounts)"
+        ),
+    ),
+    inventory_from_log: Path | None = typer.Option(
+        None,
+        "--inventory-from-log",
+        help="With --everything: rebuild the record of what tarmac created from a run log (TARMAC_LOG_FILE)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Alias for 'tarmac deploy teardown': delete all deployment resources."""
@@ -614,4 +712,32 @@ def destroy_pipeline(
         force,
         preserve_backend,
         disable_security_services,
+        everything,
+        inventory_from_log,
     )
+
+
+@app.command("inventory")
+def show_inventory(
+    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
+    from_log: Path | None = typer.Option(
+        None, "--from-log", help="Rebuild the inventory from a tarmac run log (TARMAC_LOG_FILE)"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output the inventory as JSON"),
+) -> None:
+    """Show what tarmac recorded as created by it (used by `destroy --everything`)."""
+    inv = _load_inventory(config_dir, from_log)
+    if json_output:
+        print(json.dumps(inv.entries, indent=2, sort_keys=True))
+        return
+    print_header("Tarmac Inventory")
+    if inv.count() == 0:
+        print_info(f"Nothing recorded yet ({inv.path}). Changes are recorded as tarmac makes them.")
+        return
+    table = create_table(title=str(inv.path))
+    table.add_column("Kind", style="cyan")
+    table.add_column("Item", style="white")
+    for kind, entries in sorted(inv.entries.items()):
+        for key in sorted(entries):
+            table.add_row(kind, key)
+    console.print(table)

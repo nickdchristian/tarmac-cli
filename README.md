@@ -109,8 +109,27 @@ CloudShell is the easiest place to run tarmac the first time, with a few quirks:
 
 ### Adopting an existing organization
 
-Tarmac can take over an organization that already has accounts, OUs and trails ("brown-field"), but a few
-rules keep that safe. Run `tarmac deploy run --dry-run` first and read the Phase 4 table.
+The quickest way to start is to let tarmac write the configuration for you:
+
+```bash
+tarmac import --config-dir my-lz          # read-only: nothing in AWS is changed
+cd my-lz && tarmac validate && tarmac drift
+tarmac deploy run --dry-run
+```
+
+`tarmac import` reads the OU tree, member accounts (name, email, OU, tags), customer-managed SCPs and where they
+are attached, alternate contacts, trusted services, any existing organization trail, and IAM Identity Center
+(users, groups, permission sets with their inline policies, and group assignments). It writes
+`organization.yaml`, `accounts.yaml`, `identity.yaml` and the policy documents under `policies/`, sets
+`delete_default_vpc: false` everywhere, and prints a list of things to review: accounts sitting directly under the
+root (skipped), SCPs attached only to accounts or nowhere (not imported, because tarmac would attach them to
+the root), SCP attachments tarmac cannot express, a pre-existing organization trail, and placeholder contacts.
+`organization.name` comes from existing tarmac stacks when there are any (so a re-import never orphans them),
+otherwise from `--name` or the management email domain. Use `--no-identity` to skip Identity Center and `--force`
+to overwrite existing files.
+
+Run `tarmac deploy run --dry-run` before the first real run and read the Phase 4 table. The rules that keep
+adoption safe:
 
 * **Declare the accounts you already have, with their real emails.** An existing account is matched by email first
   and then by name. If the name matches but the email differs, tarmac refuses to adopt or move it rather than guess.
@@ -206,7 +225,8 @@ tarmac deploy run --phase 4   # Run only Account Factory provisioning
 | **`tarmac deploy run`** | Execute the automated multi-phase landing zone rollout (`--dry-run` to preview). |
 | **`tarmac status`** | Inspect live landing zone reconciliation and phase completion status. |
 | **`tarmac drift`** | Audit IAM Identity Center permission sets and member account budget drift. |
-| **`tarmac deploy destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). |
+| **`tarmac import`** | Read an existing organization (read-only) and write matching configuration files. |
+| **`tarmac deploy destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the access role. |
 
 <details>
 <summary><strong>Granular Service Commands</strong></summary>
@@ -319,10 +339,43 @@ sets, milestone tags) so `tarmac deploy run` can rebuild it. It deliberately **k
   the delegated administrators, deletes the GuardDuty detectors and disables Security Hub in the audit,
   management and declared member accounts). **This deletes finding history**, so it is opt-in. Failures per
   account/region are reported, and a failed step makes the command exit non-zero;
-* IAM Identity Center users and groups (always kept; remove them in the console or your identity provider).
+* IAM Identity Center users and groups, OUs, organization settings and the access role (kept unless you pass
+  `--everything`, below).
 
 The log-archive KMS key is scheduled for deletion (30-day window, cancel with `aws kms cancel-key-deletion`)
 once its buckets have been purged and deleted; if any log-archive cleanup failed the key is kept.
+
+### Removing everything tarmac did
+
+```bash
+tarmac deploy destroy --everything --dry-run     # preview
+tarmac deploy destroy --everything               # asks you to type the organization name
+```
+
+On top of a normal destroy, `--everything` removes, in dependency order: the Identity Center users and groups
+tarmac created (and their assignments), the OUs tarmac created (only when empty), the organization settings tarmac
+enabled (delegated administrators, root credentials management and root sessions, trusted service access,
+alternate contacts, cost-allocation-tag activation), the milestone tags, and finally the `tarmac-access` stack
+(`TarmacDeploymentRole`) and the `tarmac-bootstrap` IAM user with its keys and MFA device.
+
+What counts as "created by tarmac" is decided by evidence, never by name:
+
+* Stacks, SCPs, permission sets and accounts carry the `tarmac:managed-by=tarmac` tag.
+* OUs, users, groups and organization settings cannot be tagged, so tarmac records each one in
+  `<config dir>/.tarmac/inventory.json` the moment it changes it. Things that already existed (an event logged
+  as "unchanged") are never recorded and therefore never removed. `tarmac deploy inventory` shows the record.
+* For a deployment that predates the inventory, rebuild it from a run log:
+  `tarmac deploy destroy --everything --inventory-from-log "$TARMAC_LOG_FILE"` (or
+  `tarmac deploy inventory --from-log FILE` to inspect it first).
+
+**Member accounts are never closed by this command.** It lists the accounts tarmac manages with the exact
+`tarmac account suspend NAME --close` command for each. An alternate contact that replaced one which already existed is
+left in place (tarmac cannot restore the old one), and the `tarmac-bootstrap` user is only deleted when it carries
+the `tarmac:managed-by=tarmac` tag. Disabling Identity Center trusted access is also left to you, because it can
+delete the Identity Center instance. If you run the teardown as `TarmacDeploymentRole`, the
+access stack's deletion is started but not awaited. The role cannot manage IAM users, so when the access stack
+contains a bootstrap user the stack is kept and the command tells you to remove the user as an administrator
+(for example your SSO admin) and run it again.
 
 If a teardown leaves a CloudFormation stack in `DELETE_FAILED` (for example a bucket that could not be emptied),
 fix the cause and re-run teardown or deploy: both now delete and recreate stacks stuck in `DELETE_FAILED`,
