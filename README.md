@@ -182,6 +182,22 @@ For targeted management outside the end-to-end pipeline:
 
 ---
 
+## Logging and Audit Trail
+
+| Option | Effect |
+|---|---|
+| *(default)* | Warnings and errors only, on stderr |
+| `-v`, `--verbose` | Also print every recorded action (what was created, updated, attached, skipped) |
+| `-d`, `--debug` | Full diagnostic output with tracebacks |
+| `--log-file PATH` (or `TARMAC_LOG_FILE`) | Append a JSON-lines record of the run to `PATH` |
+
+Each line of the log file is one JSON object with a timestamp, level, a `run_id` shared by the whole invocation, and (where known) the command, phase, account and Region. The first record (`run_start`) holds the version and arguments, and the last (`run_end`) holds the exit code and duration. Records with `"event": "audit"` describe a single action: what was done, to which resource, and whether it succeeded, was skipped, was only simulated by `--dry-run`, or failed. Secrets such as access keys and tokens are redacted before anything is written, and the file is created readable by its owner only.
+
+```bash
+tarmac --log-file run.jsonl run --yes
+jq -r 'select(.event=="audit") | "\(.ts) \(.data.outcome) \(.message)"' run.jsonl
+```
+
 ## Safe Teardown
 
 Tarmac includes built-in safeguards to prevent accidental infrastructure or state loss:
