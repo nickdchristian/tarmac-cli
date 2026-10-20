@@ -77,9 +77,9 @@ def test_template_expires_logs_only_when_retention_is_set(base: str):
 
 @pytest.mark.parametrize(("retention", "expected"), [(None, "0"), (90, "90")])
 def test_deploy_passes_retention_to_the_log_archive_stack(
-    sample_config_dir, monkeypatch, retention, expected
+    writable_config_dir, monkeypatch, retention, expected
 ):
-    org_file = sample_config_dir / "organization.yaml"
+    org_file = writable_config_dir / "organization.yaml"
     data = yaml.safe_load(org_file.read_text())
     cloudtrail = data.setdefault("cloudtrail", {})
     if retention is None:
@@ -110,7 +110,7 @@ def test_deploy_passes_retention_to_the_log_archive_stack(
     monkeypatch.setattr("tarmac.cli.deploy.CloudFormationService", lambda sm: service)
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: MagicMock())
 
-    res = runner.invoke(app, ["run", "--config-dir", str(sample_config_dir), "--phase", "3", "--yes"])
+    res = runner.invoke(app, ["run", "--config-dir", str(writable_config_dir), "--phase", "3", "--yes"])
 
     assert res.exit_code == 0, res.output
     archive = next(p for name, p in captured.items() if name.endswith("log-archive-hardening"))
