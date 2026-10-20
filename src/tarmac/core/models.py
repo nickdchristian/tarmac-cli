@@ -147,6 +147,7 @@ class SCPReconciliationResult:
     attached_targets: list[str] = field(default_factory=list)
     newly_attached_targets: list[str] = field(default_factory=list)
     status: str = "SUCCEEDED"
+    unresolved_targets: list[str] = field(default_factory=list)
 
 
 class PreflightCheckStatus(StrEnum):

@@ -128,3 +128,23 @@ def test_run_rejects_invalid_phase(tmp_path: Path):
     with patch("tarmac.cli.deploy.AwsSessionManager"):
         res = runner.invoke(app, ["run", "--yes", "--phase", "9", "-c", str(cfg)])
     assert res.exit_code == 2
+
+
+def test_scp_plan_exits_1_when_a_target_cannot_be_resolved(tmp_path: Path):
+    from tarmac.cli import org as org_cli
+    from tarmac.core.models import SCPReconciliationResult
+
+    cfg = make_config(tmp_path, None)
+    failed = SCPReconciliationResult(
+        name="Guard", policy_id="p-1", action_taken="NOOP", status="FAILED", unresolved_targets=["Typo"]
+    )
+    with (
+        patch("tarmac.cli.org.AwsSessionManager"),
+        patch("tarmac.cli.org.OUService"),
+        patch("tarmac.cli.org.SCPService") as scp_cls,
+    ):
+        scp_cls.return_value.reconcile_all.return_value = [failed]
+        res = runner.invoke(org_cli.app, ["scp", "plan", "-c", str(cfg)])
+
+    assert res.exit_code == 1
+    assert "Typo" in res.output

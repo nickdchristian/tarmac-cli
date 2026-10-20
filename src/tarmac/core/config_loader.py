@@ -121,6 +121,7 @@ class ConfigBundle:
         errors.extend(self._check_identity_assignments(account_names))
         errors.extend(self._check_inline_policies())
         errors.extend(self._check_scp_policies())
+        errors.extend(self._check_scp_targets())
         return errors
 
     @staticmethod
@@ -228,6 +229,25 @@ class ConfigBundle:
                     )
             except ConfigurationError:
                 errors.append(f"SCP '{scp.name}' policy file not found: {scp.policy_file}")
+        return errors
+
+    def _check_scp_targets(self) -> list[str]:
+        """Validate that every SCP target is the root or a declared OU (matching is case-insensitive)."""
+        errors: list[str] = []
+        scp_cfg = self.org.service_control_policies
+        if not (scp_cfg and scp_cfg.enabled):
+            return errors
+
+        valid_ous = self._collect_ou_names(self.org.ou_structure)
+        valid_lower = {name.lower() for name in valid_ous}
+        for scp in scp_cfg.policies:
+            for target in scp.targets:
+                if target.lower() in ("root", "organization_root") or target.lower() in valid_lower:
+                    continue
+                errors.append(
+                    f"SCP '{scp.name}' targets undefined OU '{target}'. "
+                    f"Use 'root' or one of: {sorted(valid_ous)}"
+                )
         return errors
 
     def get_backend_account_name(self) -> str | None:
