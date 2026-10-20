@@ -51,13 +51,13 @@ def redact(text: str) -> str:
     return _SECRET_PAIR.sub(lambda m: f"{m.group('key')}{m.group('sep')}{REDACTED}", text)
 
 
-def _redact_value(value: Any) -> Any:
+def redact_value(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
-        return {k: REDACTED if _SECRET_NAME.match(str(k)) else _redact_value(v) for k, v in value.items()}
+        return {k: REDACTED if _SECRET_NAME.match(str(k)) else redact_value(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
-        return [_redact_value(v) for v in value]
+        return [redact_value(v) for v in value]
     return value
 
 
@@ -123,7 +123,7 @@ class JsonLineFormatter(logging.Formatter):
             entry["event"] = event
         data = getattr(record, "data", None)
         if data:
-            entry["data"] = _redact_value(data)
+            entry["data"] = redact_value(data)
         if record.exc_info:
             entry["exception"] = redact(self.formatException(record.exc_info))
         return json.dumps(entry, default=str, ensure_ascii=False)
@@ -194,7 +194,11 @@ class RunLog:
         self.run_id = new_run_id()
         self.command = command
         self._started = time.monotonic()
-        self._token = _context.set({**_fields(), "run_id": self.run_id, "command": command})
+        fields: dict[str, Any] = {**_fields(), "run_id": self.run_id, "command": command}
+        # Preview runs must not change anything; the AWS call recorder flags any change made while this is set.
+        if "--dry-run" in argv or "plan" in argv:
+            fields["dry_run"] = True
+        self._token = _context.set(fields)
         logging.getLogger("tarmac.run").info(
             "Run started: tarmac %s (v%s)",
             command,
