@@ -1,5 +1,6 @@
 """CLI commands for the AWS Account Factory."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -49,8 +50,6 @@ def plan_accounts(
         plan_items = service.plan(bundle.accounts, ou_map)
 
         if json_output:
-            import json
-
             plan_dicts = [
                 {
                     "name": item.name,
@@ -473,7 +472,6 @@ def list_accounts_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """List all accounts in the AWS Organization with their status and parent OU."""
-    import json
 
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region

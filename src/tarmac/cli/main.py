@@ -1,6 +1,9 @@
 """Main entrypoint for the tarmac CLI."""
 
+import dataclasses
+import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,14 +12,17 @@ from rich import box
 from rich.panel import Panel
 from rich.table import Table
 
+from .. import __version__
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
 from ..core.exceptions import GovernanceError
 from ..core.logging import setup_logging
 from ..services.drift import DriftService
+from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
 from . import access, account, baseline, deploy, identity, org, ou
-from .common import warn_if_example_newer
+from .account import apply_accounts
+from .common import load_configs_or_exit, warn_if_example_newer
 from .preflight import run_preflight_checks
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
 
@@ -48,8 +54,6 @@ app.command(
 
 def version_callback(value: bool) -> None:
     if value:
-        from .. import __version__
-
         console.print(f"tarmac-cli v{__version__}")
         raise typer.Exit()
 
@@ -71,8 +75,6 @@ def main_callback(
 ) -> None:
     """Global CLI configuration callback."""
     if profile:
-        import os
-
         os.environ["AWS_PROFILE"] = profile
 
     setup_logging(debug=debug, console=error_console)
@@ -97,7 +99,6 @@ def init_project(
     ),
 ) -> None:
     """Scaffold starter YAML configuration files for a new Tarmac project."""
-    from ..services.scaffold import scaffold_project
 
     target_dir = directory or config_dir or Path("config")
     print_header("Initialize Tarmac Configuration")
@@ -152,7 +153,6 @@ def validate_config(
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Validate all YAML configuration files and logical cross-references."""
-    import json
 
     bundle, errors = load_all_configs(config_dir)
 
@@ -198,7 +198,6 @@ def apply_shortcut(
 
     To deploy the full end-to-end landing zone, use 'tarmac deploy run'.
     """
-    from .account import apply_accounts
 
     apply_accounts(
         config_dir=config_dir,
@@ -249,7 +248,6 @@ def show_info(
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Show current AWS authentication details, caller identity, and Organization status."""
-    import json
 
     resolved_region = region or "eu-west-1"
     try:
@@ -478,10 +476,6 @@ def show_status(
     json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
 ) -> None:
     """Show reconciliation status between declared YAML and live AWS environment."""
-    import dataclasses
-    import json
-
-    from .common import load_configs_or_exit
 
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
@@ -557,10 +551,6 @@ def show_drift(
     strict: bool = typer.Option(False, "--strict", help="Exit with code 1 if drift is detected"),
 ) -> None:
     """Audit live AWS resources against declared YAML manifests across all governance pillars."""
-    import dataclasses
-    import json
-
-    from .common import load_configs_or_exit
 
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region

@@ -1,10 +1,13 @@
 """Unit tests for PreflightService."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
+import boto3
 import pytest
 from botocore.exceptions import ClientError
+from botocore.stub import Stubber
 from helpers import make_config
 
 from tarmac.core.config_loader import ConfigBundle, load_all_configs
@@ -199,34 +202,78 @@ def test_check_cost_allocation_tags_warn_none_defined(mock_session, test_bundle)
     assert "Define cost_allocation_tags" in (res.action_required or "")
 
 
-def test_check_sns_subscriptions_pass(mock_session, test_bundle):
-    mock_sns = MagicMock()
-    mock_sns.list_topics.return_value = {"Topics": [{"TopicArn": "arn:aws:sns:eu-west-1:123:alerts"}]}
-    mock_sns.list_subscriptions_by_topic.return_value = {
-        "Subscriptions": [{"SubscriptionArn": "arn:aws:sns:123:sub1", "Endpoint": "test@example.com"}]
-    }
-    mock_session.get_client.return_value = mock_sns
+def _sns_service(mock_session, test_bundle):
+    sns: Any = boto3.client(
+        "sns", region_name="eu-west-1", aws_access_key_id="testing", aws_secret_access_key="testing"
+    )
+    stub = Stubber(sns)
+    mock_session.get_client.return_value = sns
+    return PreflightService(mock_session, test_bundle), stub
 
-    service = PreflightService(mock_session, test_bundle)
-    res = service.check_sns_subscriptions("eu-west-1")
+
+TOPIC_A = "arn:aws:sns:eu-west-1:123456789012:alerts"
+TOPIC_B = "arn:aws:sns:eu-west-1:123456789012:billing"
+SUB = "arn:aws:sns:eu-west-1:123456789012:alerts:sub1"
+
+
+def _sub(arn: str, topic: str) -> dict:
+    return {"SubscriptionArn": arn, "TopicArn": topic, "Protocol": "email", "Endpoint": "t@example.com"}
+
+
+def test_check_sns_subscriptions_pass(mock_session, test_bundle):
+    service, stub = _sns_service(mock_session, test_bundle)
+    stub.add_response("list_topics", {"Topics": [{"TopicArn": TOPIC_A}]})
+    stub.add_response(
+        "list_subscriptions_by_topic", {"Subscriptions": [_sub(SUB, TOPIC_A)]}, {"TopicArn": TOPIC_A}
+    )
+    with stub:
+        res = service.check_sns_subscriptions("eu-west-1")
 
     assert res.status == PreflightCheckStatus.PASS
-    assert "Confirmed" in res.live_value
+    assert "1 Confirmed" in res.live_value
 
 
 def test_check_sns_subscriptions_warn_pending(mock_session, test_bundle):
-    mock_sns = MagicMock()
-    mock_sns.list_topics.return_value = {"Topics": [{"TopicArn": "arn:aws:sns:eu-west-1:123:alerts"}]}
-    mock_sns.list_subscriptions_by_topic.return_value = {
-        "Subscriptions": [{"SubscriptionArn": "PendingConfirmation", "Endpoint": "test@example.com"}]
-    }
-    mock_session.get_client.return_value = mock_sns
-
-    service = PreflightService(mock_session, test_bundle)
-    res = service.check_sns_subscriptions("eu-west-1")
+    service, stub = _sns_service(mock_session, test_bundle)
+    stub.add_response("list_topics", {"Topics": [{"TopicArn": TOPIC_A}]})
+    stub.add_response(
+        "list_subscriptions_by_topic",
+        {"Subscriptions": [_sub("PendingConfirmation", TOPIC_A)]},
+        {"TopicArn": TOPIC_A},
+    )
+    with stub:
+        res = service.check_sns_subscriptions("eu-west-1")
 
     assert res.status == PreflightCheckStatus.WARN
     assert "1 Pending Confirmation" in res.live_value
+
+
+def test_check_sns_subscriptions_reads_every_page(mock_session, test_bundle):
+    """A pending subscription on a later topic or subscription page must not be missed."""
+    service, stub = _sns_service(mock_session, test_bundle)
+    stub.add_response("list_topics", {"Topics": [{"TopicArn": TOPIC_A}], "NextToken": "t1"})
+    stub.add_response(
+        "list_subscriptions_by_topic",
+        {"Subscriptions": [_sub(SUB, TOPIC_A)], "NextToken": "s1"},
+        {"TopicArn": TOPIC_A},
+    )
+    stub.add_response(
+        "list_subscriptions_by_topic",
+        {"Subscriptions": [_sub("PendingConfirmation", TOPIC_A)]},
+        {"TopicArn": TOPIC_A, "NextToken": "s1"},
+    )
+    stub.add_response("list_topics", {"Topics": [{"TopicArn": TOPIC_B}]}, {"NextToken": "t1"})
+    stub.add_response(
+        "list_subscriptions_by_topic",
+        {"Subscriptions": [_sub("PendingConfirmation", TOPIC_B)]},
+        {"TopicArn": TOPIC_B},
+    )
+    with stub:
+        res = service.check_sns_subscriptions("eu-west-1")
+        stub.assert_no_pending_responses()
+
+    assert res.status == PreflightCheckStatus.WARN
+    assert "2 Pending Confirmation" in res.live_value
 
 
 def test_check_support_tier_business(mock_session, test_bundle):
