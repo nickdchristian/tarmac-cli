@@ -33,13 +33,15 @@ class AwsSessionManager:
         self._root_session = boto3.Session(region_name=resolved_region, profile_name=resolved_profile)
         instrument_session(self._root_session)
         self.run_label = f"tarmac-{current_context().get('run_id', 'session')}"
-        self.boto_config = Config(
-            retries={"max_attempts": 10, "mode": "adaptive"},
-            connect_timeout=10,
-            read_timeout=30,
+        config_options: dict[str, Any] = {
+            "retries": {"max_attempts": 10, "mode": "adaptive"},
+            "connect_timeout": 10,
+            "read_timeout": 30,
             # Appears in the CloudTrail userAgent so each event can be traced to the tarmac run that made it.
-            user_agent_appid=self.run_label,
-        )
+            # Passed as kwargs because the botocore type stubs do not declare this option yet.
+            "user_agent_appid": self.run_label,
+        }
+        self.boto_config = Config(**config_options)
         self._sts_client = self._root_session.client("sts", config=self.boto_config)
         self._cached_assumed_sessions: dict[str, boto3.Session] = {}
         self._cached_caller_identity: dict[str, str] | None = None
