@@ -207,7 +207,6 @@ tarmac deploy run --phase 4   # Run only Account Factory provisioning
 | **`tarmac status`** | Inspect live landing zone reconciliation and phase completion status. |
 | **`tarmac drift`** | Audit IAM Identity Center permission sets and member account budget drift. |
 | **`tarmac deploy destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the access role. |
-| **`tarmac import`** | Read an existing organization (read-only) and write matching configuration files. |
 
 <details>
 <summary><strong>Granular Service Commands</strong></summary>
@@ -350,10 +349,13 @@ What counts as "created by tarmac" is decided by evidence, never by name:
   `tarmac deploy inventory --from-log FILE` to inspect it first).
 
 **Member accounts are never closed by this command.** It lists the accounts tarmac manages with the exact
-`tarmac account suspend NAME --close` command for each. Disabling Identity Center trusted access is also left to
-you, because it can delete the Identity Center instance. If you run the teardown as `TarmacDeploymentRole`, the
-access stack's deletion is started but not awaited, and the bootstrap user needs an administrator to remove if
-the role lacks IAM user permissions (the command prints this).
+`tarmac account suspend NAME --close` command for each. An alternate contact that replaced one which already existed is
+left in place (tarmac cannot restore the old one), and the `tarmac-bootstrap` user is only deleted when it carries
+the `tarmac:managed-by=tarmac` tag. Disabling Identity Center trusted access is also left to you, because it can
+delete the Identity Center instance. If you run the teardown as `TarmacDeploymentRole`, the
+access stack's deletion is started but not awaited. The role cannot manage IAM users, so when the access stack
+contains a bootstrap user the stack is kept and the command tells you to remove the user as an administrator
+(for example your SSO admin) and run it again.
 
 If a teardown leaves a CloudFormation stack in `DELETE_FAILED` (for example a bucket that could not be emptied),
 fix the cause and re-run teardown or deploy: both now delete and recreate stacks stuck in `DELETE_FAILED`,

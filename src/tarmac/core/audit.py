@@ -53,4 +53,7 @@ def audit(
 
     recorder = inventory.active()
     if recorder is not None:
-        recorder.observe(action, resource, outcome.value, dry_run, details)
+        try:
+            recorder.observe(action, resource, outcome.value, dry_run, details)
+        except Exception:
+            logger.debug("Could not update the inventory", exc_info=True)

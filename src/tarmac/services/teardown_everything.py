@@ -177,6 +177,7 @@ class EverythingTeardown(TeardownBase):
         org: Any = self.session_mgr.get_client("organizations")
         mgmt_id = self._get_management_account_id()
         depth = {name: self._ou_depth(org, d.get("ou_id", "")) for name, d in recorded.items()}
+        planned: set[str] = set()  # dry run: OUs that a real run would already have deleted
         for name in sorted(recorded, key=lambda n: -depth[n]):
             ou_id = recorded[name].get("ou_id", "")
             if not ou_id:
@@ -186,7 +187,7 @@ class EverythingTeardown(TeardownBase):
                 continue
             try:
                 org.describe_organizational_unit(OrganizationalUnitId=ou_id)
-                occupants = self._ou_occupants(org, ou_id)
+                occupants = [o for o in self._ou_occupants(org, ou_id) if o not in planned]
             except ClientError as exc:
                 if aws_error_code(exc) == "OrganizationalUnitNotFoundException":
                     inventory.forget("ou", name)
@@ -213,6 +214,7 @@ class EverythingTeardown(TeardownBase):
                 )
                 continue
             if dry_run:
+                planned.add(ou_id)
                 results.append(
                     _item(
                         "Organizational Unit",
@@ -341,7 +343,20 @@ class EverythingTeardown(TeardownBase):
             )
 
         account: Any = self.session_mgr.get_client("account")
-        for key in inventory.get("alternate-contact"):
+        for key, details in inventory.get("alternate-contact").items():
+            if details.get("replaced_existing"):
+                if not dry_run:
+                    inventory.forget("alternate-contact", key)
+                results.append(
+                    _item(
+                        "Alternate Contact",
+                        key,
+                        "SKIPPED",
+                        "Replaced a contact that existed before tarmac; tarmac cannot restore it, so it is left as is",
+                        account_id=mgmt_id,
+                    )
+                )
+                continue
             results.append(
                 self._act(
                     inventory,
@@ -460,7 +475,18 @@ class EverythingTeardown(TeardownBase):
             caller_arn = str(self.session_mgr.get_caller_identity().get("Arn", ""))
         using_role = f"/{ACCESS_ROLE}/" in caller_arn or f"role/{ACCESS_ROLE}" in caller_arn
 
-        self._delete_bootstrap_user(results, dry_run, mgmt_id)
+        if not self._delete_bootstrap_user(results, dry_run, mgmt_id, region):
+            results.append(
+                _item(
+                    "CloudFormation Stack",
+                    ACCESS_STACK,
+                    "SKIPPED",
+                    "Kept because the bootstrap user could not be removed (the stack cannot delete a user "
+                    "that still has keys or MFA). Remove the user as an administrator, then re-run.",
+                    account_id=mgmt_id,
+                )
+            )
+            return results
 
         for stack_region in dict.fromkeys([region, "us-east-1"]):
             try:
@@ -509,37 +535,56 @@ class EverythingTeardown(TeardownBase):
             )
         return results
 
-    def _delete_bootstrap_user(self, results: list[TeardownItemReport], dry_run: bool, mgmt_id: str) -> None:
-        """The stack cannot delete a user that still has keys or MFA, so empty it first."""
+    def _access_stack_has_user(self, region: str) -> bool:
+        """True when the access stack (in any candidate region) contains an IAM user."""
+        for stack_region in dict.fromkeys([region, "us-east-1"]):
+            try:
+                cfn = self.session_mgr.get_client("cloudformation", region_name=stack_region)
+                for page in cfn.get_paginator("list_stack_resources").paginate(StackName=ACCESS_STACK):
+                    if any(
+                        r.get("ResourceType") == "AWS::IAM::User"
+                        for r in page.get("StackResourceSummaries", [])
+                    ):
+                        return True
+            except (ClientError, BotoCoreError):
+                continue
+        return False
+
+    def _delete_bootstrap_user(
+        self, results: list[TeardownItemReport], dry_run: bool, mgmt_id: str, region: str
+    ) -> bool:
+        """The stack cannot delete a user that still has keys or MFA, so empty it first.
+
+        Only a user tagged ``tarmac:managed-by=tarmac`` is touched. Returns False when a tarmac user is still
+        there (or cannot be inspected) and the stack must therefore be kept.
+        """
+
+        def report(action: str, message: str) -> None:
+            results.append(_item("IAM User", BOOTSTRAP_USER, action, message, account_id=mgmt_id))
+
+        iam: Any = self.session_mgr.get_client("iam")
         try:
-            iam: Any = self.session_mgr.get_client("iam")
             iam.get_user(UserName=BOOTSTRAP_USER)
+            tags = iam.list_user_tags(UserName=BOOTSTRAP_USER).get("Tags", [])
         except ClientError as exc:
             if aws_error_code(exc) in _MISSING:
-                return
-            results.append(
-                _item(
-                    "IAM User",
-                    BOOTSTRAP_USER,
-                    "SKIPPED",
-                    f"Could not inspect ({aws_error_message(exc)}); remove it as an administrator",
-                    account_id=mgmt_id,
-                )
-            )
-            return
-        except BotoCoreError:
-            return
+                return True
+            if aws_error_code(exc) in (
+                "AccessDenied",
+                "AccessDeniedException",
+            ) and not self._access_stack_has_user(region):
+                return True  # this session cannot see IAM users, and the stack holds none
+            report("SKIPPED", f"Could not inspect ({aws_error_message(exc)}); remove it as an administrator")
+            return False
+        except BotoCoreError as exc:
+            report("SKIPPED", f"Could not inspect ({exc})")
+            return False
+        if not any(t.get("Key") == TAG_MANAGED_BY and t.get("Value") == "tarmac" for t in tags):
+            report("SKIPPED", "Not tagged tarmac:managed-by=tarmac, so tarmac did not create it; left alone")
+            return True
         if dry_run:
-            results.append(
-                _item(
-                    "IAM User",
-                    BOOTSTRAP_USER,
-                    "SIMULATED",
-                    "Would delete its access keys, MFA devices and the user",
-                    account_id=mgmt_id,
-                )
-            )
-            return
+            report("SIMULATED", "Would delete its access keys, MFA devices and the user")
+            return True
         try:
             for key in iam.list_access_keys(UserName=BOOTSTRAP_USER).get("AccessKeyMetadata", []):
                 iam.delete_access_key(UserName=BOOTSTRAP_USER, AccessKeyId=key["AccessKeyId"])
@@ -554,25 +599,13 @@ class EverythingTeardown(TeardownBase):
                 iam.detach_user_policy(UserName=BOOTSTRAP_USER, PolicyArn=policy["PolicyArn"])
             iam.delete_user(UserName=BOOTSTRAP_USER)
         except ClientError as exc:
-            results.append(
-                _item(
-                    "IAM User",
-                    BOOTSTRAP_USER,
-                    "SKIPPED" if aws_error_code(exc) == "AccessDenied" else "FAILED",
-                    f"{aws_error_message(exc)}. Delete its access keys and the user as an administrator.",
-                    account_id=mgmt_id,
-                )
+            report(
+                "SKIPPED" if aws_error_code(exc) in ("AccessDenied", "AccessDeniedException") else "FAILED",
+                f"{aws_error_message(exc)}. Delete its access keys and the user as an administrator.",
             )
-            return
+            return False
         audit(
             "delete", f"iam-user:{BOOTSTRAP_USER}", Outcome.SUCCEEDED, f"Deleted IAM user '{BOOTSTRAP_USER}'"
         )
-        results.append(
-            _item(
-                "IAM User",
-                BOOTSTRAP_USER,
-                "DELETED",
-                "Deleted bootstrap user, keys and MFA",
-                account_id=mgmt_id,
-            )
-        )
+        report("DELETED", "Deleted bootstrap user, keys and MFA")
+        return True

@@ -14,6 +14,7 @@ Tarmac run log with ``tarmac deploy inventory --from-log``.
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ class Inventory:
 
     def __init__(self, path: Path):
         self.path = path
+        self._lock = threading.RLock()
         self.entries: dict[str, dict[str, dict[str, Any]]] = {}
         self._load()
 
@@ -69,10 +71,14 @@ class Inventory:
                 json.dumps({"version": 1, "entries": self.entries}, indent=2, sort_keys=True) + "\n"
             )
             os.replace(tmp, self.path)
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning("Could not write inventory %s: %s", self.path, exc)
 
     def record(self, resource: str, details: dict[str, Any] | None = None) -> bool:
+        with self._lock:
+            return self._record(resource, details)
+
+    def _record(self, resource: str, details: dict[str, Any] | None) -> bool:
         kind, key = kind_of(resource), key_of(resource)
         if kind not in TRACKED:
             return False
@@ -85,10 +91,11 @@ class Inventory:
         return True
 
     def forget(self, kind: str, key: str) -> None:
-        if self.entries.get(kind, {}).pop(key, None) is not None:
-            if not self.entries[kind]:
-                del self.entries[kind]
-            self.save()
+        with self._lock:
+            if self.entries.get(kind, {}).pop(key, None) is not None:
+                if not self.entries[kind]:
+                    del self.entries[kind]
+                self.save()
 
     def get(self, kind: str) -> dict[str, dict[str, Any]]:
         return dict(self.entries.get(kind, {}))

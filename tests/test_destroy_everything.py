@@ -27,7 +27,8 @@ def inv(tmp_path: Path) -> Inventory:
 
 def _service(clients: dict[str, Any]) -> TeardownService:
     session = MagicMock()
-    session.get_client.side_effect = lambda name, region_name=None: clients[name]
+    fallback = MagicMock()
+    session.get_client.side_effect = lambda name, region_name=None: clients.get(name, fallback)
     session.get_caller_identity.return_value = {
         "Account": "111",
         "Arn": "arn:aws:sts::111:assumed-role/Admin/x",
@@ -106,7 +107,7 @@ def _org_for_ous(occupied: set[str]) -> MagicMock:
 
     def paginator(name: str) -> MagicMock:
         pag = MagicMock()
-        pag.paginate.side_effect = lambda ParentId, ChildType: [
+        pag.paginate.side_effect = lambda ParentId=None, ChildType=None, **_: [
             {"Children": [{"Id": "444"}] if (ParentId in occupied and ChildType == "ACCOUNT") else []}
         ]
         return pag
@@ -232,6 +233,7 @@ def test_group_assignments_are_removed_before_the_group(inv: Inventory, monkeypa
 
 def test_bootstrap_user_is_emptied_then_deleted_with_the_stack():
     iam, cfn = MagicMock(), MagicMock()
+    iam.list_user_tags.return_value = {"Tags": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}
     iam.list_access_keys.return_value = {"AccessKeyMetadata": [{"AccessKeyId": "AK"}]}
     iam.list_mfa_devices.return_value = {"MFADevices": [{"SerialNumber": "arn:mfa"}]}
     iam.list_user_policies.return_value = {"PolicyNames": []}
@@ -305,3 +307,105 @@ def test_inventory_command_lists_recorded_items(tmp_path: Path):
     result = CliRunner().invoke(app, ["inventory", "-c", str(tmp_path), "--json"])
     assert result.exit_code == 0
     assert json.loads(result.output) == {"ou": {"Security": {"ou_id": "ou-1"}}}
+
+
+def test_user_not_tagged_by_tarmac_is_left_alone():
+    iam, cfn = MagicMock(), MagicMock()
+    iam.list_user_tags.return_value = {"Tags": []}
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
+    iam.delete_user.assert_not_called()
+    assert items[0].action == "SKIPPED"
+    assert "left alone" in items[0].message
+
+
+def test_stack_is_kept_when_the_user_cannot_be_removed():
+    iam, cfn = MagicMock(), MagicMock()
+    iam.get_user.side_effect = _err("AccessDenied")
+    pag = MagicMock()
+    pag.paginate.return_value = [{"StackResourceSummaries": [{"ResourceType": "AWS::IAM::User"}]}]
+    cfn.get_paginator.return_value = pag
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
+    cfn.delete_stack.assert_not_called()
+    assert [i.action for i in items] == ["SKIPPED", "SKIPPED"]
+
+
+def test_role_session_can_delete_a_stack_that_holds_no_user():
+    iam, cfn = MagicMock(), MagicMock()
+    iam.get_user.side_effect = _err("AccessDenied")
+    pag = MagicMock()
+    pag.paginate.return_value = [{"StackResourceSummaries": [{"ResourceType": "AWS::IAM::Role"}]}]
+    cfn.get_paginator.return_value = pag
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
+    cfn.delete_stack.assert_called_once_with(StackName="tarmac-access")
+    assert [i.action for i in items] == ["DELETED"]
+
+
+def test_dry_run_counts_child_ous_as_already_gone(inv: Inventory):
+    inv.record("ou:Parent", {"ou_id": "ou-parent"})
+    inv.record("ou:Child", {"ou_id": "ou-child"})
+    org = _org_for_ous(set())
+    org.get_paginator.side_effect = lambda name: MagicMock(
+        paginate=lambda ParentId, ChildType: [
+            {
+                "Children": [{"Id": "ou-child"}]
+                if (ParentId == "ou-parent" and ChildType == "ORGANIZATIONAL_UNIT")
+                else []
+            }
+        ]
+    )
+    items = _service({"organizations": org}).teardown_ous(inv, dry_run=True)
+    assert [i.action for i in items] == ["SIMULATED", "SIMULATED"]
+    assert set(inv.get("ou")) == {"Parent", "Child"}  # a dry run forgets nothing
+
+
+def test_contact_that_replaced_an_existing_one_is_not_removed(inv: Inventory):
+    inv.record("alternate-contact:BILLING", {"replaced_existing": True})
+    inv.record("alternate-contact:SECURITY", {"replaced_existing": False})
+    account = MagicMock()
+    items = _service(
+        {"organizations": MagicMock(), "iam": MagicMock(), "account": account}
+    ).teardown_org_settings(None, inv)  # type: ignore[arg-type]
+    account.delete_alternate_contact.assert_called_once_with(AlternateContactType="SECURITY")
+    assert {i.resource_name: i.action for i in items} == {"BILLING": "SKIPPED", "SECURITY": "DELETED"}
+
+
+def test_recording_never_breaks_an_audited_action(tmp_path: Path):
+    inv_mod.activate(tmp_path)
+    audit("create", "ou:Odd", Outcome.SUCCEEDED, "x", ou_id="ou-1", when=Path("/not/json"))  # must not raise
+    assert "Odd" in inv_mod.active().get("ou")  # type: ignore[union-attr]
+    bad = MagicMock()
+    bad.observe.side_effect = RuntimeError("boom")
+    inv_mod._active = bad
+    audit("create", "ou:Other", Outcome.SUCCEEDED, "x")  # must not raise
+
+
+def test_full_teardown_runs_in_order_and_ends_with_the_access_role(inv: Inventory, tmp_path: Path):
+    from tarmac.core.config_loader import load_all_configs
+    from tarmac.services.scaffold import scaffold_project
+
+    scaffold_project(tmp_path / "cfg")
+    bundle, errors = load_all_configs(tmp_path / "cfg")
+    assert bundle is not None
+    assert not errors
+    inv.record("ou:Parent", {"ou_id": "ou-parent"})
+    svc = _service(
+        {
+            "organizations": _org_for_ous(set()),
+            "iam": MagicMock(),
+            "account": MagicMock(),
+            "cloudformation": MagicMock(),
+        }
+    )
+    phases: list[str] = []
+    svc.on_phase = phases.append
+    report = svc.teardown_all(bundle, "us-east-1", dry_run=True, inventory=inv)
+
+    order = [p.split("|")[0].strip() for p in phases]
+    assert order.index("Organizational Units created by tarmac") < order.index("Phase 1")
+    assert phases[-1] == "Tarmac access role and bootstrap user"
+    assert phases[-2] == "Member accounts (kept)"
+    assert report.status == "SIMULATED"
+    assert "Parent" in inv.get("ou")
