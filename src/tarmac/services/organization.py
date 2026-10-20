@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_TRUSTED_SERVICES = [
     "cloudtrail.amazonaws.com",
     "config.amazonaws.com",
+    # Required before Phase 5 can delegate Config administration to the Audit account.
+    "config-multiaccountsetup.amazonaws.com",
     "guardduty.amazonaws.com",
     "securityhub.amazonaws.com",
     "sso.amazonaws.com",
