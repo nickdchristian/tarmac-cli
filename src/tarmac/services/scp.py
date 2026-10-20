@@ -256,6 +256,7 @@ class SCPService:
 
         attached_now: list[str] = []
         newly_attached: list[str] = []
+        unresolved: list[str] = []
 
         live_targets = self.list_targets_for_policy(policy_id) if policy_id != "DRY-RUN-POLICY-ID" else []
 
@@ -263,6 +264,7 @@ class SCPService:
             resolved = self._resolve_target_id(target, root_id, ou_map)
             if not resolved:
                 logger.warning("Target '%s' not found in Root or OUs for policy %s", target, scp_def.name)
+                unresolved.append(target)
                 continue
             tid, tname = resolved
             attached_now.append(f"{tname} ({tid})")
@@ -276,7 +278,8 @@ class SCPService:
             action_taken=action,
             attached_targets=attached_now,
             newly_attached_targets=newly_attached,
-            status="SUCCEEDED",
+            status="FAILED" if unresolved else "SUCCEEDED",
+            unresolved_targets=unresolved,
         )
 
     def reconcile_all(

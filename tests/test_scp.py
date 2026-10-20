@@ -612,6 +612,25 @@ def test_scp_reconcile_via_cfn_raises_on_deployment_error(tmp_path: Path):
     assert "Waiter timed out" in str(exc_info.value)
 
 
+def test_reconcile_scp_marks_unresolved_targets_as_failed(tmp_path: Path):
+    policy_file = tmp_path / "policies" / "scp" / "deny-root.json"
+    policy_file.parent.mkdir(parents=True, exist_ok=True)
+    policy_file.write_text('{"Version":"2012-10-17"}', encoding="utf-8")
+    client = MagicMock()
+    session = MagicMock()
+    session.get_client.return_value = client
+    client.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-new"}}}
+    client.list_targets_for_policy.return_value = {"Targets": []}
+    scp_def = SCPDef(
+        name="Guard", description="d", policy_file="policies/scp/deny-root.json", targets=["Typo"]
+    )
+
+    result = SCPService(session).reconcile_scp(scp_def, {}, "r-root1", {"Security": "ou-1"}, tmp_path)
+
+    assert result.status == "FAILED"
+    assert result.unresolved_targets == ["Typo"]
+
+
 def test_normalize_json_falls_back_for_invalid_json():
     service = SCPService(MagicMock())
     assert service._normalize_json("  {not json  ") == "{not json"
