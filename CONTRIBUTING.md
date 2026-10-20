@@ -14,7 +14,7 @@ Clone the repository and sync dependencies from `uv.lock`:
 ```bash
 git clone https://github.com/nickdchristian/tarmac-cli.git
 cd tarmac-cli
-uv sync --frozen
+uv sync --locked
 ```
 
 ## Running Quality Gates
