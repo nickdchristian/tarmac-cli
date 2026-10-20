@@ -185,7 +185,15 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     table.add_row("Organization Trail", trail_cfg.trail_name, "CREATE MULTI-REGION")
     table.add_row("Primary Region", target_region, "STACK REGION")
     table.add_row("Log Archive Account", log_archive_name, "AGGREGATE S3 SINK")
-    table.add_row("KMS Encryption", kms_desc, "CONSTRUCT KEY POLICY")
+    table.add_row(
+        "KMS Encryption", kms_desc, "CONSTRUCT KEY POLICY" if trail_cfg.enable_kms else "NO KEY NEEDED"
+    )
+    if trail_cfg.retention_days:
+        table.add_row(
+            "Log Retention", f"Delete after {trail_cfg.retention_days} days", "APPLY LIFECYCLE RULE"
+        )
+    else:
+        table.add_row("Log Retention", "Keep indefinitely", "NO EXPIRATION")
     table.add_row("Trail Scope", "Multi-Region (All accounts in organization)", "APPLY ORG-WIDE")
     console.print(table)
 
@@ -515,6 +523,7 @@ def _build_dry_run_plan_dict(
             "primary_region": target_region,
             "log_archive_account": bundle.get_log_archive_account_name() or "log-archive",
             "kms_enabled": bundle.org.cloudtrail.enable_kms,
+            "log_retention_days": bundle.org.cloudtrail.retention_days,
         }
 
     if 4 in phases_to_run:

@@ -235,6 +235,7 @@ def _deploy_log_archive_hardening_stack(
             "OrganizationId": org_id,
             "OrgName": bundle.org.organization.name,
             "EnableKmsEncryption": "true" if bundle.org.cloudtrail.enable_kms else "false",
+            "LogRetentionDays": str(bundle.org.cloudtrail.retention_days or 0),
         },
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),

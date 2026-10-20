@@ -1,5 +1,6 @@
 """Pytest test fixtures."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -31,3 +32,11 @@ def sample_config_dir(project_root: Path) -> Path:
     if examples_dir.is_dir():
         return examples_dir
     return project_root / "config"
+
+
+@pytest.fixture
+def writable_config_dir(sample_config_dir: Path, tmp_path: Path) -> Path:
+    """A throwaway copy of the example config, for tests that edit it. Never write to sample_config_dir."""
+    target = tmp_path / "config"
+    shutil.copytree(sample_config_dir, target)
+    return target

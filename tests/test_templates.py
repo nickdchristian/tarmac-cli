@@ -316,3 +316,10 @@ def test_bundled_scps_match_the_repository_copies():
     bundled = Path(tarmac.__file__).parent / "templates" / "policies" / "scp"
     for f in sorted(repo_policies.glob("*.json")):
         assert (bundled / f.name).read_text() == f.read_text(), f.name
+
+
+def test_example_config_is_not_rewritten_by_tests(project_root: Path):
+    """Tests that edit configuration must work on a copy (see the writable_config_dir fixture)."""
+    text = (project_root / "examples" / "config" / "organization.yaml").read_text(encoding="utf-8")
+    assert text.startswith("# ====")
+    assert "# Organization-wide CloudTrail configuration" in text

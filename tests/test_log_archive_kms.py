@@ -66,9 +66,9 @@ def test_bundled_and_repository_templates_match():
 
 @pytest.mark.parametrize(("enable_kms", "expected"), [(True, "true"), (False, "false")])
 def test_deploy_passes_the_setting_to_the_log_archive_stack(
-    sample_config_dir, monkeypatch, enable_kms, expected
+    writable_config_dir, monkeypatch, enable_kms, expected
 ):
-    org_file = sample_config_dir / "organization.yaml"
+    org_file = writable_config_dir / "organization.yaml"
     data = yaml.safe_load(org_file.read_text())
     data.setdefault("cloudtrail", {})["enable_kms"] = enable_kms
     org_file.write_text(yaml.safe_dump(data))
@@ -95,7 +95,7 @@ def test_deploy_passes_the_setting_to_the_log_archive_stack(
     monkeypatch.setattr("tarmac.cli.deploy.CloudFormationService", lambda sm: service)
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: MagicMock())
 
-    res = runner.invoke(app, ["run", "--config-dir", str(sample_config_dir), "--phase", "3", "--yes"])
+    res = runner.invoke(app, ["run", "--config-dir", str(writable_config_dir), "--phase", "3", "--yes"])
 
     assert res.exit_code == 0, res.output
     archive = next(p for name, p in params_by_stack.items() if name.endswith("log-archive-hardening"))
@@ -112,7 +112,8 @@ def test_baseline_command_passes_the_setting_to_the_log_archive_stack(enable_kms
 
     bundle = SimpleNamespace(
         org=SimpleNamespace(
-            organization=SimpleNamespace(name="acme"), cloudtrail=SimpleNamespace(enable_kms=enable_kms)
+            organization=SimpleNamespace(name="acme"),
+            cloudtrail=SimpleNamespace(enable_kms=enable_kms, retention_days=None),
         ),
         config_dir=ROOT / "examples" / "config",
         get_log_archive_account_name=lambda: "log-archive",

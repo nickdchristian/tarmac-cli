@@ -222,6 +222,17 @@ The run id is added to the AWS user agent (`app/tarmac-<run-id>`) and to the rol
 
 During `--dry-run` and `plan` commands, any state-changing call (other than CloudFormation change sets) is logged as an `ERROR` with `"event": "dry_run_violation"`: a preview must not change anything.
 
+### Keeping CloudTrail logs
+
+By default CloudTrail logs are kept forever, which is the safe choice but means storage cost grows slowly. Set `cloudtrail.retention_days` to delete log files that many days after they are written:
+
+```yaml
+cloudtrail:
+  retention_days: 365   # omit to keep logs indefinitely
+```
+
+Deleted objects are purged for good seven days later and cannot be recovered, so pick a value that meets your audit and compliance requirements (many frameworks ask for a year or more). `tarmac deploy run --dry-run` shows the retention that will be applied. The setting is applied to the log archive stack; changing it re-deploys that stack.
+
 ### Encryption of the log archive
 
 `cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.

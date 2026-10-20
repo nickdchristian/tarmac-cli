@@ -77,6 +77,7 @@ cloudtrail:
   bucket_prefix: "myorg-cloudtrail"
   log_archive_account: "Log-Archive"
   enable_kms: true
+  # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
 
 # Terraform Backend configuration
 terraform_backend:
