@@ -24,6 +24,7 @@ from ..services.status import StatusService
 from . import access, account, baseline, deploy, identity, org, ou
 from .account import apply_accounts
 from .common import load_configs_or_exit, warn_if_example_newer
+from .logs import logs_command
 from .preflight import run_preflight_checks
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
 
@@ -51,6 +52,12 @@ app.command(
     "doctor",
     help="Alias for 'tarmac preflight': diagnose environment health and prerequisites.",
 )(run_preflight_checks)
+
+
+app.command(
+    "logs",
+    help="Summarize runs from a --log-file record and show what each one did.",
+)(logs_command)
 
 
 def version_callback(value: bool) -> None:
@@ -90,7 +97,8 @@ def main_callback(
 
     setup_logging(debug=debug, console=error_console, verbose=verbose, log_file=log_file)
 
-    if ctx.invoked_subcommand:
+    # Reading a log must not append a run to the file being read.
+    if ctx.invoked_subcommand and ctx.invoked_subcommand != "logs":
         run = start_run(ctx.invoked_subcommand, __version__, sys.argv[1:])
         ctx.call_on_close(lambda: run.finish(sys.exc_info()[1]))
 
