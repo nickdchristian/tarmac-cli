@@ -44,8 +44,18 @@ Parameters:
       and skip the key and its request charges. An existing key is retained when switching to 'false' because
       logs written earlier still need it to be read.
 
+  LogRetentionDays:
+    Type: String
+    Default: '0'
+    AllowedPattern: '^[0-9]{1,5}$'
+    Description: >-
+      Delete CloudTrail log files this many days after they are written. '0' keeps them indefinitely.
+      Deleted versions are purged 7 days later. Choose a value that satisfies your audit and compliance
+      requirements; logs cannot be recovered once purged.
+
 Conditions:
   UseKmsEncryption: !Equals [!Ref EnableKmsEncryption, 'true']
+  HasLogRetention: !Not [!Equals [!Ref LogRetentionDays, '0']]
 
 Resources:
   LogArchiveKmsKey:
@@ -215,6 +225,19 @@ Resources:
               - StorageClass: GLACIER
                 TransitionInDays: 90
             NoncurrentVersionExpirationInDays: 365
+          - !If
+            - HasLogRetention
+            - Id: ExpireLogsAfterRetention
+              Status: Enabled
+              ExpirationInDays: !Ref LogRetentionDays
+              NoncurrentVersionExpirationInDays: 7
+            - !Ref 'AWS::NoValue'
+          - !If
+            - HasLogRetention
+            - Id: RemoveExpiredDeleteMarkers
+              Status: Enabled
+              ExpiredObjectDeleteMarker: true
+            - !Ref 'AWS::NoValue'
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced

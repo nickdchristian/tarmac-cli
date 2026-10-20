@@ -163,6 +163,7 @@ def _deploy_log_archive_stack(
         "OrganizationId": org_id,
         "OrgName": bundle.org.organization.name,
         "EnableKmsEncryption": "true" if bundle.org.cloudtrail.enable_kms else "false",
+        "LogRetentionDays": str(bundle.org.cloudtrail.retention_days or 0),
     }
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     report = service.deploy_stack(

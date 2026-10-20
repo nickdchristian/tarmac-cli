@@ -112,7 +112,8 @@ def test_baseline_command_passes_the_setting_to_the_log_archive_stack(enable_kms
 
     bundle = SimpleNamespace(
         org=SimpleNamespace(
-            organization=SimpleNamespace(name="acme"), cloudtrail=SimpleNamespace(enable_kms=enable_kms)
+            organization=SimpleNamespace(name="acme"),
+            cloudtrail=SimpleNamespace(enable_kms=enable_kms, retention_days=None),
         ),
         config_dir=ROOT / "examples" / "config",
         get_log_archive_account_name=lambda: "log-archive",

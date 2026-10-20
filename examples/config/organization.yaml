@@ -2,6 +2,7 @@ cloudtrail:
   bucket_prefix: myorg-cloudtrail
   enable_kms: false
   log_archive_account: log-archive
+  retention_days: 90
   trail_name: myorg-organization-trail
 contacts:
   billing:

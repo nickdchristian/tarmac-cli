@@ -93,6 +93,16 @@ class CloudTrailConfig(BaseModel):
         default="log-archive",
         description="Designates the account name hosting centralized CloudTrail logs.",
     )
+    retention_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=36500,
+        description=(
+            "Delete CloudTrail log files this many days after they are written, to cap storage cost. "
+            "Leave unset to keep them indefinitely. Logs cannot be recovered once purged, so choose a value "
+            "that meets your audit and compliance requirements."
+        ),
+    )
 
     @field_validator("bucket_prefix")
     def validate_bucket_prefix(cls, v: str) -> str:
