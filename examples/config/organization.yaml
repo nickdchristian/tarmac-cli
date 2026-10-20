@@ -87,8 +87,8 @@ cloudtrail:
   bucket_prefix: "myorg-cloudtrail"
   log_archive_account: "log-archive"
   # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
-  # object_lock:           # Optional S3 Object Lock on the log bucket. COMPLIANCE cannot be undone before it expires.
-  #   mode: GOVERNANCE     # GOVERNANCE (bypassable) or COMPLIANCE
+  # object_lock:           # S3 Object Lock on the log bucket (default: GOVERNANCE, 365 days). null turns it off.
+  #   mode: GOVERNANCE     # GOVERNANCE (bypassable) or COMPLIANCE (cannot be undone before it expires)
   #   retention_days: 365
   enable_kms: false # false = SSE-S3 (AES256) on the trail and the log bucket; no KMS key or request charges
 

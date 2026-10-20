@@ -309,23 +309,25 @@ Deleted objects are purged for good seven days later and cannot be recovered, so
 
 ### Locking CloudTrail logs (S3 Object Lock)
 
-Off by default. To stop log files being deleted or overwritten for a period, set a default retention on the log bucket:
+On by default: the log bucket gets a default retention so log files cannot be deleted or overwritten for a year.
 
 ```yaml
 cloudtrail:
   object_lock:
     mode: GOVERNANCE      # or COMPLIANCE
     retention_days: 365
+  # object_lock: null     # turn it off
 ```
 
 `GOVERNANCE` can be bypassed by principals with `s3:BypassGovernanceRetention`. `COMPLIANCE` cannot be shortened or
-removed by anyone, including the root user, until each object's period ends. It can be turned on for an existing
-bucket, but the lock then applies only to objects written afterwards.
+removed by anyone, including the root user, until each object's period ends. The lock applies to objects written after
+it is enabled. S3 does not let you disable Object Lock on a bucket once it is on, so set `object_lock: null` before the
+first deploy if you do not want it. If `retention_days` (log expiry) is shorter than the lock, the default lock shrinks
+to match; an explicit lock longer than `retention_days` is rejected, because lifecycle cannot delete locked versions.
 
 This changes teardown. `tarmac deploy destroy` retries locked deletes with the governance bypass, so GOVERNANCE
 locks do not block it (the audit log records it). COMPLIANCE locks cannot be removed: destroy stops with an error
-and the log bucket stays until the retention period ends. Use `GOVERNANCE` with a short period in test organizations.
-Lifecycle expiry (`retention_days`) cannot delete a version before its lock ends.
+and the log bucket stays until the retention period ends. Keep `GOVERNANCE` (the default) in test organizations.
 
 ### Encryption of the log archive
 

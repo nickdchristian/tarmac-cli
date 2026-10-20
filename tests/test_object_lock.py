@@ -37,18 +37,38 @@ def _bundle(**cloudtrail) -> SimpleNamespace:
     )
 
 
-def test_object_lock_is_off_by_default_and_adds_no_parameters():
-    assert CloudTrailConfig().object_lock is None
+def test_object_lock_is_governance_for_a_year_by_default():
+    lock = CloudTrailConfig().object_lock
+    assert lock is not None
+    assert (lock.mode, lock.retention_days) == ("GOVERNANCE", 365)
     params = log_archive_parameters(_bundle(), "o-abc1234567")  # type: ignore[arg-type]
+    assert params["ObjectLockMode"] == "GOVERNANCE"
+    assert params["ObjectLockRetentionDays"] == "365"
+
+
+def test_object_lock_can_be_turned_off_and_then_adds_no_parameters():
+    assert CloudTrailConfig(object_lock=None).object_lock is None
+    params = log_archive_parameters(_bundle(object_lock=None), "o-abc1234567")  # type: ignore[arg-type]
     assert "ObjectLockMode" not in params
     assert "ObjectLockRetentionDays" not in params
 
 
 def test_object_lock_parameters_are_passed_when_configured():
-    bundle = _bundle(object_lock={"mode": "GOVERNANCE", "retention_days": 30})
+    bundle = _bundle(object_lock={"mode": "COMPLIANCE", "retention_days": 30})
     params = log_archive_parameters(bundle, "o-abc1234567")  # type: ignore[arg-type]
-    assert params["ObjectLockMode"] == "GOVERNANCE"
+    assert params["ObjectLockMode"] == "COMPLIANCE"
     assert params["ObjectLockRetentionDays"] == "30"
+
+
+def test_default_lock_shrinks_to_a_shorter_log_retention():
+    """Lifecycle cannot delete a locked version, so the default must not outlast retention_days."""
+    assert CloudTrailConfig(retention_days=90).object_lock.retention_days == 90  # type: ignore[union-attr]
+    assert CloudTrailConfig(retention_days=730).object_lock.retention_days == 365  # type: ignore[union-attr]
+
+
+def test_explicit_lock_longer_than_log_retention_is_rejected():
+    with pytest.raises(ValidationError, match="longer than"):
+        CloudTrailConfig(retention_days=90, object_lock={"mode": "GOVERNANCE", "retention_days": 365})
 
 
 @pytest.mark.parametrize(
