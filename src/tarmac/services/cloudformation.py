@@ -9,7 +9,7 @@ from typing import Any, Literal
 from botocore.exceptions import ClientError, WaiterError
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import DeploymentError
+from ..core.exceptions import AWS_ERRORS, DeploymentError
 from ..core.models import StackDeployReport
 from ..core.tagging import merge_tags, to_cfn_tags
 
@@ -258,7 +258,7 @@ class CloudFormationService:
                             )
                             if v_reason:
                                 reasons.append(f"{res_id}: {v_reason}")
-                except Exception as exc:  # best effort: extra failure detail only
+                except AWS_ERRORS as exc:  # best effort: extra failure detail only
                     logger.debug("Could not read change-set validation events for '%s': %s", stack_name, exc)
 
             events_resp = cfn_client.describe_stack_events(StackName=stack_name)

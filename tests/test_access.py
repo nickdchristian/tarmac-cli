@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from tarmac.cli.deploy import _refuse_root_identity
 from tarmac.cli.main import app
 from tarmac.core.aws_client import AwsSessionManager
+from tarmac.core.exceptions import AWSAuthenticationError
 from tarmac.core.models import PreflightCheckStatus
 from tarmac.services.preflight import PreflightService
 
@@ -44,7 +45,7 @@ def test_preflight_fails_for_root_and_passes_for_role() -> None:
 
 def test_preflight_unknown_identity_is_info() -> None:
     mgr = MagicMock(spec=AwsSessionManager)
-    mgr.is_root_identity.side_effect = RuntimeError("boom")
+    mgr.is_root_identity.side_effect = AWSAuthenticationError("boom")
     assert PreflightService(mgr, MagicMock()).check_not_root_identity().status == PreflightCheckStatus.INFO
 
 
@@ -197,7 +198,7 @@ def test_bootstrap_dry_run_and_failure() -> None:
         assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1
 
 
-# --- least-privilege policy ------------------------------------------------------------------------------------
+# least-privilege policy
 
 
 class _CfnLoader(yaml.SafeLoader):

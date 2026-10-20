@@ -39,7 +39,6 @@ class SecurityServicesTeardown:
         self._new_results = new_results
         self._notify = notify
 
-    # ------------------------------------------------------------------ public entry point
     def run(
         self,
         bundle: ConfigBundle,
@@ -88,7 +87,6 @@ class SecurityServicesTeardown:
         self._deregister(results, audit_id, sec.delegated_account, principals, dry_run)
         return results
 
-    # ------------------------------------------------------------------ helpers
     @staticmethod
     def _item(
         rtype: str, name: str, acct_name: str, acct_id: str, action: str, message: str
@@ -126,7 +124,6 @@ class SecurityServicesTeardown:
             )
         )
 
-    # ------------------------------------------------------------------ Security Hub
     def _securityhub(
         self,
         results: list[TeardownItemReport],
@@ -218,7 +215,6 @@ class SecurityServicesTeardown:
             raise
         return True
 
-    # ------------------------------------------------------------------ GuardDuty
     def _guardduty(
         self,
         results: list[TeardownItemReport],
@@ -286,7 +282,6 @@ class SecurityServicesTeardown:
             gd.delete_detector(DetectorId=det)
         return bool(detectors)
 
-    # ------------------------------------------------------------------ Organizations delegation
     def _deregister(
         self,
         results: list[TeardownItemReport],

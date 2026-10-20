@@ -234,7 +234,6 @@ def _fetch_sso_instance(session_mgr: AwsSessionManager, region: str) -> str:
 
 
 def _resolve_sso_region(default_region: str) -> str:
-    """Resolve SSO region from config if available."""
     try:
         bundle, _ = load_all_configs()
         if bundle and bundle.identity.identity_center.region:
@@ -505,7 +504,6 @@ def show_status(
 
 
 def _render_drift_table(report: Any) -> None:
-    """Render comprehensive drift audit table to console."""
     print_header("Landing Zone Drift Inspection")
     table = create_table(expand=True)
     table.add_column("Category", style="bold white", width=12, no_wrap=True)

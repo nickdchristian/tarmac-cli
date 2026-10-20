@@ -278,7 +278,7 @@ def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle
     )
 
 
-def _render_phase_5_dry_run(bundle: ConfigBundle, target_region: str) -> None:
+def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     table = create_table(title="Phase 5 Plan: Foundation Infrastructure & Security Delegation")
     table.add_column("Component / Stack", style="cyan")
     table.add_column("Target Account", style="magenta")
@@ -386,7 +386,6 @@ def _render_phase_6_dry_run(bundle: ConfigBundle, region_override: str | None) -
 
 
 def _compute_dry_run_summary_counts(bundle: ConfigBundle) -> dict[str, int]:
-    """Compute common summary counts for dry-run reporting."""
     ou_count = len(_collect_ou_tree(bundle.org.ou_structure))
     acct_count = len(bundle.accounts.accounts)
     scp_count = (

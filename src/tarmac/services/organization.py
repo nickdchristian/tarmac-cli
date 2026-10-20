@@ -10,7 +10,7 @@ from .. import __version__
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import ContactsConfig, RootAccessConfig
-from ..core.exceptions import GovernanceError
+from ..core.exceptions import AWS_ERRORS, GovernanceError
 from ..core.models import (
     STATUS_IN_PROGRESS,
     STATUS_READY,
@@ -151,12 +151,11 @@ class OrganizationService:
                 for a in page.get("Accounts", [])
                 if a.get("Status") == "ACTIVE"
             }
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.warning("Could not query accounts for delegated admin: %s", e)
             return {}
 
     def _enable_iam_trusted_access(self) -> bool:
-        """Enable trusted access for IAM in Organizations."""
         try:
             self.org_client.enable_aws_service_access(ServicePrincipal="iam.amazonaws.com")
             logger.info("Enabled trusted access for IAM in Organizations")
@@ -168,7 +167,6 @@ class OrganizationService:
             return False
 
     def _enable_root_credentials(self) -> bool:
-        """Enable Organizations root credentials management."""
         try:
             self.iam_client.enable_organizations_root_credentials_management()
             logger.info("Enabled Organizations root credentials management")
@@ -180,7 +178,6 @@ class OrganizationService:
             return False
 
     def _enable_root_sessions(self) -> bool:
-        """Enable Organizations privileged root sessions."""
         try:
             self.iam_client.enable_organizations_root_sessions()
             logger.info("Enabled Organizations privileged root sessions")
@@ -343,6 +340,6 @@ class OrganizationService:
         except ClientError as e:
             logger.warning("Could not activate cost allocation tags: %s", e)
             return []
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.warning("Cost allocation tag activation failed: %s", e)
             return []

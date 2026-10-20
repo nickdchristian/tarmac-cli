@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
+from ..core.exceptions import AWS_ERRORS
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ class PreflightService:
         """Fail when running as the root user: it cannot assume roles in member accounts."""
         try:
             is_root = self.session_mgr.is_root_identity()
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("Root identity check: %s", e)
             return PreflightCheckResult(
                 name="Caller Identity",
@@ -95,7 +96,7 @@ class PreflightService:
                 status=PreflightCheckStatus.PASS,
                 live_value=f"Management ({master_id}) - All Features",
             )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("Organization status check: %s", e)
             return PreflightCheckResult(
                 name="AWS Organization Role",
@@ -157,7 +158,7 @@ class PreflightService:
                 live_value=f"{user_count} Local IAM User(s) Found",
                 action_required="Migrate local users to IAM Identity Center and deprecate IAM users",
             )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("IAM user hygiene check: %s", e)
             return PreflightCheckResult(
                 name="Local IAM User Hygiene",
@@ -194,7 +195,7 @@ class PreflightService:
                             action_required="Run 'tarmac org contacts' to configure",
                         )
                     )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("Alternate contacts check failed: %s", e)
             results.append(
                 PreflightCheckResult(
@@ -431,7 +432,6 @@ class PreflightService:
                             active_accounts += 1
             declared_count = len(self.bundle.accounts.accounts)
 
-            # Try querying Service Quotas for default account quota
             sq = self.session_mgr.get_client("service-quotas", region_name="us-east-1")
             try:
                 resp = sq.get_service_quota(ServiceCode="organizations", QuotaCode="L-25807E2B")
@@ -456,7 +456,7 @@ class PreflightService:
                         status=PreflightCheckStatus.PASS,
                         live_value=f"{active_accounts} active, {remaining} remaining of {quota_val} quota",
                     )
-            except Exception as e:
+            except AWS_ERRORS as e:
                 logger.debug("Could not query service-quotas for account limit: %s", e)
 
             return PreflightCheckResult(
@@ -469,7 +469,7 @@ class PreflightService:
                     "(code: L-25807E2B); grant servicequotas:GetServiceQuota to automate this check"
                 ),
             )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("Account quota check failed: %s", e)
             return PreflightCheckResult(
                 name="AWS Organizations Account Quota",
@@ -515,7 +515,7 @@ class PreflightService:
                 status=PreflightCheckStatus.PASS,
                 live_value=f"{attached_count} of 5 SCPs attached",
             )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("SCP quota check failed: %s", e)
             return PreflightCheckResult(
                 name="SCP Attachment Quota",
@@ -545,7 +545,7 @@ class PreflightService:
                                 acct_id = str(acct.get("Id", ""))
                                 if name and acct_id:
                                     active_accts[name] = acct_id
-            except Exception as e:
+            except AWS_ERRORS as e:
                 logger.debug("Could not list accounts for S3 bucket collision check: %s", e)
 
             log_archive_name = self.bundle.get_log_archive_account_name() or "log-archive"
@@ -571,7 +571,7 @@ class PreflightService:
                 if target_acct_id and target_acct_id != mgmt_id:
                     try:
                         target_s3 = self.session_mgr.get_member_client(target_acct_id, "s3")
-                    except Exception as e:
+                    except AWS_ERRORS as e:
                         # Do NOT fall back to the management account's client: it would report the
                         # bucket as "Available" or "Taken" based on the wrong account's view.
                         logger.warning(
@@ -629,7 +629,7 @@ class PreflightService:
                                 live_value=f"Check skipped ({code})",
                             )
                         )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.warning("S3 collision check failed: %s", e)
             results.append(
                 PreflightCheckResult(

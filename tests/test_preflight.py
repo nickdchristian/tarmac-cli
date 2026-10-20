@@ -6,6 +6,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from tarmac.core.config_loader import ConfigBundle, load_all_configs
+from tarmac.core.exceptions import AWSAuthenticationError
 from tarmac.core.models import PreflightCheckStatus
 from tarmac.services.preflight import PreflightService
 
@@ -484,7 +485,7 @@ def test_check_s3_bucket_collision_does_not_fall_back_to_management_client(mock_
     mock_org.get_paginator.return_value = mock_paginator
     mock_s3_mgmt = MagicMock()
     mock_session.get_client.side_effect = lambda s, **kw: mock_org if s == "organizations" else mock_s3_mgmt
-    mock_session.get_member_client.side_effect = RuntimeError("AccessDenied: cannot assume role")
+    mock_session.get_member_client.side_effect = AWSAuthenticationError("cannot assume role")
 
     service = PreflightService(mock_session, test_bundle)
     results = service.check_s3_bucket_collision()

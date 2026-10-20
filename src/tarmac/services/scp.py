@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
-from ..core.exceptions import GovernanceError
+from ..core.exceptions import AWS_ERRORS, GovernanceError
 from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
 from ..core.templates import resolve_resource_path
 from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
@@ -112,7 +112,7 @@ class SCPService:
         """Parse and re-dump JSON to normalize spacing/keys for comparison."""
         try:
             return json.dumps(json.loads(content), sort_keys=True)
-        except Exception:
+        except AWS_ERRORS:
             return content.strip()
 
     def _ensure_ownership_tag(self, policy_id: str) -> None:

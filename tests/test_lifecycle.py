@@ -32,7 +32,7 @@ def bundle(sample_config_dir: Path):
     return b
 
 
-# --- brand-new accounts: OrganizationAccountAccessRole propagates asynchronously -----------------
+# brand-new accounts: OrganizationAccountAccessRole propagates asynchronously
 
 
 def _manager_with_sts(sts: MagicMock) -> AwsSessionManager:
@@ -89,7 +89,7 @@ def test_assume_role_gives_up_when_access_stays_denied():
     assert sts.assume_role.call_count == 1
 
 
-# --- redeploy after a failed teardown: DELETE_FAILED / CREATE_FAILED stacks ---------------------
+# redeploy after a failed teardown: DELETE_FAILED / CREATE_FAILED stacks
 
 
 @pytest.mark.parametrize("status", ["DELETE_FAILED", "CREATE_FAILED", "ROLLBACK_COMPLETE"])
@@ -120,7 +120,7 @@ def test_deploy_stack_updates_healthy_stacks_in_place():
     svc._delete_broken_stack.assert_not_called()
 
 
-# --- closed accounts cannot be re-created: fail clearly instead of assuming into them ------------
+# closed accounts cannot be re-created: fail clearly instead of assuming into them
 
 
 def _result(name: str, status: str, account_id: str = "999999999999") -> AccountProvisionResult:
@@ -230,7 +230,7 @@ def test_phase_4_does_not_report_success_when_a_baseline_step_failed(bundle, tmp
     org.record_phase_completed.assert_not_called()
 
 
-# --- phase 5: security-service failures and missing accounts are not silent ----------------------
+# phase 5: security-service failures and missing accounts are not silent
 
 
 def test_security_delegation_failure_fails_the_phase(bundle):
@@ -269,7 +269,7 @@ def test_phase_5_warns_when_backend_and_audit_accounts_are_missing(bundle, tmp_p
     assert "Audit account" in messages
 
 
-# --- teardown output sets expectations for "start over" -----------------------------------------
+# teardown output sets expectations for "start over"
 
 
 def test_full_teardown_lists_what_it_does_not_remove(tmp_path):

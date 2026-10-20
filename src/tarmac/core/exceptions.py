@@ -1,5 +1,7 @@
 """Custom exception hierarchy for AWS Governance CLI."""
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 
 class GovernanceError(Exception):
     """Base exception for all AWS Governance domain errors."""
@@ -41,3 +43,7 @@ class IdentityCenterError(GovernanceError):
 
 class DeploymentError(GovernanceError):
     """Raised when CloudFormation stack deployments fail or time out."""
+
+
+AWS_ERRORS = (ClientError, BotoCoreError, GovernanceError)
+"""Failures expected when calling AWS; anything else is a bug and should propagate."""

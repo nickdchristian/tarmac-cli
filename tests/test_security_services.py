@@ -280,7 +280,7 @@ def test_guardduty_and_securityhub_report_failed_when_all_regions_fail():
     assert sh_report.regions == []
 
 
-# --- per-region failures must be visible, never averaged into success ---------------------------
+# per-region failures must be visible, never averaged into success
 
 
 def _ce(code: str, msg: str = "boom") -> ClientError:

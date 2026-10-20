@@ -89,7 +89,6 @@ def resolve_file(config_dir: Path, base_name: str) -> Path:
 
 
 def load_yaml(file_path: Path) -> dict[str, Any]:
-    """Load and parse a YAML file."""
     try:
         with file_path.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)

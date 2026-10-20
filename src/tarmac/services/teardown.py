@@ -20,7 +20,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
-from ..core.exceptions import GovernanceError
+from ..core.exceptions import AWS_ERRORS, GovernanceError
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from .cloudformation import CloudFormationService
 from .identity import IdentityService
@@ -176,7 +176,7 @@ def is_s3_bucket_empty(s3_client: Any, bucket_name: str) -> bool:
             return True
         logger.debug("Bucket '%s' inaccessible during empty check: %s", clean_name, e)
         return False
-    except Exception as e:
+    except AWS_ERRORS as e:
         logger.debug("Bucket '%s' check failed: %s", clean_name, e)
         return False
 
@@ -215,7 +215,7 @@ def cleanup_orphaned_bucket(s3_client: Any, bucket_name: str, account_id: str = 
             return False
         logger.debug("Bucket '%s' check error: %s", clean_name, e)
         return False
-    except Exception:
+    except AWS_ERRORS:
         return False
 
     if is_s3_bucket_empty(s3_client, clean_name):
@@ -274,7 +274,7 @@ class TeardownService:
         if root_session is not None and callable(getattr(root_session, "get_credentials", None)):
             try:
                 return root_session.get_credentials() is not None
-            except Exception:
+            except AWS_ERRORS:
                 return False
         return True
 
@@ -290,7 +290,7 @@ class TeardownService:
                 for a in page.get("Accounts", []):
                     if isinstance(a, dict) and a.get("Status") in ("ACTIVE", None):
                         accts[a["Name"]] = str(a["Id"])
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("Could not query active accounts: %s", e)
         return accts
 
@@ -300,7 +300,7 @@ class TeardownService:
             return ""
         try:
             return str(self.session_mgr.get_caller_identity().get("Account", ""))
-        except Exception:
+        except AWS_ERRORS:
             return ""
 
     def _delete_retained_bucket(
@@ -316,7 +316,7 @@ class TeardownService:
             if code in ("NoSuchBucket", "NotFound"):
                 return []
             message = e.response.get("Error", {}).get("Message", str(e))
-        except Exception as e:
+        except AWS_ERRORS as e:
             message = str(e)
         logger.warning("Could not delete retained bucket '%s': %s", bucket, message)
         return [
@@ -380,7 +380,7 @@ class TeardownService:
                         message="Stack does not exist",
                     )
                 )
-        except Exception as e:
+        except AWS_ERRORS as e:
             results.append(
                 TeardownItemReport(
                     resource_type="CloudFormation Stack",
@@ -392,7 +392,6 @@ class TeardownService:
                 )
             )
 
-        # Cleanup direct trail if left over (only when tarmac created it)
         try:
             trail_client = self.session_mgr.get_client("cloudtrail", region_name=target_region)
             trail_arn = self._find_tarmac_trail_arn(trail_client, trail_name)
@@ -508,7 +507,6 @@ class TeardownService:
             s3_client = self.session_mgr.get_member_client(log_acct_id, "s3", region_name=target_region)
             status = self.cfn_service._get_stack_status(cfn_client, stack_name)
 
-            # Discover bucket names
             buckets_to_empty: set[str] = {
                 f"{bundle.org.cloudtrail.bucket_prefix}-{log_acct_id}",
                 f"{bundle.org.organization.name}-org-cloudtrail-logs-{log_acct_id}",
@@ -551,7 +549,7 @@ class TeardownService:
                                 message=f"Purged {purged_count} objects/versions/markers",
                             )
                         )
-                    except Exception as e:
+                    except AWS_ERRORS as e:
                         logger.warning("Failed to purge bucket '%s': %s", b, e)
                         results.append(
                             TeardownItemReport(
@@ -603,7 +601,6 @@ class TeardownService:
                     )
                 )
 
-            # Delete the emptied S3 buckets that CloudFormation retained
             if not dry_run:
                 for b in sorted(buckets_to_empty):
                     results.extend(self._delete_retained_bucket(s3_client, b, log_acct_name, log_acct_id))
@@ -620,7 +617,7 @@ class TeardownService:
                     )
                 )
 
-        except Exception as e:
+        except AWS_ERRORS as e:
             results.append(
                 TeardownItemReport(
                     resource_type="CloudFormation Stack",
@@ -776,7 +773,6 @@ class TeardownService:
                         )
                     )
 
-                # Direct AWS Budgets API cleanup
                 budgets_client = self.session_mgr.get_member_client(
                     acct_id, "budgets", region_name="us-east-1"
                 )
@@ -811,7 +807,6 @@ class TeardownService:
                     if code not in ("NotFoundException", "ResourceNotFoundException"):
                         logger.debug("Direct budget inspection in %s: %s", acct_name, e)
 
-                # Direct Cost Anomaly Detection cleanup
                 try:
                     ce_client = self.session_mgr.get_member_client(acct_id, "ce", region_name="us-east-1")
                     mon_resp = ce_client.get_anomaly_monitors()
@@ -845,10 +840,10 @@ class TeardownService:
                                         message="Deleted anomaly monitor",
                                     )
                                 )
-                except Exception as e:
+                except AWS_ERRORS as e:
                     logger.debug("Cost anomaly monitor check in %s: %s", acct_name, e)
 
-            except Exception as e:
+            except AWS_ERRORS as e:
                 results.append(
                     TeardownItemReport(
                         resource_type="CloudFormation Stack",
@@ -933,7 +928,7 @@ class TeardownService:
                                 message=f"Purged {purged_count} objects from state bucket",
                             )
                         )
-                    except Exception as e:
+                    except AWS_ERRORS as e:
                         logger.warning("Failed to purge bucket '%s': %s", b, e)
                         results.append(
                             TeardownItemReport(
@@ -985,14 +980,13 @@ class TeardownService:
                     )
                 )
 
-            # Delete the emptied backend S3 buckets that CloudFormation retained
             if not dry_run:
                 for b in sorted(buckets_to_empty):
                     results.extend(
                         self._delete_retained_bucket(s3_client, b, backend_acct_name, backend_acct_id)
                     )
 
-        except Exception as e:
+        except AWS_ERRORS as e:
             results.append(
                 TeardownItemReport(
                     resource_type="CloudFormation Stack",
@@ -1076,7 +1070,7 @@ class TeardownService:
                         message="Stack does not exist",
                     )
                 )
-        except Exception as e:
+        except AWS_ERRORS as e:
             results.append(
                 TeardownItemReport(
                     resource_type="CloudFormation Stack",
@@ -1128,7 +1122,7 @@ class TeardownService:
                             message="Deleted SCP CloudFormation stack",
                         )
                     )
-        except Exception as e:
+        except AWS_ERRORS as e:
             results.append(
                 TeardownItemReport(
                     resource_type="CloudFormation Stack",
@@ -1140,7 +1134,6 @@ class TeardownService:
                 )
             )
 
-        # Cleanup direct SCP policies
         try:
             scp_service = SCPService(self.session_mgr)
             existing = scp_service.list_existing_scps()
@@ -1216,7 +1209,7 @@ class TeardownService:
                                     message=str(e),
                                 )
                             )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.warning("Direct SCP cleanup failed: %s", e)
             results.append(
                 TeardownItemReport(
@@ -1273,7 +1266,7 @@ class TeardownService:
                                 message="Deleted permission sets CloudFormation stack",
                             )
                         )
-            except Exception as e:
+            except AWS_ERRORS as e:
                 results.append(
                     TeardownItemReport(
                         resource_type="CloudFormation Stack",
@@ -1285,7 +1278,6 @@ class TeardownService:
                     )
                 )
 
-        # Direct cleanup of declared permission sets in IAM Identity Center (retained by CloudFormation DeletionPolicy)
         if bundle.identity and bundle.identity.identity_center:
             try:
                 identity_service = IdentityService(self.session_mgr, preferred_region=target_region)
@@ -1335,7 +1327,7 @@ class TeardownService:
                                     message=f"Deleted retained Permission Set '{ps_def.name}'",
                                 )
                             )
-            except Exception as e:
+            except AWS_ERRORS as e:
                 logger.debug("Identity Center direct cleanup: %s", e)
 
         return results
@@ -1465,22 +1457,18 @@ class TeardownService:
 
         phases_set = set(phases) if phases is not None else {2, 3, 4, 5, 6}
 
-        # 1. CloudTrail trail & stack (must stop logging before emptying S3 bucket)
         if 3 in phases_set:
             self._notify_phase("Phase 3 | Organization CloudTrail")
             items.extend(self.teardown_cloudtrail(bundle, region, dry_run=dry_run))
 
-        # 2. Log-Archive S3 buckets & hardening stack
         if 3 in phases_set or 5 in phases_set:
             self._notify_phase("Phase 3/5 | Log Archive Hardening & Buckets")
             items.extend(self.teardown_log_archive(bundle, region, dry_run=dry_run, account_id_map=accts))
 
-        # 3. Member Account Budgets & Cost Anomaly Monitors
         if 4 in phases_set:
             self._notify_phase("Phase 4 | Budgets & Cost Monitors")
             items.extend(self.teardown_budgets(bundle, dry_run=dry_run, account_id_map=accts))
 
-        # 4. Terraform Backend S3 bucket & stack
         if 5 in phases_set:
             self._notify_phase("Phase 5 | Terraform Backend & Audit Hardening")
             if disable_security_services:
@@ -1501,17 +1489,14 @@ class TeardownService:
                 )
             items.extend(self.teardown_audit(bundle, region, dry_run=dry_run, account_id_map=accts))
 
-        # 5. Identity Center Permission Sets
         if 6 in phases_set:
             self._notify_phase("Phase 6 | IAM Identity Center Permission Sets")
             items.extend(self.teardown_identity(bundle, region, dry_run=dry_run))
 
-        # 6. Service Control Policies stack & direct policies
         if 2 in phases_set:
             self._notify_phase("Phase 2 | Service Control Policies")
             items.extend(self.teardown_scps(bundle, dry_run=dry_run))
 
-        # 7. Milestone tags
         if phases is None and mgmt_id:
             self._notify_phase("Milestones | Resetting Deployment Tags")
             items.extend(self.reset_milestones(mgmt_id, dry_run=dry_run))

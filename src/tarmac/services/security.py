@@ -66,7 +66,6 @@ class SecurityServicesService:
         return reports
 
     def _resolve_account_id(self, target_name: str, account_id_map: dict[str, str]) -> str | None:
-        """Resolve account name to account ID case-insensitively."""
         if target_name in account_id_map:
             return account_id_map[target_name]
         norm = normalize_account_name(target_name)

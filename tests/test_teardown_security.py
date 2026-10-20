@@ -187,7 +187,7 @@ def test_deregistration_happens_before_detector_deletion(bundle):
     assert set(order[1:]) == {"delete_detector"}
 
 
-# --- phase wiring and CLI flag --------------------------------------------------------------------
+# phase wiring and CLI flag
 
 
 def test_teardown_all_runs_security_teardown_only_when_requested(bundle):
@@ -226,7 +226,7 @@ def test_cli_passes_disable_security_flag_and_adjusts_notice(tmp_path):
     assert "GuardDuty" not in flagged.stdout
 
 
-# --- log-archive KMS key retirement ---------------------------------------------------------------
+# log-archive KMS key retirement
 
 
 def _log_archive_service(bundle, kms: MagicMock, bucket_delete_error: Exception | None = None):
