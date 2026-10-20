@@ -311,6 +311,8 @@ class BaselineService:
                             account_name,
                             account_id,
                         )
+                        previous = resp["Budget"]
+                        limit = previous.get("BudgetLimit") or {}
                         budgets_client.delete_budget(AccountId=account_id, BudgetName=budget_name)
                         audit(
                             "delete",
@@ -319,6 +321,10 @@ class BaselineService:
                             f"Deleted unmanaged budget '{budget_name}' in account '{account_name}' "
                             "so CloudFormation can manage it",
                             account_id=account_id,
+                            # Kept so the replaced budget can be recreated by hand if it mattered.
+                            previous_limit=f"{limit.get('Amount', '?')} {limit.get('Unit', '')}".strip(),
+                            previous_time_unit=previous.get("TimeUnit"),
+                            previous_budget_type=previous.get("BudgetType"),
                         )
                 except ClientError as e:
                     code = e.response.get("Error", {}).get("Code", "")
