@@ -206,7 +206,8 @@ def test_plan_and_dry_run_arguments_enable_the_guard():
 def test_run_id_is_in_the_user_agent_appid_and_role_session_name():
     with bind(run_id="20261020T000000Z-abc123"):
         mgr = AwsSessionManager(region_name="eu-west-1")
-    assert mgr.boto_config.user_agent_appid == "tarmac-20261020T000000Z-abc123"
+    appid: Any = mgr.boto_config
+    assert appid.user_agent_appid == "tarmac-20261020T000000Z-abc123"
 
     sts = MagicMock()
     sts.assume_role.return_value = {
