@@ -13,7 +13,9 @@ from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import ClientError
 from botocore.session import get_session as get_botocore_session
 
+from .aws_audit import instrument_session
 from .exceptions import AWSAuthenticationError, aws_error_message
+from .logging import current_context
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +31,14 @@ class AwsSessionManager:
         self.default_region = resolved_region
         self.profile_name = resolved_profile
         self._root_session = boto3.Session(region_name=resolved_region, profile_name=resolved_profile)
+        instrument_session(self._root_session)
+        self.run_label = f"tarmac-{current_context().get('run_id', 'session')}"
         self.boto_config = Config(
             retries={"max_attempts": 10, "mode": "adaptive"},
             connect_timeout=10,
             read_timeout=30,
+            # Appears in the CloudTrail userAgent so each event can be traced to the tarmac run that made it.
+            user_agent_appid=self.run_label,
         )
         self._sts_client = self._root_session.client("sts", config=self.boto_config)
         self._cached_assumed_sessions: dict[str, boto3.Session] = {}
@@ -78,14 +84,14 @@ class AwsSessionManager:
         self,
         account_id: str,
         role_name: str = "OrganizationAccountAccessRole",
-        session_name: str = "tarmac-session",
+        session_name: str | None = None,
     ) -> boto3.Session:
         """Assume a role in a target member account and return a boto3.Session with cached credentials."""
         with self._lock:
             return self._get_assumed_session_locked(account_id, role_name, session_name)
 
     def _get_assumed_session_locked(
-        self, account_id: str, role_name: str, session_name: str
+        self, account_id: str, role_name: str, session_name: str | None
     ) -> boto3.Session:
         cache_key = f"{account_id}:{role_name}"
         cached = self._cached_assumed_sessions.get(cache_key)
@@ -94,7 +100,7 @@ class AwsSessionManager:
 
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
         logger.debug("Assuming cross-account role: %s", role_arn)
-        refresh = self._credential_refresher(role_arn, session_name)
+        refresh = self._credential_refresher(role_arn, session_name or self.run_label)
         try:
             credentials = RefreshableCredentials.create_from_metadata(
                 metadata=refresh(), refresh_using=refresh, method="sts-assume-role"
@@ -111,6 +117,7 @@ class AwsSessionManager:
         # botocore has no public setter for a credentials object; this is the documented refreshable-role pattern.
         botocore_session._credentials = credentials
         assumed_session = boto3.Session(botocore_session=botocore_session, region_name=self.default_region)
+        instrument_session(assumed_session)
         self._cached_assumed_sessions[cache_key] = assumed_session
         return assumed_session
 

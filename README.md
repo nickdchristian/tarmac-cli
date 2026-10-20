@@ -198,6 +198,14 @@ tarmac --log-file run.jsonl run --yes
 jq -r 'select(.event=="audit") | "\(.ts) \(.data.outcome) \(.message)"' run.jsonl
 ```
 
+### AWS calls and CloudTrail
+
+Every AWS call is recorded with its service, operation, Region, outcome, duration, request id and a redacted summary of its parameters. Calls that change something (`Create*`, `Put*`, `Delete*`, `Enable*`, ...) are logged at INFO, so they are in the log file and shown by `-v`; read-only calls (`Describe*`, `List*`, `Get*`) appear with `--debug`.
+
+The run id is added to the AWS user agent (`app/tarmac-<run-id>`) and to the role session name (`tarmac-<run-id>`), so any CloudTrail event can be matched back to the run that caused it, for example by searching for the run id in `userAgent` or in the assumed-role session name.
+
+During `--dry-run` and `plan` commands, any state-changing call (other than CloudFormation change sets) is logged as an `ERROR` with `"event": "dry_run_violation"`: a preview must not change anything.
+
 ## Safe Teardown
 
 Tarmac includes built-in safeguards to prevent accidental infrastructure or state loss:
