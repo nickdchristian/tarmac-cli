@@ -179,3 +179,21 @@ def test_session_manager_serializes_client_creation_across_threads():
             th.join()
 
     assert peak == 1
+
+
+def test_get_member_client_caller_account():
+    from unittest.mock import patch
+
+    from tarmac.core.aws_client import AwsSessionManager
+
+    with patch("boto3.Session"):
+        mgr = AwsSessionManager(region_name="us-east-1")
+        mgr.get_caller_identity = MagicMock(
+            return_value={"Account": "316941624511", "Arn": "arn:aws:iam::316941624511:root"}
+        )
+        mock_client = MagicMock()
+        mgr.get_client = MagicMock(return_value=mock_client)
+
+        client = mgr.get_member_client("316941624511", "s3")
+        assert client == mock_client
+        mgr.get_client.assert_called_once_with("s3", region_name=None)
