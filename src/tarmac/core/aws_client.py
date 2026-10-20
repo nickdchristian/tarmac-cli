@@ -4,11 +4,14 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from typing import Any, cast
 
 import boto3
 from botocore.config import Config
+from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import ClientError
+from botocore.session import get_session as get_botocore_session
 
 from .exceptions import AWSAuthenticationError, aws_error_message
 
@@ -32,7 +35,7 @@ class AwsSessionManager:
             read_timeout=30,
         )
         self._sts_client = self._root_session.client("sts", config=self.boto_config)
-        self._cached_assumed_sessions: dict[str, dict[str, Any]] = {}
+        self._cached_assumed_sessions: dict[str, boto3.Session] = {}
         self._cached_caller_identity: dict[str, str] | None = None
         # boto3 Session objects are not thread-safe; serialize client/session creation so callers
         # (e.g. the parallel default-VPC cleanup) can share one manager. The clients returned are safe to use.
@@ -86,27 +89,16 @@ class AwsSessionManager:
     ) -> boto3.Session:
         cache_key = f"{account_id}:{role_name}"
         cached = self._cached_assumed_sessions.get(cache_key)
-
-        if cached and cached["expiration"] > (time.time() + 300):
-            return cached["session"]
+        if cached is not None:
+            return cached
 
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
         logger.debug("Assuming cross-account role: %s", role_arn)
+        refresh = self._credential_refresher(role_arn, session_name)
         try:
-            response = self._assume_role_with_propagation_retry(role_arn, session_name)
-            creds = response["Credentials"]
-            assumed_session = boto3.Session(
-                aws_access_key_id=creds["AccessKeyId"],
-                aws_secret_access_key=creds["SecretAccessKey"],
-                aws_session_token=creds["SessionToken"],
-                region_name=self.default_region,
+            credentials = RefreshableCredentials.create_from_metadata(
+                metadata=refresh(), refresh_using=refresh, method="sts-assume-role"
             )
-
-            self._cached_assumed_sessions[cache_key] = {
-                "session": assumed_session,
-                "expiration": creds["Expiration"].timestamp(),
-            }
-            return assumed_session
         except ClientError as e:
             msg = aws_error_message(e)
             logger.error("Failed to assume role '%s': %s", role_arn, msg)
@@ -114,6 +106,31 @@ class AwsSessionManager:
                 f"Failed to assume role '{role_arn}' in target account {account_id}.",
                 details=msg,
             ) from e
+
+        botocore_session = get_botocore_session()
+        # botocore has no public setter for a credentials object; this is the documented refreshable-role pattern.
+        botocore_session._credentials = credentials  # pyright: ignore[reportPrivateUsage]
+        assumed_session = boto3.Session(botocore_session=botocore_session, region_name=self.default_region)
+        self._cached_assumed_sessions[cache_key] = assumed_session
+        return assumed_session
+
+    def _credential_refresher(self, role_arn: str, session_name: str) -> Callable[[], dict[str, Any]]:
+        """Return a callable that assumes the role and yields botocore refreshable-credential metadata.
+
+        botocore calls it again shortly before expiry, so long-running operations (stack waiters,
+        teardown) keep working past the one-hour role-chaining session limit.
+        """
+
+        def refresh() -> dict[str, Any]:
+            creds = self._assume_role_with_propagation_retry(role_arn, session_name)["Credentials"]
+            return {
+                "access_key": creds["AccessKeyId"],
+                "secret_key": creds["SecretAccessKey"],
+                "token": creds["SessionToken"],
+                "expiry_time": creds["Expiration"].isoformat(),
+            }
+
+        return refresh
 
     # OrganizationAccountAccessRole is created asynchronously after CreateAccount reports SUCCEEDED, so
     # the first AssumeRole into a brand-new account commonly fails with AccessDenied for a short while.

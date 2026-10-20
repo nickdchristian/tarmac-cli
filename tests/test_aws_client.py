@@ -2,6 +2,7 @@
 
 import threading
 import time
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -109,7 +110,7 @@ def test_aws_session_manager_assumed_session_caching():
                 "AccessKeyId": "ASIA_TEST",
                 "SecretAccessKey": "SECRET_TEST",
                 "SessionToken": "TOKEN_TEST",
-                "Expiration": MagicMock(timestamp=lambda: future_exp),
+                "Expiration": datetime.fromtimestamp(future_exp, tz=UTC),
             }
         }
         mock_root_session.client.return_value = mock_sts
