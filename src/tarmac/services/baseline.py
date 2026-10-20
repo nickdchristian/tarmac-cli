@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import AccountDef, AnomalyDetectionConfig, BudgetConfig
-from ..core.exceptions import AWS_ERRORS
+from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
 from ..core.models import (
     BASELINE_COMPLETED,
     TAG_BASELINE,
@@ -121,8 +121,8 @@ class BaselineService:
             )
 
         except ClientError as e:
-            err_code = e.response["Error"].get("Code", "")
-            err_msg = e.response["Error"].get("Message", str(e))
+            err_code = aws_error_code(e)
+            err_msg = aws_error_message(e)
             if err_code == "DependencyViolation":
                 err_msg = f"DependencyViolation: VPC has active network interfaces or dependent resources ({err_msg})"
             logger.warning("[%s] Error cleaning default VPC in %s: %s", region, account_name, err_msg)
@@ -395,7 +395,7 @@ class BaselineService:
                 message="Anomaly monitor and subscription active",
             )
         except ClientError as e:
-            err_msg = e.response["Error"].get("Message", str(e))
+            err_msg = aws_error_message(e)
             logger.warning("Cost Anomaly setup error for %s: %s", account_name, err_msg)
             return AnomalyReport(
                 account_name=account_name,

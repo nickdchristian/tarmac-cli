@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GroupDef, IdentityCenterConfig, PermissionSetDef, UserDef
-from ..core.exceptions import DeploymentError, IdentityCenterError
+from ..core.exceptions import DeploymentError, IdentityCenterError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, IdentitySyncReport
 from ..core.templates import resolve_resource_path
 from .cloudformation import CloudFormationService
@@ -518,7 +518,7 @@ class IdentityService:
             logger.info("Added user '%s' to group '%s'", u_label, g_label)
             return True
         except ClientError as e:
-            if "ConflictException" in e.response["Error"]["Code"]:
+            if "ConflictException" in aws_error_code(e):
                 logger.debug("User '%s' is already a member of group '%s'", u_label, g_label)
                 return False
             raise IdentityCenterError(
@@ -607,7 +607,7 @@ class IdentityService:
                 logger.info("Assigned group '%s' to account %s", group_name, acct_id)
                 count += 1
             except ClientError as e:
-                if "ConflictException" in e.response["Error"]["Code"]:
+                if "ConflictException" in aws_error_code(e):
                     logger.debug("Group '%s' already assigned to %s", group_name, acct_id)
                     count += 1
                 else:

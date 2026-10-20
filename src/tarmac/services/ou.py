@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import OUDef
-from ..core.exceptions import OUManagementError
+from ..core.exceptions import OUManagementError, aws_error_code, aws_error_message
 from ..core.models import OUSyncReport
 
 logger = logging.getLogger(__name__)
@@ -114,11 +114,11 @@ class OUService:
             logger.info("Successfully created OU '%s' (ID: %s)", ou_name, ou_id)
             return ou_id
         except ClientError as e:
-            if e.response["Error"]["Code"] == "DuplicateOrganizationalUnitException":
+            if aws_error_code(e) == "DuplicateOrganizationalUnitException":
                 refreshed = self.list_existing_ous_for_parent(parent_id)
                 if ou_name in refreshed:
                     return refreshed[ou_name]
             raise OUManagementError(
                 f"Failed to create OU '{ou_name}' under parent '{parent_id}'",
-                details=e.response["Error"].get("Message", str(e)),
+                details=aws_error_message(e),
             ) from e

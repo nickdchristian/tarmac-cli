@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
-from ..core.exceptions import AWS_ERRORS, GovernanceError
+from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
 from ..core.templates import resolve_resource_path
 from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
@@ -47,7 +47,7 @@ class SCPService:
             self.org_client.enable_policy_type(RootId=root_id, PolicyType="SERVICE_CONTROL_POLICY")
             logger.info("Initiated enabling SERVICE_CONTROL_POLICY on root %s", root_id)
         except ClientError as e:
-            code = e.response["Error"].get("Code", "")
+            code = aws_error_code(e)
             if code not in ["PolicyTypeAlreadyEnabledException", "ConcurrentModificationException"]:
                 raise GovernanceError("Failed to enable Service Control Policies", details=str(e)) from e
 
@@ -206,7 +206,7 @@ class SCPService:
                 logger.info("Attached policy %s to target '%s' (%s)", policy_id, target_name, target_id)
                 return True
             except ClientError as e:
-                code = e.response["Error"].get("Code", "")
+                code = aws_error_code(e)
                 if code == "PolicyTypeNotEnabledException" and attempt < retries - 1:
                     logger.warning(
                         "Policy type not yet active on %s (%s). Retrying in %.1fs... (attempt %d/%d)",

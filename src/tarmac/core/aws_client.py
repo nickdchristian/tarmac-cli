@@ -10,7 +10,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from .exceptions import AWSAuthenticationError
+from .exceptions import AWSAuthenticationError, aws_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +50,15 @@ class AwsSessionManager:
         if self._cached_caller_identity is not None:
             return self._cached_caller_identity
         try:
-            identity = self._sts_client.get_caller_identity()
+            response = self._sts_client.get_caller_identity()
+            identity = {k: str(v) for k, v in response.items() if k in ("Account", "Arn", "UserId")}
             self._cached_caller_identity = identity
             return identity
         except ClientError as e:
             logger.error("Failed to authenticate with AWS: %s", e)
             raise AWSAuthenticationError(
                 "Failed to authenticate with AWS credentials.",
-                details=e.response["Error"].get("Message", str(e)),
+                details=aws_error_message(e),
             ) from e
         except Exception as e:
             logger.error("Unexpected error obtaining caller identity: %s", e)
@@ -67,7 +68,8 @@ class AwsSessionManager:
         """Get a boto3 client in the management account."""
         region = region_name or self.default_region
         with self._lock:
-            return self._root_session.client(service_name, region_name=region, config=self.boto_config)
+            service: Any = service_name
+            return self._root_session.client(service, region_name=region, config=self.boto_config)
 
     def get_assumed_session(
         self,
@@ -106,7 +108,7 @@ class AwsSessionManager:
             }
             return assumed_session
         except ClientError as e:
-            msg = e.response["Error"].get("Message", str(e))
+            msg = aws_error_message(e)
             logger.error("Failed to assume role '%s': %s", role_arn, msg)
             raise AWSAuthenticationError(
                 f"Failed to assume role '{role_arn}' in target account {account_id}.",
@@ -151,4 +153,5 @@ class AwsSessionManager:
         region = region_name or self.default_region
         with self._lock:
             assumed_session = self.get_assumed_session(account_id, role_name=role_name)
-            return assumed_session.client(service_name, region_name=region, config=self.boto_config)
+            service: Any = service_name
+            return assumed_session.client(service, region_name=region, config=self.boto_config)
