@@ -1,10 +1,10 @@
 """Bootstrap access: the non-root role tarmac runs as."""
 
-import configparser
 import shutil
 from pathlib import Path
 
 import typer
+from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWSAuthenticationError, GovernanceError
@@ -21,20 +21,22 @@ BOOTSTRAP_USER = "tarmac-bootstrap"
 def _write_role_profile(
     config_path: Path, profile: str, role_arn: str, source_profile: str, mfa_serial: str, region: str
 ) -> bool:
-    """Append a role profile to the AWS config file; returns False when it already exists."""
-    parser = configparser.RawConfigParser()
-    parser.read(config_path)
-    section = f"profile {profile}"
-    if parser.has_section(section):
+    """Append a role profile to the AWS config file; returns False when it already exists.
+
+    The file is appended to rather than parsed and rewritten, so the user's comments and formatting survive.
+    """
+    section = f"[profile {profile}]"
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    if any(line.strip() == section for line in existing.splitlines()):
         return False
-    parser.add_section(section)
-    parser.set(section, "role_arn", role_arn)
-    parser.set(section, "source_profile", source_profile)
-    parser.set(section, "mfa_serial", mfa_serial)
-    parser.set(section, "region", region)
+    block = (
+        f"{section}\nrole_arn = {role_arn}\nsource_profile = {source_profile}\n"
+        f"mfa_serial = {mfa_serial}\nregion = {region}\n"
+    )
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    with config_path.open("w", encoding="utf-8") as fh:
-        parser.write(fh)
+    separator = "" if not existing else ("\n" if existing.endswith("\n") else "\n\n")
+    with config_path.open("a", encoding="utf-8") as fh:
+        fh.write(f"{separator}{block}")
     return True
 
 
@@ -146,7 +148,7 @@ def access_check() -> None:
         raise typer.Exit(code=1)
     try:
         session_mgr.get_client("organizations").describe_organization()
-    except Exception as e:
+    except (ClientError, BotoCoreError) as e:
         print_warning(f"Could not describe the organization: {e}")
         print_info(
             "Hint: use credentials for the management account, make sure the organization exists "

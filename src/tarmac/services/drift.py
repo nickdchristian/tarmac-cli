@@ -409,8 +409,10 @@ class DriftService:
                     desc = sso_client.describe_permission_set(InstanceArn=inst_arn, PermissionSetArn=arn)
                     ps_data = desc.get("PermissionSet", {})
                     live_ps_names[ps_data.get("Name", "")] = arn
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Could not describe permission set %s; drift for it may be misreported: %s", arn, exc
+                    )
 
             for ps_def in bundle.identity.identity_center.permission_sets:
                 in_sync = ps_def.name in live_ps_names

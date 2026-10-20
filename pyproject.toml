@@ -123,7 +123,6 @@ ignore = [
     "B904",   # raise typer.Exit within except blocks
     "RUF001", # allow unicode symbols in rich CLI output
     "S105",   # status enum constants (e.g. PASS = "PASS")
-    "S110",   # best-effort diagnostic fallback blocks
 ]
 
 [tool.ruff.lint.mccabe]

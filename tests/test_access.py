@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from botocore.exceptions import ClientError
 from typer.testing import CliRunner
 
 from tarmac.cli.deploy import _refuse_root_identity
@@ -88,7 +89,9 @@ def test_access_check_reports_root_and_role() -> None:
     ok = _mgr(ROLE)
     with patch("tarmac.cli.access.AwsSessionManager", return_value=ok):
         assert runner.invoke(app, ["access", "check"]).exit_code == 0
-    cast(MagicMock, ok.get_client).return_value.describe_organization.side_effect = RuntimeError("denied")
+    cast(MagicMock, ok.get_client).return_value.describe_organization.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "DescribeOrganization"
+    )
     with patch("tarmac.cli.access.AwsSessionManager", return_value=ok):
         assert runner.invoke(app, ["access", "check"]).exit_code == 1
 
@@ -127,6 +130,18 @@ def test_write_role_profile_is_idempotent(tmp_path: Path) -> None:
     assert "role_arn = arn:role" in text
     assert "source_profile = tarmac-bootstrap" in text
     assert "arn:other" not in text
+
+
+def test_write_role_profile_preserves_existing_config(tmp_path: Path) -> None:
+    from tarmac.cli.access import _write_role_profile
+
+    cfg = tmp_path / "config"
+    original = "# my settings\n[default]\nregion = eu-west-1   # home\n\n[sso-session corp]\nsso_start_url = https://x\n"
+    cfg.write_text(original, encoding="utf-8")
+    assert _write_role_profile(cfg, "tarmac", "arn:role", "src", "arn:mfa", "us-east-1") is True
+    text = cfg.read_text(encoding="utf-8")
+    assert text.startswith(original)  # comments, spacing and other sections untouched
+    assert text.count("[profile tarmac]") == 1
 
 
 def _bootstrap_mgr() -> MagicMock:
