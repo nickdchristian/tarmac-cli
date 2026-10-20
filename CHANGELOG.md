@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.7](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.6...v0.1.7) (2026-10-20)
+
+
+### Features
+
+* add destroy --everything to remove all tarmac-created resources ([#50](https://github.com/nickdchristian/tarmac-cli/issues/50)) ([ae2ddfd](https://github.com/nickdchristian/tarmac-cli/commit/ae2ddfd05de2ac2df34a9d58c2010bed8a22cb58))
+* add tarmac import to generate config from an existing organization ([#49](https://github.com/nickdchristian/tarmac-cli/issues/49)) ([014200e](https://github.com/nickdchristian/tarmac-cli/commit/014200e76617fbdbc79c4415f55925c1e3a32582))
+
 ## [0.1.6](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.5...v0.1.6) (2026-10-20)
 
 
