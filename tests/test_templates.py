@@ -331,6 +331,8 @@ def test_example_region_scp_is_valid_and_keeps_tarmac_working():
         Path(__file__).resolve().parent.parent / "examples" / "policies" / "scp" / "deny-unused-regions.json"
     )
     text = path.read_text(encoding="utf-8")
+    import json
+
     doc = json.loads(text)
 
     assert len(text.encode()) < 5120
