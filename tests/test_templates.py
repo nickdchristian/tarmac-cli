@@ -323,3 +323,26 @@ def test_example_config_is_not_rewritten_by_tests(project_root: Path):
     text = (project_root / "examples" / "config" / "organization.yaml").read_text(encoding="utf-8")
     assert text.startswith("# ====")
     assert "# Organization-wide CloudTrail configuration" in text
+
+
+def test_example_region_scp_is_valid_and_keeps_tarmac_working():
+    """The region SCP example must fit the SCP size limit, exempt global services and the roles tarmac uses."""
+    path = (
+        Path(__file__).resolve().parent.parent / "examples" / "policies" / "scp" / "deny-unused-regions.json"
+    )
+    text = path.read_text(encoding="utf-8")
+    doc = json.loads(text)
+
+    assert len(text.encode()) < 5120
+    (stmt,) = doc["Statement"]
+    assert stmt["Effect"] == "Deny"
+    assert {"iam:*", "organizations:*", "sts:*", "route53:*", "cloudfront:*", "support:*"} <= set(
+        stmt["NotAction"]
+    )
+    assert "Action" not in stmt
+    assert "aws:RequestedRegion" in stmt["Condition"]["StringNotEquals"]
+    exempt = " ".join(stmt["Condition"]["ArnNotLike"]["aws:PrincipalARN"])
+    assert "TarmacDeploymentRole" in exempt
+    assert (
+        "OrganizationAccountAccessRole" in exempt
+    )  # default-VPC cleanup in blocked regions assumes this role
