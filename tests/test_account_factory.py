@@ -44,9 +44,9 @@ def test_account_factory_plan():
 
     catalog = AccountsCatalog(
         accounts=[
-            AccountDef(name="Deployment", email="dep@example.com", ou="Infrastructure"),
-            AccountDef(name="WrongOUPosition", email="wrong@example.com", ou="Security"),
-            AccountDef(name="Network-Central", email="net@example.com", ou="Infrastructure"),
+            AccountDef(name="Deployment", email="dep@acme-corp.io", ou="Infrastructure"),
+            AccountDef(name="WrongOUPosition", email="wrong@acme-corp.io", ou="Security"),
+            AccountDef(name="Network-Central", email="net@acme-corp.io", ou="Infrastructure"),
         ]
     )
 
@@ -82,8 +82,8 @@ def test_export_inventory(tmp_path: Path):
     factory = AccountService(mock_session_mgr)
     catalog = AccountsCatalog(
         accounts=[
-            AccountDef(name="Deployment", email="dep@example.com", ou="Infrastructure"),
-            AccountDef(name="Production", email="prod@example.com", ou="Production"),
+            AccountDef(name="Deployment", email="dep@acme-corp.io", ou="Infrastructure"),
+            AccountDef(name="Production", email="prod@acme-corp.io", ou="Production"),
         ]
     )
     ou_map = {"Infrastructure": "ou-infra-123", "Production": "ou-prod-456"}
@@ -196,7 +196,7 @@ def test_provision_account_reused_syncs_tags():
     service = AccountService(mock_session_mgr)
     acct_def = AccountDef(
         name="Deployment",
-        email="dep@example.com",
+        email="dep@acme-corp.io",
         ou="Infrastructure",
         tags={"Environment": "Infrastructure", "ManagedBy": "tarmac"},
     )
@@ -224,8 +224,13 @@ def test_account_factory_plan_detects_removed_account_for_suspension():
     accts_paginator.paginate.return_value = [
         {
             "Accounts": [
-                {"Id": "111111111111", "Name": "Deployment", "Status": "ACTIVE", "Email": "dep@example.com"},
-                {"Id": "333333333333", "Name": "OldWorkload", "Status": "ACTIVE", "Email": "old@example.com"},
+                {"Id": "111111111111", "Name": "Deployment", "Status": "ACTIVE", "Email": "dep@acme-corp.io"},
+                {
+                    "Id": "333333333333",
+                    "Name": "OldWorkload",
+                    "Status": "ACTIVE",
+                    "Email": "old@acme-corp.io",
+                },
             ]
         }
     ]
@@ -248,7 +253,7 @@ def test_account_factory_plan_detects_removed_account_for_suspension():
     factory = AccountService(mock_session_mgr)
     catalog = AccountsCatalog(
         accounts=[
-            AccountDef(name="Deployment", email="dep@example.com", ou="Infrastructure"),
+            AccountDef(name="Deployment", email="dep@acme-corp.io", ou="Infrastructure"),
         ]
     )
     ou_map = {"Infrastructure": "ou-infra-123", "Suspended": "ou-suspended-999"}
@@ -327,24 +332,24 @@ def test_plan_reports_suspended_and_quarantined_accounts():
     accts_paginator.paginate.return_value = [
         {
             "Accounts": [
-                {"Id": "111111111111", "Name": "Deployment", "Status": "ACTIVE", "Email": "dep@example.com"},
+                {"Id": "111111111111", "Name": "Deployment", "Status": "ACTIVE", "Email": "dep@acme-corp.io"},
                 {
                     "Id": "222222222222",
                     "Name": "ClosedInAws",
                     "Status": "SUSPENDED",
-                    "Email": "closed@example.com",
+                    "Email": "closed@acme-corp.io",
                 },
                 {
                     "Id": "333333333333",
                     "Name": "QuarantinedAcct",
                     "Status": "ACTIVE",
-                    "Email": "quar@example.com",
+                    "Email": "quar@acme-corp.io",
                 },
                 {
                     "Id": "444444444444",
                     "Name": "DeclaredClosed",
                     "Status": "SUSPENDED",
-                    "Email": "decl@example.com",
+                    "Email": "decl@acme-corp.io",
                 },
             ]
         }
@@ -363,8 +368,8 @@ def test_plan_reports_suspended_and_quarantined_accounts():
     factory = AccountService(mock_session_mgr)
     catalog = AccountsCatalog(
         accounts=[
-            AccountDef(name="Deployment", email="dep@example.com", ou="Infrastructure"),
-            AccountDef(name="DeclaredClosed", email="decl@example.com", ou="Infrastructure"),
+            AccountDef(name="Deployment", email="dep@acme-corp.io", ou="Infrastructure"),
+            AccountDef(name="DeclaredClosed", email="decl@acme-corp.io", ou="Infrastructure"),
         ]
     )
     ou_map = {"Infrastructure": "ou-infra-123", "Suspended": "ou-suspended-999"}
@@ -395,7 +400,7 @@ def test_provision_account_skips_suspended():
     mock_org_client.get_paginator.return_value = accts_paginator
 
     service = AccountService(mock_session_mgr)
-    acct_def = AccountDef(name="ClosedInAws", email="closed@example.com", ou="Infrastructure")
+    acct_def = AccountDef(name="ClosedInAws", email="closed@acme-corp.io", ou="Infrastructure")
 
     result = service.provision_account(acct_def, target_ou_id="ou-infra-123", dry_run=False)
     assert result.status == "SKIPPED"
@@ -435,7 +440,7 @@ def test_provision_account_new_account_full_lifecycle():
     service = AccountService(mock_session_mgr)
     acct_def = AccountDef(
         name="SecurityHub-Master",
-        email="sechub@example.com",
+        email="sechub@acme-corp.io",
         ou="Security",
         tags={"Environment": "Security", "ManagedBy": "tarmac"},
     )
@@ -448,7 +453,7 @@ def test_provision_account_new_account_full_lifecycle():
     assert res.account_id == "555555555555"
 
     mock_org_client.create_account.assert_called_once_with(
-        Email="sechub@example.com",
+        Email="sechub@acme-corp.io",
         AccountName="SecurityHub-Master",
         RoleName="OrganizationAccountAccessRole",
         Tags=[
@@ -654,7 +659,7 @@ def test_export_inventory_sanitizes_env_var_names_and_values(tmp_path):
 
     service = AccountService(mock_session_mgr)
     catalog = AccountsCatalog(
-        accounts=[AccountDef(name="123-prod$(whoami)", email="p@example.com", ou="Workloads")]
+        accounts=[AccountDef(name="123-prod$(whoami)", email="p@acme-corp.io", ou="Workloads")]
     )
     service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
 
@@ -725,7 +730,7 @@ def test_export_inventory_escapes_shell_metacharacters_in_values(tmp_path):
     mock_org_client.get_paginator.return_value = paginator
 
     service = AccountService(mock_session_mgr)
-    catalog = AccountsCatalog(accounts=[AccountDef(name="prod", email="p@example.com", ou="Workloads")])
+    catalog = AccountsCatalog(accounts=[AccountDef(name="prod", email="p@acme-corp.io", ou="Workloads")])
     service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
 
     line = next(
@@ -771,20 +776,20 @@ def _acct_def(name: str, email: str, ou: str = "Workloads"):
 def test_find_existing_account_prefers_email_over_name():
     svc, _ = _acct_service({})
     existing = {
-        "Prod App": {"Id": "111111111111", "Email": "other@example.com", "Status": "ACTIVE"},
-        "renamed": {"Id": "222222222222", "Email": "prod@example.com", "Status": "ACTIVE"},
+        "Prod App": {"Id": "111111111111", "Email": "other@acme-corp.io", "Status": "ACTIVE"},
+        "renamed": {"Id": "222222222222", "Email": "prod@acme-corp.io", "Status": "ACTIVE"},
     }
-    found = svc.find_existing_account("prod-app", existing, email="prod@example.com")
+    found = svc.find_existing_account("prod-app", existing, email="prod@acme-corp.io")
     assert found is not None
     assert found["Id"] == "222222222222"
 
 
 def test_provision_refuses_to_adopt_name_match_with_different_email():
     svc, org = _acct_service(
-        {"Prod App": {"Id": "111111111111", "Email": "other@example.com", "Status": "ACTIVE"}}
+        {"Prod App": {"Id": "111111111111", "Email": "other@acme-corp.io", "Status": "ACTIVE"}}
     )
     with pytest.raises(Exception, match="could not be provisioned") as exc:
-        svc.provision_accounts([_acct_def("prod-app", "prod@example.com")], {"Workloads": "ou-1"})
+        svc.provision_accounts([_acct_def("prod-app", "prod@acme-corp.io")], {"Workloads": "ou-1"})
 
     assert "email" in str(getattr(exc.value, "details", "")).lower()
     org.move_account.assert_not_called()
@@ -801,7 +806,7 @@ def test_provision_continues_after_one_create_failure_then_aggregates():
     svc.move_account_if_needed = MagicMock(return_value=True)  # type: ignore[method-assign]
     svc.sync_account_tags = MagicMock(return_value=False)  # type: ignore[method-assign]
 
-    accounts = [_acct_def("a", "a@example.com"), _acct_def("b", "b@example.com")]
+    accounts = [_acct_def("a", "a@acme-corp.io"), _acct_def("b", "b@acme-corp.io")]
     with pytest.raises(Exception, match="1 account") as exc:
         svc.provision_accounts(accounts, {"Workloads": "ou-1"}, poll_delay_sec=0, max_poll_attempts=2)
 

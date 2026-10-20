@@ -22,6 +22,7 @@ from ..core.models import (
     AccountProvisionResult,
     AccountSuspensionResult,
 )
+from ..core.placeholders import is_placeholder_email
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,8 @@ class AccountService:
                     else f"Account ({acct_id}) is quarantined in Suspended OU"
                 )
             else:
+                if not catalog.quarantine_removed_accounts:
+                    continue
                 tags = self.get_account_tags(acct_id)
                 if tags.get(TAG_MANAGED_BY) != "tarmac" and tags.get("ManagedBy") != "tarmac":
                     continue
@@ -532,6 +535,16 @@ class AccountService:
                 results[idx] = _make_result(
                     acct_def, "DRY-RUN-ID", target_ou_id, "SIMULATED_CREATE", "SIMULATED"
                 )
+                continue
+
+            if is_placeholder_email(email):
+                msg = (
+                    f"Account '{name}': refusing to create an account with the sample email '{email}'. "
+                    "AWS never lets an email be reused once an account has used it, even after the account "
+                    "is closed. Set a real, unique address in accounts.yaml."
+                )
+                audit("create", f"account:{name}", Outcome.FAILED, msg, email=email)
+                failures.append(msg)
                 continue
 
             try:

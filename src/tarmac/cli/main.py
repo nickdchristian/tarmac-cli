@@ -18,6 +18,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
 from ..core.exceptions import GovernanceError
 from ..core.logging import setup_logging, start_run
+from ..core.placeholders import find_placeholder_values
 from ..services.drift import DriftService
 from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
@@ -184,6 +185,7 @@ def validate_config(
             "valid": not bool(errors or bundle is None),
             "summary": _build_validation_summary(bundle),
             "errors": errors or [],
+            "warnings": find_placeholder_values(bundle) if bundle is not None else [],
         }
         print(json.dumps(payload, indent=2))
         if errors or bundle is None:
@@ -207,6 +209,14 @@ def validate_config(
 
     _print_validation_table(bundle)
     print_success("All configuration files and logical cross-references are valid!")
+    placeholders = find_placeholder_values(bundle)
+    if placeholders:
+        print_warning(
+            "The configuration still contains sample values from 'tarmac init'. Replace them before a real "
+            "deployment (AWS never lets a closed account's email be reused):"
+        )
+        for problem in placeholders:
+            console.print(f"  [yellow]•[/yellow] {problem}")
 
 
 @app.command("apply")
