@@ -52,7 +52,7 @@ Verify your configurations and audit your AWS Management Account before deployin
 # Validate YAML syntax, Pydantic schemas, and cross-references
 tarmac validate
 
-# Run 17 automated pre-flight readiness checks (MFA, quotas, contacts, hygiene)
+# Run automated pre-flight readiness checks (MFA, quotas, contacts, hygiene, existing trails)
 tarmac preflight
 ```
 
@@ -70,16 +70,68 @@ tarmac deploy run
 
 ### Starting from a brand-new AWS account
 
-Tarmac runs as the **management account** of the organization it creates. A fresh account needs a few
-one-time manual steps that AWS does not allow to be automated:
+Tarmac runs as the **management account** of the organization it creates, and it cannot run as the root user
+(root cannot assume the roles tarmac uses to configure member accounts). A fresh account therefore needs a few
+one-time steps that AWS does not allow to be automated. The most direct path is IAM Identity Center (SSO):
 
-1. Sign in as the root user, enable **MFA**, and add a payment method (`tarmac preflight` checks this).
-2. Create the tarmac role (see **Bootstrap access** below) and configure AWS credentials for it. Do not run tarmac as root.
-3. Run `tarmac deploy run --phase 1` (or `tarmac org bootstrap`) to create the organization.
-4. Enable **IAM Identity Center** once in the AWS console (it requires an existing organization). Phase 6 fails without it.
-5. Run `tarmac deploy run` for the remaining phases. Phases are idempotent, so a failed run can simply be repeated.
+1. Sign in as the root user, enable **MFA**, and add a payment method.
+2. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac
+   (`pip install --user tarmac-cli`) and create the organization: `tarmac org bootstrap`.
+3. In the console, enable **IAM Identity Center** (it requires an existing organization).
+4. In Identity Center create a user, create a permission set (for example `AdministratorAccess`), and **assign that
+   user and permission set to the management account**. If this assignment is missing, `aws configure sso` stops
+   with `No AWS accounts are available to you`.
+5. In CloudShell run `aws configure sso`, then `aws sso login --use-device-code --profile <profile>` (see
+   [Using AWS CloudShell](#using-aws-cloudshell) for why the device-code flag is needed).
+6. `export AWS_PROFILE=<profile>`, then confirm with `tarmac access check`.
+7. `tarmac preflight`, then `tarmac deploy run --dry-run`, then `tarmac deploy run`. Phases are idempotent, so a
+   failed run can simply be repeated.
 
-Each member account needs a **unique email address**; AWS never lets a closed account's email be reused.
+`tarmac preflight` and live `tarmac deploy run` refuse to run as root, so do not run them before step 6.
+Each member account needs a **unique email address**; AWS never lets a closed account's email be reused, and
+`tarmac validate` warns about the sample addresses written by `tarmac init`. Gmail users can create unique
+addresses with the `+` trick (`you+prod@gmail.com`, `you+log@gmail.com`); all of them arrive in one inbox.
+
+### Using AWS CloudShell
+
+CloudShell is the easiest place to run tarmac the first time, with a few quirks:
+
+* **Sign in with the device-code flow.** `aws sso login` normally redirects to `http://127.0.0.1:...`, which is the
+  CloudShell machine and not your browser, so the callback fails. Use `aws sso login --use-device-code`: it prints a
+  URL and a short code to enter in your own browser.
+* **Set the profile and Region in every new shell.** `export AWS_PROFILE=<profile> AWS_REGION=<primary_region>`.
+  Without `AWS_PROFILE`, tarmac uses CloudShell's own (root) credentials and refuses to continue. CloudShell uses
+  the Region you opened it in, which may differ from `primary_region`.
+* **Environment variables do not survive a restart; your home folder does.** Re-export `AWS_PROFILE`, `AWS_REGION`
+  and `TARMAC_LOG_FILE` after CloudShell restarts. Your config directory and log file persist.
+* **Use `--log-file`.** `export TARMAC_LOG_FILE=$HOME/run.jsonl` records every run, which makes a failed phase easy
+  to diagnose with `tarmac logs`. Download it with the Actions menu.
+
+### Adopting an existing organization
+
+Tarmac can take over an organization that already has accounts, OUs and trails ("brown-field"), but a few
+rules keep that safe. Run `tarmac deploy run --dry-run` first and read the Phase 4 table.
+
+* **Declare the accounts you already have, with their real emails.** An existing account is matched by email first
+  and then by name. If the name matches but the email differs, tarmac refuses to adopt or move it rather than guess.
+* **Accounts you do not declare are left alone**, unless tarmac itself tagged them as managed earlier and you then
+  removed them from `accounts.yaml`. Those are moved to the Suspended OU, and the Phase 4 plan shows them as
+  `SUSPEND`. Set `quarantine_removed_accounts: false` in `accounts.yaml` to turn that off.
+* **Do not change `organization.name` after the first deploy.** Every CloudFormation stack is named after it
+  (`<name>-organization-scps`, ...). Renaming makes tarmac look for stacks that do not exist and try to import
+  resources an older stack still owns, which fails. `tarmac preflight` warns when it sees stacks under a different
+  name; the fix is to set the name back.
+* **An organization trail that already exists is not replaced.** Tarmac adds its own, so you briefly pay for two
+  copies of management events ($2.00 per 100,000 events beyond the first). Once the new trail is delivering logs
+  (`aws cloudtrail get-trail-status --name <trail>` shows a delivery time), delete the old one. A multi-region trail
+  can only be read or deleted in its home Region (`describe-trails --include-shadow-trails` shows it).
+* **Default VPC purges are opt-out per account.** Set `delete_default_vpc: false` for accounts that already host
+  workloads, and for the management account in `organization.yaml`.
+* **What a full run changes in an existing organization:** the OU tree, the service control policy attached to the
+  root (it affects every account, including the existing ones), account tags, a monthly budget stack in each member
+  account, alternate contacts on the management account, trusted service access, and new Identity Center
+  permission sets, users and group assignments. Existing permission sets and users that you did not declare are not
+  touched.
 
 ### Bootstrap access (why tarmac cannot run as root)
 
@@ -100,7 +152,7 @@ needs one non-root principal first. `tarmac preflight` and live `tarmac deploy r
    administrator user, and sign in with `aws sso login`. Run tarmac as that identity.
 3. `tarmac access check` confirms the credentials are non-root and can read the organization; on failure it prints a hint.
 
-Before Identity Center exists you can instead run `tarmac access bootstrap --with-bootstrap-user`. That also creates an
+Before Identity Center exists you can instead run `tarmac access bootstrap --with-bootstrap-user`. (The IAM Identity Center path above avoids creating an IAM user with a long-lived key and is the simpler route.) That also creates an
 assume-only IAM user (`tarmac-bootstrap`) and adds a `[profile tarmac]` block to `~/.aws/config`. Create an access key and
 an MFA device for the user in the IAM console, put the key in a `[profile tarmac-bootstrap]` profile, and run
 `AWS_PROFILE=tarmac tarmac access check`. Delete the user and its key once SSO works.
@@ -198,6 +250,8 @@ tarmac --log-file run.jsonl run --yes
 jq -r 'select(.event=="audit") | "\(.ts) \(.data.outcome) \(.message)"' run.jsonl
 ```
 
+Outcomes mean what they say: `succeeded` is a change tarmac made, `unchanged` means AWS already held the requested state (tarmac reads before it writes, so a second run of the same command should be almost all `unchanged`), `skipped` was deliberately not done, `simulated` is what `--dry-run` would have done, and `failed` is an error. To prove a dry run changed nothing, check that the log has no `dry_run_violation` records: `tarmac logs run.jsonl --run latest --all --json | grep dry_run_violation` should print nothing. `deploy run --dry-run` also records each phase plan, and each account action in the Phase 4 plan, as `simulated`.
+
 ### Reading a log back
 
 `tarmac logs` turns a log file into something a person can review without `jq`:
@@ -276,6 +330,27 @@ fix the cause and re-run teardown or deploy: both now delete and recreate stacks
 
 > Templates exported with `tarmac init --with-templates` take precedence over the ones bundled with the CLI.
 > After upgrading tarmac, delete or diff your local `cloudformation/` and `policies/` copies against the bundled ones to pick up fixes. (Do not use `tarmac init --force` for this: it also overwrites your YAML configuration.)
+
+---
+
+## Troubleshooting
+
+| What you see | Why | What to do |
+|---|---|---|
+| `Root credentials cannot assume roles in member accounts` | The shell is using root credentials (for example CloudShell's own session). | `export AWS_PROFILE=<sso-profile>` and re-run; see [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account). |
+| `aws configure sso` says `No AWS accounts are available to you` | Your Identity Center user has no permission set on any account. | In Identity Center, assign the user and a permission set to the management account, then run `aws configure sso` again. |
+| The SSO sign-in page redirects to `127.0.0.1` and fails | CloudShell has no browser to receive the callback. | Use `aws sso login --use-device-code`. |
+| `The config profile (...) could not be found` | `aws configure sso` stopped before writing the profile. | Fix the cause above, then run `aws configure sso` again. |
+| `tarmac info` shows Identity Center as not found | Identity Center lives in one Region, which may not be your shell's. | Set `AWS_REGION` to it, or pass `--region`. |
+| Phase 2: `Failed to import resources into stack '<name>-organization-scps'` and a change set reason of `p-... already exists in stack ...` | The SCP belongs to a stack named for a different `organization.name`. | Set `organization.name` back to the original name (the prefix of the stack in the message). |
+| Phase 5: `You must enable service access before you delegate an administrator` (`config-multiaccountsetup`) | Trusted access for that service was not enabled (fixed in newer releases). | `aws organizations enable-aws-service-access --service-principal config-multiaccountsetup.amazonaws.com`, then re-run phase 5. |
+| `refusing to create an account with the sample email` | `accounts.yaml` still has an address from `tarmac init`. | Use a real, unique address you can receive mail at. |
+| `refusing to adopt or move it` | An account with that name exists under a different email. | Put the account's actual email in `accounts.yaml`. |
+| Warning: `An organization trail already exists` | A trail from before tarmac is still recording. | Delete the old trail once the new one is delivering logs; see above. |
+| `UPDATE_ROLLBACK_COMPLETE` on the `tarmac-access` stack | A stack update failed and was rolled back. | `aws cloudformation describe-stack-events --stack-name tarmac-access --query "StackEvents[?contains(ResourceStatus,'FAILED')].[LogicalResourceId,ResourceStatusReason]" --output text` shows why. |
+| A warning such as `No updates are to be performed` or `already a delegated administrator` | AWS reporting that nothing needed doing. | Nothing; these are logged as `unchanged` and are not errors. |
+
+Always start with `tarmac logs --run latest`: it shows the failing action, its AWS error and the phase it happened in.
 
 ---
 
