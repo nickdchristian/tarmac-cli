@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+import pytest
 from botocore.exceptions import ClientError
 
 from tarmac.core.config_schema import (
@@ -36,6 +37,7 @@ def test_cleanup_default_vpcs_deletes_components():
     mock_session_mgr.default_region = "eu-west-1"
 
     mock_ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-default123"}]}
+    mock_ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": []}
     mock_ec2.describe_internet_gateways.return_value = {
         "InternetGateways": [{"InternetGatewayId": "igw-111"}]
     }
@@ -315,6 +317,7 @@ def test_cleanup_default_vpcs_handles_dependency_violation():
     mock_session_mgr.default_region = "eu-west-1"
 
     mock_ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-dep123"}]}
+    mock_ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": []}
     mock_ec2.describe_internet_gateways.return_value = {"InternetGateways": []}
     mock_ec2.describe_subnets.return_value = {"Subnets": []}
 
@@ -585,3 +588,25 @@ def test_baseline_account_not_marked_complete_when_a_region_errors():
 
     assert report.vpc_reports[0].error is True
     org.tag_resource.assert_not_called()  # not marked tarmac:baseline=completed, so it is retried next run
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_cleanup_default_vpc_in_use_is_left_intact(dry_run: bool):
+    """A default VPC with network interfaces must not lose its internet gateway or subnets."""
+    mgr = MagicMock()
+    ec2 = MagicMock()
+    mgr.get_member_client.return_value = ec2
+    ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-busy"}]}
+    ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": [{"NetworkInterfaceId": "eni-1"}]}
+
+    reports = BaselineService(mgr).cleanup_default_vpcs(
+        "123456789012", "TestAccount", regions=["eu-west-1"], dry_run=dry_run
+    )
+
+    assert reports[0].skipped is True
+    assert reports[0].vpc_id is None
+    assert "in use" in reports[0].message
+    ec2.detach_internet_gateway.assert_not_called()
+    ec2.delete_internet_gateway.assert_not_called()
+    ec2.delete_subnet.assert_not_called()
+    ec2.delete_vpc.assert_not_called()
