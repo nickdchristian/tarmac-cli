@@ -82,7 +82,13 @@ class OUDef(BaseModel):
 class CloudTrailConfig(BaseModel):
     trail_name: str = Field(default="organization-trail")
     bucket_prefix: str = Field(default="org-cloudtrail")
-    enable_kms: bool = Field(default=True)
+    enable_kms: bool = Field(
+        default=True,
+        description=(
+            "Encrypt CloudTrail logs with a customer managed KMS key. False uses SSE-S3 (AES256) for the "
+            "trail and the log bucket and skips the key (about $1/month plus request charges)."
+        ),
+    )
     log_archive_account: str | None = Field(
         default="log-archive",
         description="Designates the account name hosting centralized CloudTrail logs.",
