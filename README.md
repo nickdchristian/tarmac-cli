@@ -27,7 +27,7 @@ Or install from source for local development:
 ```bash
 git clone https://github.com/nickdchristian/tarmac-cli.git
 cd tarmac-cli
-uv sync --frozen
+uv sync --locked
 uv run tarmac --help
 ```
 
@@ -228,7 +228,7 @@ fix the cause and re-run teardown or deploy: both now delete and recreate stacks
 
 ```bash
 # Sync environment dependencies from lockfile
-uv sync --frozen
+uv sync --locked
 
 # Run the Pytest suite
 uv run pytest

@@ -16,6 +16,7 @@ jobs:
   validate-pr-title:
     name: Validate Conventional Commit PR Title
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pull-requests: read
       statuses: write
