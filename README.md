@@ -307,6 +307,28 @@ cloudtrail:
 
 Deleted objects are purged for good seven days later and cannot be recovered, so pick a value that meets your audit and compliance requirements (many frameworks ask for a year or more). `tarmac deploy run --dry-run` shows the retention that will be applied. The setting is applied to the log archive stack; changing it re-deploys that stack.
 
+### Security Hub standards for every account
+
+```yaml
+security_services:
+  delegated_account: audit
+  securityhub:
+    enabled: true
+    standards: [aws-foundational-security-best-practices]
+    central_configuration: true   # default; false = per-Region local configuration
+```
+
+With `central_configuration` (the default, used when `auto_enable_members` is true) the audit account switches Security
+Hub to [central configuration](https://docs.aws.amazon.com/securityhub/latest/userguide/start-central-configuration.html)
+and applies one policy, `tarmac-security-baseline`, to the organization root. Existing and new accounts then get Security
+Hub with exactly the standards you list, in the primary Region (the aggregation Region) and the Regions linked to the
+finding aggregator. The old local mode left new accounts with Security Hub on but no standards.
+
+Notes: policies can only be managed from the primary Region, which must not be an opt-in Region. In central mode the
+per-account settings are managed by the policy, so change standards in `organization.yaml` rather than by hand.
+`tarmac deploy destroy --disable-security-services` removes the policy and returns the organization to local
+configuration before disabling Security Hub.
+
 ### Encryption of the log archive
 
 `cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.

@@ -149,6 +149,7 @@ def test_securityhub_delegation_and_member_configuration():
     cfg = SecurityHubConfig(
         enabled=True,
         auto_enable_members=True,
+        central_configuration=False,
         standards=["aws-foundational-security-best-practices"],
     )
 
@@ -389,7 +390,12 @@ def test_securityhub_unknown_standard_is_a_failure_not_a_silent_noop():
 def test_securityhub_finding_aggregator_failure_is_reported():
     report = _sh_service(
         aggregator_error=_ce("AccessDeniedException", "no aggregator perms")
-    ).configure_securityhub("111122223333", "us-east-1", ["us-east-1"], SecurityHubConfig(enabled=True))
+    ).configure_securityhub(
+        "111122223333",
+        "us-east-1",
+        ["us-east-1"],
+        SecurityHubConfig(enabled=True, central_configuration=False),
+    )
     assert report.status == "FAILED"
     assert "finding aggregator" in report.message
     assert "no aggregator perms" in report.message

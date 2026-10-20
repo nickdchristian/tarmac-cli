@@ -12,6 +12,7 @@ from ..core.config_schema import GuardDutyConfig, SecurityHubConfig, SecuritySer
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
 from ..core.models import SecurityServiceReport
+from .security_central import POLICY_NAME, SecurityHubCentralConfiguration, resolve_standard_arn
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,9 @@ class SecurityServicesService:
                 message=f"Failed to register delegated admin: {e}",
             )
 
+        if config.central_configuration and config.auto_enable_members:
+            return self._configure_securityhub_central(audit_id, primary_region, all_regions, config)
+
         configured_regions: list[str] = []
         failed_regions: dict[str, str] = {}
         for reg in all_regions:
@@ -287,6 +291,69 @@ class SecurityServicesService:
             ),
         )
 
+    def _configure_securityhub_central(
+        self, audit_id: str, home_region: str, all_regions: list[str], config: SecurityHubConfig
+    ) -> SecurityServiceReport:
+        """Central configuration: enable the hub and aggregator in the home Region, then apply one policy to the root."""
+        try:
+            with bind(region=home_region):
+                sh = self.session_mgr.get_member_client(audit_id, "securityhub", region_name=home_region)
+                self._ensure_hub_enabled(sh, audit_id, home_region)
+                self._ensure_finding_aggregator(sh)
+                SecurityHubCentralConfiguration(
+                    sh,
+                    policy_name=POLICY_NAME,
+                    standards=config.standards,
+                    root_id=self._root_id(),
+                ).apply()
+        except (ClientError, GovernanceError) as e:
+            audit(
+                "configure",
+                f"securityhub:{audit_id}:{home_region}",
+                Outcome.FAILED,
+                f"Could not set up Security Hub central configuration from {home_region}: {e}",
+                region=home_region,
+            )
+            return SecurityServiceReport(
+                service_name="SecurityHub",
+                delegated_account=audit_id,
+                status="FAILED",
+                regions=[],
+                message=f"Central configuration failed in {home_region}: {e}",
+            )
+        return SecurityServiceReport(
+            service_name="SecurityHub",
+            delegated_account=audit_id,
+            status="ENABLED",
+            regions=all_regions,
+            message=(
+                f"Delegated to {audit_id}; central configuration from {home_region} applies standards "
+                f"{config.standards} to the organization (linked Regions follow the finding aggregator)"
+            ),
+        )
+
+    def _root_id(self) -> str:
+        roots = self.session_mgr.get_client("organizations").list_roots().get("Roots", [])
+        if not roots:
+            raise GovernanceError("Could not find the organization root.")
+        return str(roots[0]["Id"])
+
+    def _ensure_hub_enabled(self, sh_audit: Any, audit_id: str, region: str) -> None:
+        try:
+            sh_audit.describe_hub()
+        except ClientError as e:
+            err_code = e.response.get("Error", {}).get("Code", "")
+            if err_code not in ("ResourceNotFoundException", "InvalidAccessException"):
+                raise
+            sh_audit.enable_security_hub(EnableDefaultStandards=False)
+            audit(
+                "enable",
+                f"securityhub:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Enabled Security Hub in {region}",
+                region=region,
+            )
+
     def _ensure_securityhub_admin(self, audit_id: str, primary_region: str) -> None:
         """Enable Security Hub organization admin in the Management Account if not already registered."""
         sh_mgmt = self.session_mgr.get_client("securityhub", region_name=primary_region)
@@ -306,21 +373,7 @@ class SecurityServicesService:
     def _configure_securityhub_region(self, audit_id: str, region: str, config: SecurityHubConfig) -> None:
         """Enable Security Hub, subscribe to standards, and configure auto-enrollment in a single region."""
         sh_audit = self.session_mgr.get_member_client(audit_id, "securityhub", region_name=region)
-        try:
-            sh_audit.describe_hub()
-        except ClientError as e:
-            err_code = e.response.get("Error", {}).get("Code", "")
-            if err_code in ("ResourceNotFoundException", "InvalidAccessException"):
-                sh_audit.enable_security_hub(EnableDefaultStandards=False)
-                audit(
-                    "enable",
-                    f"securityhub:{audit_id}:{region}",
-                    Outcome.SUCCEEDED,
-                    f"Enabled Security Hub in {region}",
-                    region=region,
-                )
-            else:
-                raise
+        self._ensure_hub_enabled(sh_audit, audit_id, region)
 
         self._ensure_standards(sh_audit, config.standards)
 
@@ -345,19 +398,7 @@ class SecurityServicesService:
         enabled_arns = {s.get("StandardsArn") for s in enabled_resp}
 
         for desired in desired_standards:
-            norm_desired = desired.lower().replace("_", "-")
-            matching_arn: str | None = None
-            for std in available:
-                std_arn = str(std.get("StandardsArn", ""))
-                std_name = str(std.get("Name", "")).lower()
-                if norm_desired in std_arn.lower() or norm_desired in std_name:
-                    matching_arn = std_arn
-                    break
-            if matching_arn is None:
-                raise GovernanceError(
-                    f"Unknown Security Hub standard '{desired}'.",
-                    details="Check security_services.securityhub.standards in organization.yaml.",
-                )
+            matching_arn = resolve_standard_arn(available, desired)
             if matching_arn not in enabled_arns:
                 sh_client.batch_enable_standards(
                     StandardsSubscriptionRequests=[{"StandardsArn": matching_arn}]
