@@ -63,6 +63,11 @@ def bootstrap(
                 for r in vpc_reports:
                     if not r.skipped and r.deleted_vpc:
                         print_success(f"Purged default VPC ({r.vpc_id}) in {r.region}")
+                failed = [r for r in vpc_reports if r.error]
+                for r in failed:
+                    print_warning(f"Default VPC cleanup failed in {r.region}: {r.message}")
+                if failed:
+                    raise GovernanceError(f"Default VPC cleanup failed in {len(failed)} region(s).")
 
     except GovernanceError as e:
         error_console.print(Panel(str(e), title="[bold red]Bootstrap Failed[/bold red]", border_style="red"))
