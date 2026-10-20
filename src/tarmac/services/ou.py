@@ -88,6 +88,13 @@ class OUService:
             if ou_name in existing_ous:
                 ou_id = existing_ous[ou_name]
                 logger.debug("OU '%s' already exists (ID: %s)", ou_name, ou_id)
+                audit(
+                    "create",
+                    f"ou:{ou_name}",
+                    Outcome.UNCHANGED,
+                    f"Organizational unit '{ou_name}' already exists ({ou_id})",
+                    ou_id=ou_id,
+                )
                 synced[ou_name] = ou_id
                 already_existing.append(ou_name)
             else:

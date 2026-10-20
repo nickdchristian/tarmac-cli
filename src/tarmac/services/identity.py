@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
@@ -601,7 +601,12 @@ class IdentityService:
             return True
         except ClientError as e:
             if "ConflictException" in aws_error_code(e):
-                logger.debug("User '%s' is already a member of group '%s'", u_label, g_label)
+                audit(
+                    "add-member",
+                    f"identity-group:{g_label}",
+                    Outcome.UNCHANGED,
+                    f"User '{u_label}' is already a member of group '{g_label}'",
+                )
                 return False
             audit(
                 "add-member",
@@ -652,6 +657,22 @@ class IdentityService:
             acct_id,
         )
 
+    def _assignment_exists(
+        self, instance_arn: str, account_id: str, permission_set_arn: str, group_id: str
+    ) -> bool:
+        """True when this group already holds this permission set on the account (False if unreadable)."""
+        try:
+            paginator = self.sso_client.get_paginator("list_account_assignments")
+            for page in paginator.paginate(
+                InstanceArn=instance_arn, AccountId=account_id, PermissionSetArn=permission_set_arn
+            ):
+                for item in page.get("AccountAssignments", []):
+                    if item.get("PrincipalType") == "GROUP" and item.get("PrincipalId") == group_id:
+                        return True
+        except (ClientError, BotoCoreError, TypeError, AttributeError):
+            return False
+        return False
+
     def assign_group_to_accounts(
         self,
         group_id: str,
@@ -672,6 +693,17 @@ class IdentityService:
                     Outcome.SUCCEEDED,
                     f"Would assign group '{group_name}' to account {acct_id}",
                     dry_run=True,
+                    permission_set_arn=permission_set_arn,
+                )
+                count += 1
+                continue
+
+            if self._assignment_exists(instance_arn, acct_id, permission_set_arn, group_id):
+                audit(
+                    "assign",
+                    f"sso-assignment:{acct_id}:{group_name}",
+                    Outcome.UNCHANGED,
+                    f"Group '{group_name}' is already assigned to account {acct_id}",
                     permission_set_arn=permission_set_arn,
                 )
                 count += 1
@@ -845,7 +877,8 @@ class IdentityService:
             org_tags=org_tags,
             tags=custom_tags,
         )
-        report.permission_sets_synced = list(ps_map.keys())
+        declared_sets = {ps.name for ps in id_cfg.permission_sets}
+        report.permission_sets_synced = [name for name in ps_map if name in declared_sets]
 
         users = [id_cfg.admin_user, id_cfg.breakglass_user, *id_cfg.additional_users]
         user_map: dict[str, str] = {}

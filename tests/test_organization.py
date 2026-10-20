@@ -320,3 +320,9 @@ def test_register_service_delegated_administrators_success(stubs):
         "a.amazonaws.com",
         "b.amazonaws.com",
     ]
+
+
+def test_default_trusted_services_cover_config_delegation() -> None:
+    """Phase 5 delegates Config administration, which AWS refuses unless service access is already on."""
+    assert "config-multiaccountsetup.amazonaws.com" in DEFAULT_TRUSTED_SERVICES
+    assert "config.amazonaws.com" in DEFAULT_TRUSTED_SERVICES

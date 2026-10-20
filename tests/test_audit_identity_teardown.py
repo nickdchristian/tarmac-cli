@@ -76,12 +76,12 @@ def test_identity_dry_run_and_failures(caplog):
     assert [e["outcome"] for e in _events(caplog)] == ["simulated", "simulated", "simulated", "failed"]
 
 
-def test_existing_membership_conflict_is_not_audited_as_a_change(caplog):
+def test_existing_membership_conflict_is_audited_as_unchanged(caplog):
     svc, _, store = _identity()
     store.create_group_membership.side_effect = _err("ConflictException")
 
     assert svc.add_user_to_group("g-1", "u-1", "Admins", "ann") is False
-    assert _events(caplog) == []
+    assert [e["outcome"] for e in _events(caplog)] == ["unchanged"]
 
 
 def test_assignment_and_permission_set_deletion_are_audited(caplog):
