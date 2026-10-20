@@ -3,6 +3,7 @@
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -152,7 +153,7 @@ def test_dry_run_plan_says_what_will_happen_to_old_logs(monkeypatch, retention, 
         get_log_archive_account_name=lambda: "log-archive",
     )
 
-    deploy_dry_run._render_phase_3_dry_run(bundle, "eu-west-1")
+    deploy_dry_run._render_phase_3_dry_run(cast(Any, bundle), "eu-west-1")
 
     out = buffer.getvalue()
     assert needle in out
