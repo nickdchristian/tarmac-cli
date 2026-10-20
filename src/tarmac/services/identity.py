@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GroupDef, IdentityCenterConfig, PermissionSetDef, UserDef
@@ -208,8 +209,8 @@ class IdentityService:
         request_id: str,
         max_attempts: int = 30,
         poll_interval: float = 2.0,
-    ) -> None:
-        """Poll AccountAssignmentDeletionStatus until SUCCEEDED or FAILED."""
+    ) -> bool:
+        """Poll AccountAssignmentDeletionStatus. Returns True on SUCCEEDED, False on FAILED or timeout."""
         for _ in range(max_attempts):
             try:
                 resp = self.sso_client.describe_account_assignment_deletion_status(
@@ -219,14 +220,15 @@ class IdentityService:
                 status_obj = resp.get("AccountAssignmentDeletionStatus", {})
                 status = status_obj.get("Status")
                 if status == "SUCCEEDED":
-                    return
+                    return True
                 if status == "FAILED":
                     reason = status_obj.get("FailureReason", "Unknown failure")
                     logger.warning("Assignment deletion failed: %s", reason)
-                    return
+                    return False
             except ClientError as e:
                 logger.warning("Error checking deletion status: %s", e)
             time.sleep(poll_interval)
+        return False
 
     def delete_account_assignment(
         self,
@@ -249,11 +251,28 @@ class IdentityService:
             status_obj = resp.get("AccountAssignmentDeletionStatus", {})
             req_id = status_obj.get("RequestId")
             status = status_obj.get("Status")
+            succeeded = True
             if status == "IN_PROGRESS" and req_id:
-                self._poll_assignment_deletion_status(instance_arn, req_id)
+                succeeded = self._poll_assignment_deletion_status(instance_arn, req_id)
+            audit(
+                "delete",
+                f"sso-assignment:{account_id}:{permission_set_arn}:{principal_id}",
+                Outcome.SUCCEEDED if succeeded else Outcome.FAILED,
+                f"Removed {principal_type.lower()} {principal_id} from permission set {permission_set_arn} "
+                f"on account {account_id}"
+                if succeeded
+                else f"Removing {principal_type.lower()} {principal_id} from account {account_id} did not complete",
+                account_id=account_id,
+            )
         except ClientError as e:
             if "ConflictException" not in e.response.get("Error", {}).get("Code", ""):
-                logger.warning("Error deleting assignment on %s: %s", account_id, e)
+                audit(
+                    "delete",
+                    f"sso-assignment:{account_id}:{permission_set_arn}:{principal_id}",
+                    Outcome.FAILED,
+                    f"Could not remove {principal_type.lower()} {principal_id} from account {account_id}: {e}",
+                    account_id=account_id,
+                )
 
     def get_assignments_for_permission_set(
         self, instance_arn: str, permission_set_arn: str
@@ -291,9 +310,19 @@ class IdentityService:
                 InstanceArn=instance_arn,
                 PermissionSetArn=permission_set_arn,
             )
-            logger.info("Deleted Permission Set %s from IAM Identity Center", permission_set_arn)
+            audit(
+                "delete",
+                f"permission-set:{permission_set_arn}",
+                Outcome.SUCCEEDED,
+                f"Deleted permission set {permission_set_arn} from IAM Identity Center",
+            )
         except ClientError as e:
-            logger.warning("Failed deleting permission set %s: %s", permission_set_arn, e)
+            audit(
+                "delete",
+                f"permission-set:{permission_set_arn}",
+                Outcome.FAILED,
+                f"Could not delete permission set {permission_set_arn}: {e}",
+            )
 
     def sync_permission_sets_via_cloudformation(
         self,
@@ -311,7 +340,13 @@ class IdentityService:
         instance_arn, _ = self.get_instance_details()
         if dry_run:
             for ps_def in permission_sets:
-                logger.info("[DRY-RUN] Would deploy PermissionSet '%s' via CloudFormation", ps_def.name)
+                audit(
+                    "deploy",
+                    f"permission-set:{ps_def.name}",
+                    Outcome.SUCCEEDED,
+                    f"Would deploy permission set '{ps_def.name}' via CloudFormation",
+                    dry_run=True,
+                )
             return {
                 ps_def.name: f"arn:aws:sso:::permissionSet/simulated/{ps_def.name}"
                 for ps_def in permission_sets
@@ -427,7 +462,13 @@ class IdentityService:
             logger.warning("Error checking user '%s': %s", user_def.username, e)
 
         if dry_run:
-            logger.info("[DRY-RUN] Would create user '%s' (%s)", user_def.username, user_def.email)
+            audit(
+                "create",
+                f"identity-user:{user_def.username}",
+                Outcome.SUCCEEDED,
+                f"Would create Identity Center user '{user_def.username}' ({user_def.email})",
+                dry_run=True,
+            )
             return f"dry-run-user-{user_def.username}"
 
         try:
@@ -439,9 +480,21 @@ class IdentityService:
                 Emails=[{"Value": user_def.email, "Type": "work", "Primary": True}],
             )
             user_id: str = resp["UserId"]
-            logger.info("Created user '%s' (%s)", user_def.username, user_def.email)
+            audit(
+                "create",
+                f"identity-user:{user_def.username}",
+                Outcome.SUCCEEDED,
+                f"Created Identity Center user '{user_def.username}' ({user_def.email})",
+                user_id=user_id,
+            )
             return user_id
         except ClientError as e:
+            audit(
+                "create",
+                f"identity-user:{user_def.username}",
+                Outcome.FAILED,
+                f"Could not create Identity Center user '{user_def.username}': {e}",
+            )
             raise IdentityCenterError(f"Failed to create user '{user_def.username}'", details=str(e)) from e
 
     def get_or_create_group(self, group_def: GroupDef, dry_run: bool = False) -> str | None:
@@ -461,7 +514,13 @@ class IdentityService:
             logger.warning("Error checking group '%s': %s", group_def.name, e)
 
         if dry_run:
-            logger.info("[DRY-RUN] Would create group '%s'", group_def.name)
+            audit(
+                "create",
+                f"identity-group:{group_def.name}",
+                Outcome.SUCCEEDED,
+                f"Would create Identity Center group '{group_def.name}'",
+                dry_run=True,
+            )
             return f"dry-run-group-{group_def.name}"
 
         try:
@@ -471,9 +530,21 @@ class IdentityService:
                 Description=group_def.description or "",
             )
             group_id: str = resp["GroupId"]
-            logger.info("Created group '%s'", group_def.name)
+            audit(
+                "create",
+                f"identity-group:{group_def.name}",
+                Outcome.SUCCEEDED,
+                f"Created Identity Center group '{group_def.name}'",
+                group_id=group_id,
+            )
             return group_id
         except ClientError as e:
+            audit(
+                "create",
+                f"identity-group:{group_def.name}",
+                Outcome.FAILED,
+                f"Could not create Identity Center group '{group_def.name}': {e}",
+            )
             raise IdentityCenterError(f"Failed to create group '{group_def.name}'", details=str(e)) from e
 
     def get_user_id_by_username(self, username: str) -> str | None:
@@ -506,7 +577,13 @@ class IdentityService:
         g_label = group_name or group_id
 
         if dry_run:
-            logger.info("[DRY-RUN] Would add user '%s' to group '%s'", u_label, g_label)
+            audit(
+                "add-member",
+                f"identity-group:{g_label}",
+                Outcome.SUCCEEDED,
+                f"Would add user '{u_label}' to group '{g_label}'",
+                dry_run=True,
+            )
             return True
 
         try:
@@ -515,12 +592,23 @@ class IdentityService:
                 GroupId=group_id,
                 MemberId={"UserId": user_id},
             )
-            logger.info("Added user '%s' to group '%s'", u_label, g_label)
+            audit(
+                "add-member",
+                f"identity-group:{g_label}",
+                Outcome.SUCCEEDED,
+                f"Added user '{u_label}' to group '{g_label}'",
+            )
             return True
         except ClientError as e:
             if "ConflictException" in aws_error_code(e):
                 logger.debug("User '%s' is already a member of group '%s'", u_label, g_label)
                 return False
+            audit(
+                "add-member",
+                f"identity-group:{g_label}",
+                Outcome.FAILED,
+                f"Could not add user '{u_label}' to group '{g_label}': {e}",
+            )
             raise IdentityCenterError(
                 f"Failed adding user '{u_label}' to group '{g_label}'",
                 details=str(e),
@@ -578,7 +666,14 @@ class IdentityService:
 
         for acct_id in account_ids:
             if dry_run:
-                logger.info("[DRY-RUN] Would assign group '%s' to account %s", group_name, acct_id)
+                audit(
+                    "assign",
+                    f"sso-assignment:{acct_id}:{group_name}",
+                    Outcome.SUCCEEDED,
+                    f"Would assign group '{group_name}' to account {acct_id}",
+                    dry_run=True,
+                    permission_set_arn=permission_set_arn,
+                )
                 count += 1
                 continue
 
@@ -604,13 +699,25 @@ class IdentityService:
                         details=reason,
                     )
 
-                logger.info("Assigned group '%s' to account %s", group_name, acct_id)
+                audit(
+                    "assign",
+                    f"sso-assignment:{acct_id}:{group_name}",
+                    Outcome.SUCCEEDED,
+                    f"Assigned group '{group_name}' to account {acct_id}",
+                    permission_set_arn=permission_set_arn,
+                )
                 count += 1
             except ClientError as e:
                 if "ConflictException" in aws_error_code(e):
                     logger.debug("Group '%s' already assigned to %s", group_name, acct_id)
                     count += 1
                 else:
+                    audit(
+                        "assign",
+                        f"sso-assignment:{acct_id}:{group_name}",
+                        Outcome.FAILED,
+                        f"Could not assign group '{group_name}' to account {acct_id}: {e}",
+                    )
                     raise IdentityCenterError(
                         f"Failed assigning group '{group_name}' to account {acct_id}",
                         details=str(e),
