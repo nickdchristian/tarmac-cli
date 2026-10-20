@@ -343,7 +343,9 @@ def test_assumed_session_credentials_refresh_before_expiry():
     mgr = _manager_with_sts(sts)
 
     session = mgr.get_assumed_session("222222222222")
-    frozen = session.get_credentials().get_frozen_credentials()
+    credentials = session.get_credentials()
+    assert credentials is not None
+    frozen = credentials.get_frozen_credentials()
 
     assert frozen.access_key == "SECOND"
     assert sts.assume_role.call_count == 2

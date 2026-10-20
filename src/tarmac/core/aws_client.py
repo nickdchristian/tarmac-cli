@@ -107,9 +107,9 @@ class AwsSessionManager:
                 details=msg,
             ) from e
 
-        botocore_session = get_botocore_session()
+        botocore_session: Any = get_botocore_session()
         # botocore has no public setter for a credentials object; this is the documented refreshable-role pattern.
-        botocore_session._credentials = credentials  # pyright: ignore[reportPrivateUsage]
+        botocore_session._credentials = credentials
         assumed_session = boto3.Session(botocore_session=botocore_session, region_name=self.default_region)
         self._cached_assumed_sessions[cache_key] = assumed_session
         return assumed_session
