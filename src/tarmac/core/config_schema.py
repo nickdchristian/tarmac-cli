@@ -266,12 +266,13 @@ class BudgetConfig(BaseModel):
         default=80.0, gt=0, le=100, description="Percentage threshold to trigger budget alerts."
     )
     forecast_alert_threshold_percent: float | None = Field(
-        default=None,
+        default=100.0,
         gt=0,
         le=1000,
         description=(
-            "Optional. Also alert when the forecasted monthly spend reaches this percentage of the limit. "
-            "AWS needs about 5 weeks of usage history before a forecast alert can fire."
+            "Also alert when the forecasted monthly spend reaches this percentage of the limit, which warns "
+            "before the limit is hit. Set to null to turn it off. AWS needs about 5 weeks of usage history "
+            "before a forecast alert can fire."
         ),
     )
     notification_emails: list[EmailStr] = Field(

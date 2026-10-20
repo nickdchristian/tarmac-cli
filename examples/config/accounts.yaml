@@ -40,7 +40,7 @@ accounts:
       budget:
         monthly_limit_usd: 50.0
         alert_threshold_percent: 80.0
-        # forecast_alert_threshold_percent: 100.0   # optional: also alert on forecasted spend (AWS needs ~5 weeks of history)
+        # forecast_alert_threshold_percent: 100.0   # default; also alert on forecasted spend (AWS needs ~5 weeks of history). null turns it off
         notification_emails: ["aws-deployment@example.com"]
 
   - name: "network-central"

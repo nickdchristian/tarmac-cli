@@ -88,8 +88,8 @@ def test_setup_account_budget_creates_stack():
     assert param_dict["NotificationEmail"] == "test@example.com"
 
 
-@pytest.mark.parametrize(("forecast", "expected"), [(None, None), (100.0, "100.0")])
-def test_forecast_alert_is_only_passed_to_the_stack_when_configured(forecast, expected):
+@pytest.mark.parametrize(("forecast", "expected"), [(None, None), (80.0, "80.0")])
+def test_forecast_alert_parameter_follows_the_configured_value(forecast, expected):
     mgr, cfn = MagicMock(), MagicMock()
     mgr.get_member_client.return_value = cfn
     mgr.default_region = "eu-west-1"
@@ -107,6 +107,10 @@ def test_forecast_alert_is_only_passed_to_the_stack_when_configured(forecast, ex
 
     params = {p["ParameterKey"]: p["ParameterValue"] for p in cfn.create_stack.call_args[1]["Parameters"]}
     assert params.get("ForecastThresholdPercent") == expected
+
+
+def test_forecast_alert_is_on_at_100_percent_by_default():
+    assert BudgetConfig(monthly_limit_usd=100.0).forecast_alert_threshold_percent == 100.0
 
 
 def test_forecast_alert_must_be_positive():
