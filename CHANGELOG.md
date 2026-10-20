@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.6](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.5...v0.1.6) (2026-10-20)
+
+
+### Features
+
+* guard against the mistakes that adopting an existing organization invites ([#45](https://github.com/nickdchristian/tarmac-cli/issues/45)) ([4060528](https://github.com/nickdchristian/tarmac-cli/commit/4060528601b9b902b7ea372fc227b89e4ebdc042))
+
+
+### Bug Fixes
+
+* enable config-multiaccountsetup trusted access before delegating Config ([#43](https://github.com/nickdchristian/tarmac-cli/issues/43)) ([a1db61b](https://github.com/nickdchristian/tarmac-cli/commit/a1db61b9e2b08915ab134cef1de8c04ab786f38b))
+* make the run log say what actually changed ([#44](https://github.com/nickdchristian/tarmac-cli/issues/44)) ([0cccbbe](https://github.com/nickdchristian/tarmac-cli/commit/0cccbbe4c5a730886a2c81caec4d918983c45574))
+
+
+### Documentation
+
+* CloudShell and SSO setup, adopting an existing organization, troubleshooting ([#46](https://github.com/nickdchristian/tarmac-cli/issues/46)) ([d2f0aad](https://github.com/nickdchristian/tarmac-cli/commit/d2f0aad49b821eeeb408f2b682b6c40aac02964a))
+
 ## [0.1.5](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.4...v0.1.5) (2026-10-20)
 
 
