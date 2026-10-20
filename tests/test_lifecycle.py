@@ -321,3 +321,32 @@ def test_phase_5_stops_before_audit_stack_when_delegated_admin_registration_fail
         )
 
     cfn.deploy_stack.assert_not_called()
+
+
+def test_assumed_session_credentials_refresh_before_expiry():
+    import datetime as dt
+
+    def creds(key: str, expires: dt.datetime) -> dict:
+        return {
+            "Credentials": {
+                "AccessKeyId": key,
+                "SecretAccessKey": "s",
+                "SessionToken": "t",
+                "Expiration": expires,
+            }
+        }
+
+    soon = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=30)
+    later = dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
+    sts = MagicMock()
+    sts.assume_role.side_effect = [creds("FIRST", soon), creds("SECOND", later)]
+    mgr = _manager_with_sts(sts)
+
+    session = mgr.get_assumed_session("222222222222")
+    credentials = session.get_credentials()
+    assert credentials is not None
+    frozen = credentials.get_frozen_credentials()
+
+    assert frozen.access_key == "SECOND"
+    assert sts.assume_role.call_count == 2
+    assert mgr.get_assumed_session("222222222222") is session
