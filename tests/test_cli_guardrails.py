@@ -148,3 +148,24 @@ def test_scp_plan_exits_1_when_a_target_cannot_be_resolved(tmp_path: Path):
 
     assert res.exit_code == 1
     assert "Typo" in res.output
+
+
+def test_scp_apply_resolves_policy_files_relative_to_the_config_dir(tmp_path: Path, monkeypatch):
+    """Policy files resolve against the project that owns the config, not the current directory."""
+    from tarmac.cli import org as org_cli
+
+    cfg = make_config(tmp_path, None)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    with (
+        patch("tarmac.cli.org.AwsSessionManager"),
+        patch("tarmac.cli.org.OUService"),
+        patch("tarmac.cli.org.SCPService") as scp_cls,
+    ):
+        scp_cls.return_value.reconcile_all.return_value = []
+        res = runner.invoke(org_cli.app, ["scp", "plan", "-c", str(cfg)])
+
+    assert res.exit_code == 0, res.output
+    assert scp_cls.return_value.reconcile_all.call_args.kwargs["project_root"] == cfg.parent

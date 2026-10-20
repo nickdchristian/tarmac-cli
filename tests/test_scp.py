@@ -629,3 +629,31 @@ def test_reconcile_scp_marks_unresolved_targets_as_failed(tmp_path: Path):
 
     assert result.status == "FAILED"
     assert result.unresolved_targets == ["Typo"]
+
+
+def test_normalize_json_falls_back_for_invalid_json():
+    service = SCPService(MagicMock())
+    assert service._normalize_json("  {not json  ") == "{not json"
+    assert service._normalize_json("") == ""
+
+
+def test_sync_policy_updates_when_live_policy_cannot_be_read():
+    """A failed describe_policy yields empty content; that must be treated as drift, not crash."""
+    from botocore.exceptions import ClientError
+
+    mock_client = MagicMock()
+    mock_session = MagicMock()
+    mock_session.get_client.return_value = mock_client
+    mock_client.describe_policy.side_effect = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "DescribePolicy"
+    )
+    service = SCPService(mock_session)
+
+    policy_id, action = service.sync_policy(
+        name="Guard",
+        description="d",
+        content='{"Version":"2012-10-17","Statement":[]}',
+        existing_scps={"Guard": {"Id": "p-1", "Name": "Guard"}},
+    )
+
+    assert (policy_id, action) == ("p-1", "UPDATED")

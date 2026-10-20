@@ -261,7 +261,7 @@ def _execute_scp_reconciliation(
             config=scp_config,
             root_id=root_id,
             ou_map=ou_map,
-            project_root=Path.cwd(),
+            project_root=bundle.config_dir.parent,
             dry_run=dry_run,
         )
         _render_scp_results(results)

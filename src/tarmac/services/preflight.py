@@ -347,16 +347,19 @@ class PreflightService:
         """Verify whether any alert SNS subscriptions are pending email confirmation."""
         try:
             sns = self.session_mgr.get_client("sns", region_name=target_region)
-            topics = sns.list_topics().get("Topics", [])
             pending = 0
             confirmed = 0
-            for t in topics:
-                subs = sns.list_subscriptions_by_topic(TopicArn=t["TopicArn"]).get("Subscriptions", [])
-                for s in subs:
-                    if s.get("SubscriptionArn") == "PendingConfirmation":
-                        pending += 1
-                    else:
-                        confirmed += 1
+            for topic_page in sns.get_paginator("list_topics").paginate():
+                for topic in topic_page.get("Topics", []):
+                    sub_pages = sns.get_paginator("list_subscriptions_by_topic").paginate(
+                        TopicArn=topic["TopicArn"]
+                    )
+                    for sub_page in sub_pages:
+                        for sub in sub_page.get("Subscriptions", []):
+                            if sub.get("SubscriptionArn") == "PendingConfirmation":
+                                pending += 1
+                            else:
+                                confirmed += 1
             if pending > 0:
                 return PreflightCheckResult(
                     name="SNS Alert Subscriptions",
