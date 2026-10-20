@@ -330,6 +330,13 @@ class AccountDef(BaseModel):
 class AccountsCatalog(BaseModel):
     accounts: list[AccountDef]
     tags: dict[str, str] = Field(default_factory=dict)
+    quarantine_removed_accounts: bool = Field(
+        default=True,
+        description=(
+            "Move an account that Tarmac tagged as managed, but that is no longer listed here, into the "
+            "Suspended OU. Accounts Tarmac never tagged are never touched. Set to false to disable."
+        ),
+    )
 
     @field_validator("accounts")
     def validate_accounts_unique(cls, accounts: list[AccountDef]) -> list[AccountDef]:

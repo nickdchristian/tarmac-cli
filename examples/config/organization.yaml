@@ -3,7 +3,7 @@
 # =============================================================================
 
 organization:
-  name: "myorg"                          # Lowercase prefix for resource naming and S3 buckets
+  name: "myorg"                          # Lowercase prefix for stack and bucket names. Do not change it after the first deploy.
   domain: "example.com"
   primary_region: "us-east-2"
   additional_regions: []                 # Additional regions for multi-region security services (GuardDuty, Security Hub)

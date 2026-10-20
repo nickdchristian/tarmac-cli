@@ -174,7 +174,7 @@ def test_account_create_dry_run_and_request_are_audited(caplog, mgr, client):
     client.create_account.return_value = {"CreateAccountStatus": {"Id": "car-1"}}
     client.get_paginator.return_value.paginate.return_value = [{"Accounts": []}]
     svc = AccountService(mgr)
-    acct = AccountDef(name="dev", email="dev@example.com", ou="Workloads")
+    acct = AccountDef(name="dev", email="dev@acme-corp.io", ou="Workloads")
     svc._poll_pending_creations = MagicMock()  # type: ignore[method-assign]
 
     svc.provision_accounts([acct], {"Workloads": "ou-1"}, dry_run=True)

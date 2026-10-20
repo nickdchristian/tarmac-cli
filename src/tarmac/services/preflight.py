@@ -4,14 +4,33 @@ import logging
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
+from ..core.placeholders import find_placeholder_values
 
 logger = logging.getLogger(__name__)
+
+# Stacks Tarmac creates are named "<organization.name>-<suffix>".
+TARMAC_STACK_SUFFIXES = (
+    "organization-scps",
+    "organization-cloudtrail",
+    "log-archive-hardening",
+    "terraform-backend",
+    "audit-account-hardening",
+    "sso-permission-sets",
+)
+_LIVE_STACK_STATUSES = [
+    "CREATE_COMPLETE",
+    "UPDATE_COMPLETE",
+    "UPDATE_ROLLBACK_COMPLETE",
+    "IMPORT_COMPLETE",
+    "IMPORT_ROLLBACK_COMPLETE",
+    "REVIEW_IN_PROGRESS",
+]
 
 
 def _count_statuses(checks: list[PreflightCheckResult]) -> tuple[int, int, int, int]:
@@ -343,6 +362,105 @@ class PreflightService:
                 action_required=None,
             )
 
+    def check_sample_values(self) -> PreflightCheckResult:
+        """Warn when sample values from `tarmac init` are still in the configuration."""
+        problems = find_placeholder_values(self.bundle)
+        if not problems:
+            return PreflightCheckResult(
+                name="Sample Configuration Values",
+                target="YAML configuration",
+                status=PreflightCheckStatus.PASS,
+                live_value="None found",
+            )
+        return PreflightCheckResult(
+            name="Sample Configuration Values",
+            target="YAML configuration",
+            status=PreflightCheckStatus.WARN,
+            live_value=f"{len(problems)} sample value(s)",
+            action_required="; ".join(problems[:3]) + (" ..." if len(problems) > 3 else ""),
+        )
+
+    def check_existing_organization_trail(self, target_region: str) -> PreflightCheckResult:
+        """Warn about organization trails Tarmac did not create: a second one means a second paid copy of events."""
+        declared = self.bundle.org.cloudtrail.trail_name
+        try:
+            cloudtrail = self.session_mgr.get_client("cloudtrail", region_name=target_region)
+            trails = cloudtrail.describe_trails(includeShadowTrails=True).get("trailList", [])
+        except (ClientError, BotoCoreError) as e:
+            logger.debug("Existing organization trail check: %s", e)
+            return PreflightCheckResult(
+                name="Existing Organization Trail",
+                target="CloudTrail",
+                status=PreflightCheckStatus.INFO,
+                live_value="Unavailable",
+            )
+        others = sorted(
+            str(t.get("Name", ""))
+            for t in trails
+            if t.get("IsOrganizationTrail") and t.get("Name") != declared
+        )
+        if not others:
+            return PreflightCheckResult(
+                name="Existing Organization Trail",
+                target="CloudTrail",
+                status=PreflightCheckStatus.PASS,
+                live_value="None besides the declared trail",
+            )
+        return PreflightCheckResult(
+            name="Existing Organization Trail",
+            target="CloudTrail",
+            status=PreflightCheckStatus.WARN,
+            live_value=", ".join(others),
+            action_required=(
+                f"An organization trail already exists. Deploying '{declared}' adds a second copy of management "
+                "events, which is billed ($2.00 per 100,000 events beyond the first copy). Delete one of them "
+                "once the new trail is delivering logs."
+            ),
+        )
+
+    def check_stack_name_prefix(self, target_region: str) -> PreflightCheckResult:
+        """Warn when Tarmac stacks exist under a different organization name than the one now configured."""
+        org_name = self.bundle.org.organization.name
+        try:
+            cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
+            names = [
+                str(summary.get("StackName", ""))
+                for page in cfn.get_paginator("list_stacks").paginate(StackStatusFilter=_LIVE_STACK_STATUSES)
+                for summary in page.get("StackSummaries", [])
+            ]
+        except (ClientError, BotoCoreError) as e:
+            logger.debug("Stack name prefix check: %s", e)
+            return PreflightCheckResult(
+                name="Existing Tarmac Stacks",
+                target=f"Region {target_region}",
+                status=PreflightCheckStatus.INFO,
+                live_value="Unavailable",
+            )
+        prefixes: set[str] = set()
+        for name in names:
+            for suffix in TARMAC_STACK_SUFFIXES:
+                if name.endswith(f"-{suffix}") and not name.startswith(f"{org_name}-"):
+                    prefixes.add(name[: -len(suffix) - 1])
+        if not prefixes:
+            return PreflightCheckResult(
+                name="Existing Tarmac Stacks",
+                target=f"Region {target_region}",
+                status=PreflightCheckStatus.PASS,
+                live_value="Consistent with organization.name",
+            )
+        found = ", ".join(sorted(prefixes))
+        return PreflightCheckResult(
+            name="Existing Tarmac Stacks",
+            target=f"Region {target_region}",
+            status=PreflightCheckStatus.WARN,
+            live_value=f"Stacks named for: {found}",
+            action_required=(
+                f"organization.name is '{org_name}', but Tarmac stacks already exist under '{found}'. Stacks are "
+                f"named after organization.name, so deploying now would try to recreate resources those stacks "
+                f"already own and fail. Set organization.name back to '{found}'."
+            ),
+        )
+
     def check_sns_subscriptions(self, target_region: str) -> PreflightCheckResult:
         """Verify whether any alert SNS subscriptions are pending email confirmation."""
         try:
@@ -661,6 +779,9 @@ class PreflightService:
             self.check_cost_explorer(),
             self.check_cost_allocation_tags(),
             *self.check_s3_bucket_collision(),
+            self.check_sample_values(),
+            self.check_existing_organization_trail(home_region),
+            self.check_stack_name_prefix(home_region),
             self.check_sns_subscriptions(home_region),
             self.check_support_tier(),
             self.check_payment_and_tax(),

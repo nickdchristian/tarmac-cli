@@ -13,7 +13,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.config_schema import OUDef
 from ..services.accounts import AccountService
 from ..services.ou import OUService
-from .ui import console, create_table, print_info
+from .ui import console, create_table, print_info, print_warning
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +317,13 @@ def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle
             )
 
     console.print(table)
+    quarantined = [i.name for i in plan_items if i.action == "SUSPEND"] if plan_items else []
+    if quarantined:
+        print_warning(
+            f"{len(quarantined)} account(s) are tagged as managed by Tarmac but are missing from accounts.yaml "
+            f"and would be moved to the Suspended OU: {', '.join(quarantined)}. Add them to accounts.yaml to keep "
+            "them where they are, or set 'quarantine_removed_accounts: false' to turn this off."
+        )
     print_info(
         "Account IDs, access credentials, and baselines will be exported to 'outputs/accounts-inventory.json' during live execution."
     )
