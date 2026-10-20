@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import AccountBaselineConfig, AccountDef, AccountsCatalog
-from ..core.exceptions import AccountProvisioningError, aws_error_message
+from ..core.exceptions import AccountProvisioningError, GovernanceError, aws_error_message
 from ..core.models import (
     STATUS_SUSPENDED,
     TAG_MANAGED_BY,
@@ -248,6 +248,12 @@ class AccountService:
         close: bool = False,
     ) -> AccountSuspensionResult:
         """Suspend an account by moving it to the Suspended OU, tagging it, and optionally closing it."""
+        if not suspended_ou_id:
+            raise GovernanceError(
+                "No 'Suspended' OU exists in the organization, so the account cannot be quarantined.",
+                details="Declare a 'Suspended' OU in organization.yaml and run 'tarmac ou sync' first.",
+            )
+
         if dry_run:
             logger.info(
                 "[DRY-RUN] Would suspend account '%s' (%s) into Suspended OU (close=%s)",

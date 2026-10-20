@@ -809,3 +809,27 @@ def test_provision_continues_after_one_create_failure_then_aggregates():
     # The second account was still polled, moved and tagged despite the first one failing.
     svc.move_account_if_needed.assert_called_once()
     svc.sync_account_tags.assert_called_once()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("close", [False, True])
+def test_suspend_account_without_suspended_ou_changes_nothing(dry_run: bool, close: bool):
+    """No quarantine OU means no tagging and no closure; the account must not be left half-suspended."""
+    from tarmac.core.exceptions import GovernanceError
+
+    mock_session_mgr = MagicMock()
+    org = MagicMock()
+    mock_session_mgr.get_client.return_value = org
+
+    with pytest.raises(GovernanceError, match="Suspended"):
+        AccountService(mock_session_mgr).suspend_account(
+            account_id="333333333333",
+            account_name="OldWorkload",
+            suspended_ou_id=None,
+            dry_run=dry_run,
+            close=close,
+        )
+
+    org.close_account.assert_not_called()
+    org.tag_resource.assert_not_called()
+    org.move_account.assert_not_called()
