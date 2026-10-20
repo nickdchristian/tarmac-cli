@@ -1,5 +1,6 @@
 """Main entrypoint for the tarmac CLI."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from . import access, account, baseline, deploy, identity, org, ou
 from .common import warn_if_example_newer
 from .preflight import run_preflight_checks
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="tarmac",
@@ -231,13 +234,12 @@ def _fetch_sso_instance(session_mgr: AwsSessionManager, region: str) -> str:
 
 
 def _resolve_sso_region(default_region: str) -> str:
-    """Resolve SSO region from config if available."""
     try:
         bundle, _ = load_all_configs()
         if bundle and bundle.identity.identity_center.region:
             return bundle.identity.identity_center.region
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Could not resolve SSO region from config, using default: %s", exc)
     return default_region
 
 
@@ -502,7 +504,6 @@ def show_status(
 
 
 def _render_drift_table(report: Any) -> None:
-    """Render comprehensive drift audit table to console."""
     print_header("Landing Zone Drift Inspection")
     table = create_table(expand=True)
     table.add_column("Category", style="bold white", width=12, no_wrap=True)

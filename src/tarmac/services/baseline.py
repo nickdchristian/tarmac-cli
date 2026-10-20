@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import AccountDef, AnomalyDetectionConfig, BudgetConfig
+from ..core.exceptions import AWS_ERRORS
 from ..core.models import (
     BASELINE_COMPLETED,
     TAG_BASELINE,
@@ -131,7 +132,7 @@ class BaselineService:
                 message=f"Error cleaning VPC: {err_msg}",
                 error=True,
             )
-        except Exception as e:
+        except Exception as e:  # worker-thread boundary: one region's failure must not abort the others
             logger.warning("[%s] Unexpected error cleaning default VPC in %s: %s", region, account_name, e)
             return VpcCleanupReport(
                 region=region,
@@ -260,7 +261,7 @@ class BaselineService:
                     code = e.response.get("Error", {}).get("Code", "")
                     if code not in ("NotFoundException", "ResourceNotFoundException"):
                         logger.debug("Error checking existing budget in %s: %s", account_name, e)
-                except Exception as e:
+                except AWS_ERRORS as e:
                     logger.debug("Could not inspect existing budget in %s: %s", account_name, e)
 
             cfn_report = cfn_service.deploy_stack(
@@ -291,7 +292,7 @@ class BaselineService:
                 status=status,
                 message=f"Budget stack {status.lower()} via CloudFormation",
             )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.warning("Failed to deploy budget stack in %s: %s", account_name, e)
             return BudgetReport(
                 account_name=account_name,
@@ -339,7 +340,7 @@ class BaselineService:
                         email,
                         resolved_topic_arn,
                     )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.warning(
                 "Could not subscribe additional emails to budget SNS topic in %s: %s",
                 account_name,

@@ -293,7 +293,6 @@ def _run_phase_3_cloudtrail(
         )
 
     if log_archive_id and not dry_run:
-        # 1. Deploy the Log Archive hardening stack (S3 sink & KMS key) to the Log Archive account first
         log_archive_report = _deploy_log_archive_hardening_stack(
             cfn_service,
             session_mgr,
@@ -309,7 +308,6 @@ def _run_phase_3_cloudtrail(
     elif dry_run:
         log_archive_id = log_archive_id or "DRY-RUN-LOG-ARCHIVE-ID"
 
-    # 2. Deploy the Organization CloudTrail stack to the Management account
     template_file = resolve_resource_path(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
@@ -591,7 +589,7 @@ def _run_phase_5_hardening(
     """Phase 5: Account Hardening, Terraform Backend & Security Services."""
     print_step("5", "Backend, Hardening & Security Services Deployments")
     if dry_run:
-        _render_phase_5_dry_run(bundle, target_region)
+        _render_phase_5_dry_run(bundle)
         return
 
     cfn_service = _get_service("CloudFormationService", CloudFormationService)(session_mgr)

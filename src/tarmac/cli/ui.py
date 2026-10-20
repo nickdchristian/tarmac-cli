@@ -25,7 +25,6 @@ def create_table(title: str | None = None, **kwargs: Any) -> Table:
 
 
 def print_header(title: str, subtitle: str = "") -> None:
-    """Print a styled section header."""
     text = f"[bold cyan]{title}[/bold cyan]"
     if subtitle:
         text += f"\n[dim]{subtitle}[/dim]"
@@ -33,7 +32,6 @@ def print_header(title: str, subtitle: str = "") -> None:
 
 
 def print_success(message: str) -> None:
-    """Print a success message with a checkmark."""
     console.print(f"[bold green]✓[/bold green] {message}")
 
 
@@ -43,12 +41,10 @@ def print_info(message: str) -> None:
 
 
 def print_warning(message: str) -> None:
-    """Print a warning message."""
     console.print(f"[bold yellow]⚠[/bold yellow] {message}")
 
 
 def print_step(phase: str, step_name: str) -> None:
-    """Print a pipeline step banner."""
     console.print(
         f"\n[bold cyan]─── Phase {phase}[/bold cyan] [dim]|[/dim] [bold white]{step_name}[/bold white] [dim]───[/dim]"
     )

@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
+from ..core.exceptions import AWS_ERRORS
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .ou import OUService
@@ -74,25 +75,18 @@ class DriftService:
         live_ous = ou_service.list_all_ous(root_id) if root_id else {}
         live_accts = acct_service.list_existing_accounts()
 
-        # 1. OU Hierarchy Drift
         self._audit_ous(bundle, live_ous, report)
 
-        # 2. Account Inventory & OU Placement Drift
         self._audit_accounts(bundle, live_accts, live_ous, acct_service, report)
 
-        # 3. Account Tags Drift
         self._audit_tags(bundle, live_accts, acct_service, report)
 
-        # 4. Service Control Policies Drift
         self._audit_scps(bundle, scp_service, root_id, live_ous, root_dir, report)
 
-        # 5. Core Infrastructure CloudFormation Stacks Drift
         self._audit_stacks(bundle, live_accts, target_region, report)
 
-        # 6. Member Account Budgets Drift
         self._audit_budgets(bundle, live_accts, target_region, report)
 
-        # 7. IAM Identity Center Permission Sets Drift
         self._audit_identity_center(bundle, target_region, report)
 
         report.in_sync_count = sum(1 for i in report.items if i.status == "IN_SYNC")
@@ -265,7 +259,7 @@ class DriftService:
                         )
                     )
                     continue
-            except Exception as e:
+            except AWS_ERRORS as e:
                 logger.debug("Could not verify SCP %s content hash: %s", policy_def.name, e)
 
             attached_targets = scp_service.list_targets_for_policy(pol_id)
@@ -320,9 +314,9 @@ class DriftService:
                     acct_id, "cloudformation", region_name=target_region
                 )
                 status = self._get_stack_status(client, stack_name)
-            except Exception:
+            except AWS_ERRORS:
                 status = "ACCESS_ERROR"
-        self._record_stack_drift(friendly_name, stack_name, status, report)
+        self._record_stack_drift(friendly_name, status, report)
 
     def _audit_stacks(
         self,
@@ -337,11 +331,11 @@ class DriftService:
 
         ct_stack = f"{prefix}-organization-cloudtrail"
         ct_status = self._get_stack_status(mgmt_cfn, ct_stack)
-        self._record_stack_drift("CloudTrail", ct_stack, ct_status, report)
+        self._record_stack_drift("CloudTrail", ct_status, report)
 
         sso_stack = f"{prefix}-sso-permission-sets"
         sso_status = self._get_stack_status(mgmt_cfn, sso_stack)
-        self._record_stack_drift("SSOPermissionSets", sso_stack, sso_status, report)
+        self._record_stack_drift("SSOPermissionSets", sso_status, report)
 
         stacks_to_check = [
             ("TerraformBackend", bundle.get_backend_account_name() or "deployment", "terraform-backend"),
@@ -378,9 +372,9 @@ class DriftService:
                         acct_id, "cloudformation", region_name=target_region
                     )
                     status = self._get_stack_status(client, budget_name)
-                except Exception:
+                except AWS_ERRORS:
                     status = "ACCESS_ERROR"
-            self._record_stack_drift(f"Budget ({acct.name})", budget_name, status, report)
+            self._record_stack_drift(f"Budget ({acct.name})", status, report)
 
     def _audit_identity_center(
         self,
@@ -409,8 +403,10 @@ class DriftService:
                     desc = sso_client.describe_permission_set(InstanceArn=inst_arn, PermissionSetArn=arn)
                     ps_data = desc.get("PermissionSet", {})
                     live_ps_names[ps_data.get("Name", "")] = arn
-                except Exception:
-                    pass
+                except AWS_ERRORS as exc:
+                    logger.warning(
+                        "Could not describe permission set %s; drift for it may be misreported: %s", arn, exc
+                    )
 
             for ps_def in bundle.identity.identity_center.permission_sets:
                 in_sync = ps_def.name in live_ps_names
@@ -426,13 +422,12 @@ class DriftService:
                         remediation="" if in_sync else "tarmac identity sync",
                     )
                 )
-        except Exception as e:
+        except AWS_ERRORS as e:
             logger.debug("Identity Center drift inspection skipped: %s", e)
 
     def _record_stack_drift(
         self,
         friendly_name: str,
-        stack_name: str,
         status: str,
         report: DriftReport,
     ) -> None:

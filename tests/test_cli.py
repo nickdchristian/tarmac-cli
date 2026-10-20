@@ -229,7 +229,6 @@ def test_cli_init_project(tmp_path):
     assert (target / "identity.yaml").exists()
     assert "Created" in result.stdout
 
-    # Positional directory argument test
     target_pos = tmp_path / "positional_config"
     result_pos = runner.invoke(app, ["init", str(target_pos)])
     assert result_pos.exit_code == 0
@@ -930,7 +929,6 @@ def test_cli_drift_command(monkeypatch, sample_config_dir):
     assert "dev-app" in res.stdout
     assert "MISSING" in res.stdout
 
-    # Test JSON output
     res_json = runner.invoke(app, ["drift", "--config-dir", str(sample_config_dir), "--json"])
     assert res_json.exit_code == 0
     assert '"has_drift": true' in res_json.stdout

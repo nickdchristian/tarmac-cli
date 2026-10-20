@@ -112,7 +112,6 @@ def _provision_declared_accounts(
     service: AccountService,
     baseliner: BaselineService,
     ou_map: dict[str, str],
-    target_region: str,
     dry_run: bool,
     skip_baseline: bool,
     results_table: Table,
@@ -201,7 +200,7 @@ def apply_accounts(
         results_table.add_column("Status", style="bold")
 
         _provision_declared_accounts(
-            bundle, service, baseliner, ou_map, target_region, dry_run, skip_baseline, results_table
+            bundle, service, baseliner, ou_map, dry_run, skip_baseline, results_table
         )
 
         console.print(results_table)

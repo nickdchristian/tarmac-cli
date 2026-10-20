@@ -1,5 +1,6 @@
 """Shared CLI helpers and configuration handlers."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,8 @@ import typer
 
 from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_configs
 from .ui import error_console
+
+logger = logging.getLogger(__name__)
 
 
 def warn_if_example_newer(config_dir: Path | None = None) -> None:
@@ -54,16 +57,16 @@ def get_active_account_id_map(session_mgr: Any) -> dict[str, str]:
                         accts[a["Name"]] = str(a["Id"])
         if accts:
             return accts
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Paginated list_accounts failed, falling back to a single call: %s", exc)
     try:
         resp = org_client.list_accounts()
         if isinstance(resp, dict):
             for a in resp.get("Accounts", []):
                 if isinstance(a, dict) and a.get("Status", "ACTIVE") in ("ACTIVE", None):
                     accts[a["Name"]] = str(a["Id"])
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Could not list organization accounts; account names will not resolve: %s", exc)
     return accts
 
 

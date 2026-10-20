@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
-from ..core.exceptions import IdentityCenterError
+from ..core.exceptions import AWS_ERRORS, IdentityCenterError
 from .accounts import AccountService
 from .identity import IdentityService
 from .ou import OUService
@@ -78,7 +78,7 @@ class StatusService:
                     deployment_id, "cloudformation", region_name=target_region
                 )
                 backend_status = self.get_stack_status(dep_cfn, backend_stack)
-            except Exception as e:
+            except AWS_ERRORS as e:
                 logger.debug("Could not inspect backend stack in account %s: %s", deployment_id, e)
                 backend_status = "ACCESS_ERROR"
         else:

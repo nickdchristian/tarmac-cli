@@ -47,9 +47,7 @@ def _ok_report() -> TeardownReport:
     return TeardownReport(items=[], status="COMPLETED")
 
 
-# --------------------------------------------------------------------------------------
-# H-1: --json must not stand in for consent
-# --------------------------------------------------------------------------------------
+# --json must not stand in for consent
 @pytest.mark.parametrize("command", ["destroy", "teardown"])
 def test_teardown_json_without_yes_is_refused(tmp_path: Path, command: str):
     cfg = _make_config(tmp_path, None)
@@ -81,9 +79,7 @@ def test_run_json_without_yes_is_refused_for_live_deploy(tmp_path: Path):
     phase.assert_not_called()
 
 
-# --------------------------------------------------------------------------------------
-# H-2: production lock
-# --------------------------------------------------------------------------------------
+# production lock
 @pytest.mark.parametrize(
     ("tags", "expected"),
     [
@@ -130,9 +126,7 @@ def test_destroy_dry_run_allowed_for_production(tmp_path: Path):
     assert res.exit_code == 0, res.output
 
 
-# --------------------------------------------------------------------------------------
-# M-2: exit code reflects failure
-# --------------------------------------------------------------------------------------
+# exit code reflects failure
 @pytest.mark.parametrize("fmt", [[], ["--json"]])
 def test_teardown_exits_nonzero_when_items_fail(tmp_path: Path, fmt: list[str]):
     cfg = _make_config(tmp_path, None)
@@ -147,9 +141,7 @@ def test_teardown_exits_nonzero_when_items_fail(tmp_path: Path, fmt: list[str]):
     assert res.exit_code == 1
 
 
-# --------------------------------------------------------------------------------------
-# M-5: phase validation
-# --------------------------------------------------------------------------------------
+# phase validation
 @pytest.mark.parametrize("phase", ["0", "1", "7", "-3"])
 def test_teardown_rejects_invalid_phase(tmp_path: Path, phase: str):
     cfg = _make_config(tmp_path, None)
@@ -169,9 +161,7 @@ def test_run_rejects_invalid_phase(tmp_path: Path):
     assert res.exit_code == 2
 
 
-# --------------------------------------------------------------------------------------
-# H-3: identity never deletes permission sets it does not own
-# --------------------------------------------------------------------------------------
+# identity never deletes permission sets it does not own
 def _identity_service(mock_sso: MagicMock, mock_cfn: MagicMock) -> IdentityService:
     mgr = MagicMock()
     mgr.get_client.side_effect = lambda name, **_: mock_sso if name == "sso-admin" else mock_cfn
@@ -266,9 +256,7 @@ def test_teardown_skips_permission_sets_not_owned_by_tarmac(tmp_path: Path):
     mock_sso.delete_permission_set.assert_not_called()
 
 
-# --------------------------------------------------------------------------------------
-# M-4: S3 purge and bucket deletion failures are reported
-# --------------------------------------------------------------------------------------
+# S3 purge and bucket deletion failures are reported
 def test_empty_s3_bucket_raises_when_s3_reports_delete_errors():
     s3 = MagicMock()
     s3.head_bucket.return_value = {}
@@ -309,9 +297,7 @@ def test_delete_retained_bucket_reports_failure_and_ignores_missing():
     assert svc._delete_retained_bucket(s3, "b", "Acct", "1") == []
 
 
-# --------------------------------------------------------------------------------------
-# M-3: cost anomaly monitors are matched by exact tarmac-generated name
-# --------------------------------------------------------------------------------------
+# cost anomaly monitors are matched by exact tarmac-generated name
 def test_teardown_budgets_only_deletes_exact_tarmac_monitors(tmp_path: Path):
     cfg = _make_config(tmp_path, None)
     bundle, errors = load_all_configs(cfg)
@@ -340,9 +326,7 @@ def test_teardown_budgets_only_deletes_exact_tarmac_monitors(tmp_path: Path):
     assert deleted == ["arn:ours"]
 
 
-# --------------------------------------------------------------------------------------
-# M-7: preflight must not report PASS when it could not verify
-# --------------------------------------------------------------------------------------
+# preflight must not report PASS when it could not verify
 def test_account_quota_unverifiable_is_warning_not_pass(tmp_path: Path):
     cfg = _make_config(tmp_path, None)
     bundle, errors = load_all_configs(cfg)
@@ -365,9 +349,7 @@ def test_account_quota_unverifiable_is_warning_not_pass(tmp_path: Path):
     assert res.action_required
 
 
-# --------------------------------------------------------------------------------------
-# M-8: parallel default-VPC cleanup is exercised and thread-safe
-# --------------------------------------------------------------------------------------
+# parallel default-VPC cleanup is exercised and thread-safe
 def test_parallel_vpc_cleanup_runs_every_region_and_keeps_order():
     mgr = MagicMock()
     seen: set[str] = set()
@@ -447,9 +429,7 @@ def test_baseline_account_not_marked_complete_when_a_region_errors():
     org.tag_resource.assert_not_called()  # not marked tarmac:baseline=completed, so it is retried next run
 
 
-# --------------------------------------------------------------------------------------
-# M-9 / M-10: template hardening (packaged copy must match too)
-# --------------------------------------------------------------------------------------
+# template hardening (packaged copy must match too)
 @pytest.mark.parametrize("base", ["cloudformation", "src/tarmac/templates/cloudformation"])
 def test_log_archive_template_hardening(base: str):
     root = Path(__file__).resolve().parents[1]
@@ -472,7 +452,7 @@ def test_log_archive_template_hardening(base: str):
     assert "AllowS3LogDeliveryEncrypt" not in sids
 
 
-# --- M-6: no silent fallback to example configuration --------------------------------------------
+# no silent fallback to example configuration
 
 
 def test_default_config_dir_does_not_fall_back_to_repo_examples(tmp_path, monkeypatch):
@@ -497,7 +477,7 @@ def test_example_files_are_not_loaded_as_real_config(tmp_path):
         resolve_file(tmp_path, "organization")
 
 
-# --- M-12: email-first account matching and aggregated provisioning failures ----------------------
+# email-first account matching and aggregated provisioning failures
 
 
 def _acct_service(existing: dict[str, dict[str, Any]]):

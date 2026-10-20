@@ -9,7 +9,7 @@ from typing import Any, Literal
 from botocore.exceptions import ClientError, WaiterError
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import DeploymentError
+from ..core.exceptions import AWS_ERRORS, DeploymentError
 from ..core.models import StackDeployReport
 from ..core.tagging import merge_tags, to_cfn_tags
 
@@ -58,8 +58,7 @@ class CloudFormationService:
                 raise DeploymentError("Either template_file or template_body must be provided.")
             if not template_file.exists():
                 raise DeploymentError(f"CloudFormation template not found: {template_file}")
-            with open(template_file, encoding="utf-8") as f:
-                template_body = f.read()
+            template_body = template_file.read_text(encoding="utf-8")
 
         cfn_params = [{"ParameterKey": k, "ParameterValue": str(v)} for k, v in (parameters or {}).items()]
         resolved_tags = merge_tags(org_tags, account_tags, tags)
@@ -259,8 +258,8 @@ class CloudFormationService:
                             )
                             if v_reason:
                                 reasons.append(f"{res_id}: {v_reason}")
-                except Exception:
-                    pass
+                except AWS_ERRORS as exc:  # best effort: extra failure detail only
+                    logger.debug("Could not read change-set validation events for '%s': %s", stack_name, exc)
 
             events_resp = cfn_client.describe_stack_events(StackName=stack_name)
             for ev in events_resp.get("StackEvents", []):

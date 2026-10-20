@@ -20,7 +20,6 @@ app = typer.Typer(help="Pre-flight verification of manual steps and operational 
 
 
 def _format_status_badge(status: PreflightCheckStatus) -> str:
-    """Format color-coded terminal badge for check status."""
     if status == PreflightCheckStatus.PASS:
         return "[bold green]PASS[/bold green]"
     if status == PreflightCheckStatus.WARN:

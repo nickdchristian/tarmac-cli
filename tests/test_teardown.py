@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from tarmac.cli.deploy import app
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_loader import load_all_configs
-from tarmac.core.exceptions import GovernanceError
+from tarmac.core.exceptions import AWSAuthenticationError, GovernanceError
 from tarmac.services.teardown import (
     TeardownItemReport,
     TeardownReport,
@@ -381,7 +381,7 @@ def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path:
     service = TeardownService(mock_session_mgr)
     with (
         patch.object(service.cfn_service, "delete_stack") as mock_del_stack,
-        patch("tarmac.services.teardown.IdentityService") as mock_id_cls,
+        patch("tarmac.services.teardown_governance.IdentityService") as mock_id_cls,
     ):
         mock_id_inst = MagicMock()
         mock_id_cls.return_value = mock_id_inst
@@ -712,7 +712,7 @@ def test_cleanup_orphaned_bucket_contains_data_raises_governance_error():
     mock_s3.delete_bucket.assert_not_called()
 
 
-# --- M-3: teardown only removes tarmac-owned trails and SCPs -------------------------------------
+# teardown only removes tarmac-owned trails and SCPs
 
 
 def _teardown_service(clients: dict[str, MagicMock]) -> TeardownService:
@@ -876,7 +876,7 @@ def test_teardown_audit_skips_when_account_unresolved(test_bundle):
 
 def test_teardown_audit_reports_failure_instead_of_raising(test_bundle):
     svc = _audit_service(MagicMock())
-    _mgr_of(svc).get_member_client.side_effect = RuntimeError("cannot assume role")
+    _mgr_of(svc).get_member_client.side_effect = AWSAuthenticationError("cannot assume role")
 
     reports = svc.teardown_audit(test_bundle, "us-east-1", account_id_map=_audit_accounts(test_bundle))
 
@@ -950,7 +950,7 @@ def test_teardown_phase_dispatches_each_phase_to_its_handlers(test_bundle, phase
 
     assert getattr(svc, method).call_count == 1
     called = {h for h in handlers if getattr(svc, h).called}
-    # Phase 5 must not touch log-archive buckets (audit finding M-5): only its own handlers run.
+    # Phase 5 must not touch log-archive buckets: only its own handlers run.
     if phase == 5:
         assert called == {"teardown_backend", "teardown_audit"}
 
