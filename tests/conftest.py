@@ -21,6 +21,15 @@ def isolate_aws_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_inventory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep the created-by-tarmac inventory out of the repository's example config."""
+    from tarmac.core import inventory
+
+    monkeypatch.setenv("TARMAC_INVENTORY_FILE", str(tmp_path / "inventory.json"))
+    inventory.deactivate()
+
+
 @pytest.fixture
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
