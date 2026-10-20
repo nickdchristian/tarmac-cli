@@ -381,7 +381,7 @@ def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path:
     service = TeardownService(mock_session_mgr)
     with (
         patch.object(service.cfn_service, "delete_stack") as mock_del_stack,
-        patch("tarmac.services.teardown.IdentityService") as mock_id_cls,
+        patch("tarmac.services.teardown_governance.IdentityService") as mock_id_cls,
     ):
         mock_id_inst = MagicMock()
         mock_id_cls.return_value = mock_id_inst
