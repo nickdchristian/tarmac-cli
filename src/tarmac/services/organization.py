@@ -7,6 +7,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from .. import __version__
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import ContactsConfig, RootAccessConfig
@@ -70,7 +71,13 @@ class OrganizationService:
                         "Failed to describe AWS Organization", details=aws_error_message(describe_error)
                     ) from describe_error
             raise GovernanceError("Failed to create AWS Organization", details=aws_error_message(e)) from e
-        logger.info("Created AWS Organization: %s", org_id)
+        audit(
+            "create",
+            f"organization:{org_id}",
+            Outcome.SUCCEEDED,
+            f"Created AWS Organization {org_id} with all features enabled",
+            org_id=org_id,
+        )
         return str(org_id)
 
     def set_account_contacts(self, contacts: ContactsConfig) -> list[str]:
@@ -94,10 +101,22 @@ class OrganizationService:
                     EmailAddress=contact_data.email,
                     PhoneNumber=contact_data.phone,
                 )
-                logger.info("Set alternate contact for %s (%s)", contact_type, contact_data.email)
+                audit(
+                    "update",
+                    f"alternate-contact:{contact_type}",
+                    Outcome.SUCCEEDED,
+                    f"Set {contact_type} alternate contact on the management account to {contact_data.email}",
+                    contact_type=contact_type,
+                )
                 updated.append(contact_type)
             except ClientError as e:
-                logger.error("Failed to set %s contact: %s", contact_type, e)
+                audit(
+                    "update",
+                    f"alternate-contact:{contact_type}",
+                    Outcome.FAILED,
+                    f"Could not set {contact_type} alternate contact: {aws_error_message(e)}",
+                    contact_type=contact_type,
+                )
                 raise GovernanceError(
                     f"Failed to set {contact_type} contact",
                     details=aws_error_message(e),
@@ -113,7 +132,13 @@ class OrganizationService:
         for service in target_services:
             try:
                 self.org_client.enable_aws_service_access(ServicePrincipal=service)
-                logger.info("Enabled trusted service access for %s", service)
+                audit(
+                    "enable",
+                    f"trusted-access:{service}",
+                    Outcome.SUCCEEDED,
+                    f"Enabled trusted service access for {service} in AWS Organizations",
+                    service=service,
+                )
                 enabled.append(service)
             except ClientError as e:
                 logger.warning("Could not enable %s: %s", service, aws_error_message(e))
@@ -167,7 +192,12 @@ class OrganizationService:
     def _enable_iam_trusted_access(self) -> bool:
         try:
             self.org_client.enable_aws_service_access(ServicePrincipal="iam.amazonaws.com")
-            logger.info("Enabled trusted access for IAM in Organizations")
+            audit(
+                "enable",
+                "trusted-access:iam.amazonaws.com",
+                Outcome.SUCCEEDED,
+                "Enabled trusted service access for IAM in AWS Organizations",
+            )
             return True
         except ClientError as e:
             msg = aws_error_message(e)
@@ -178,7 +208,12 @@ class OrganizationService:
     def _enable_root_credentials(self) -> bool:
         try:
             self.iam_client.enable_organizations_root_credentials_management()
-            logger.info("Enabled Organizations root credentials management")
+            audit(
+                "enable",
+                "root-credentials-management",
+                Outcome.SUCCEEDED,
+                "Enabled centralized root credentials management",
+            )
             return True
         except ClientError as e:
             msg = aws_error_message(e)
@@ -189,7 +224,12 @@ class OrganizationService:
     def _enable_root_sessions(self) -> bool:
         try:
             self.iam_client.enable_organizations_root_sessions()
-            logger.info("Enabled Organizations privileged root sessions")
+            audit(
+                "enable",
+                "root-sessions",
+                Outcome.SUCCEEDED,
+                "Enabled privileged root sessions for member accounts",
+            )
             return True
         except ClientError as e:
             msg = aws_error_message(e)
@@ -219,13 +259,25 @@ class OrganizationService:
                 AccountId=admin_acct_id,
                 ServicePrincipal="iam.amazonaws.com",
             )
-            logger.info("Registered %s (%s) as IAM delegated admin", admin_account, admin_acct_id)
+            audit(
+                "register",
+                f"delegated-admin:iam.amazonaws.com:{admin_acct_id}",
+                Outcome.SUCCEEDED,
+                f"Registered {admin_account} ({admin_acct_id}) as IAM delegated administrator",
+                account_id=admin_acct_id,
+            )
             return True
         except ClientError as e:
             err_code = aws_error_code(e)
             err_msg = aws_error_message(e)
             if err_code == "AccountAlreadyRegisteredException":
-                logger.info("Account %s is already registered as IAM delegated admin", admin_acct_id)
+                audit(
+                    "register",
+                    f"delegated-admin:iam.amazonaws.com:{admin_acct_id}",
+                    Outcome.UNCHANGED,
+                    f"Account {admin_acct_id} is already the IAM delegated administrator",
+                    account_id=admin_acct_id,
+                )
                 return True
             detailed_err = f"[{err_code}] {err_msg}"
             self.last_error["delegated_admin"] = detailed_err
@@ -245,10 +297,26 @@ class OrganizationService:
         for sp in service_principals:
             try:
                 self.org_client.register_delegated_administrator(AccountId=account_id, ServicePrincipal=sp)
+                audit(
+                    "register",
+                    f"delegated-admin:{sp}:{account_id}",
+                    Outcome.SUCCEEDED,
+                    f"Registered account {account_id} as delegated administrator for {sp}",
+                    account_id=account_id,
+                    service=sp,
+                )
                 registered.append(sp)
             except ClientError as e:
                 err_code = aws_error_code(e)
                 if err_code == "AccountAlreadyRegisteredException":
+                    audit(
+                        "register",
+                        f"delegated-admin:{sp}:{account_id}",
+                        Outcome.UNCHANGED,
+                        f"Account {account_id} is already delegated administrator for {sp}",
+                        account_id=account_id,
+                        service=sp,
+                    )
                     registered.append(sp)
                 else:
                     msg = aws_error_message(e)
@@ -292,7 +360,13 @@ class OrganizationService:
                     {"Key": TAG_MANAGED_BY, "Value": "tarmac"},
                 ],
             )
-            logger.info("Recorded phase '%s' on management account %s", phase_name, mgmt_account_id)
+            audit(
+                "tag",
+                f"account:{mgmt_account_id}",
+                Outcome.SUCCEEDED,
+                f"Recorded phase '{phase_name}' as complete on management account {mgmt_account_id}",
+                phase_name=phase_name,
+            )
         except ClientError as e:
             logger.warning("Could not record phase '%s' tag on management account: %s", phase_name, e)
         return current_phases
@@ -311,7 +385,12 @@ class OrganizationService:
                     {"Key": TAG_MANAGED_BY, "Value": "tarmac"},
                 ],
             )
-            logger.info("Marked landing zone status as 'ready' on management account %s", mgmt_account_id)
+            audit(
+                "tag",
+                f"account:{mgmt_account_id}",
+                Outcome.SUCCEEDED,
+                f"Marked landing zone as ready on management account {mgmt_account_id}",
+            )
         except ClientError as e:
             logger.warning("Could not mark landing zone ready on management account: %s", e)
 
@@ -341,9 +420,15 @@ class OrganizationService:
                 logger.debug("No inactive cost allocation tags matching target keys found to activate.")
                 return []
 
-            logger.info("Activating %d cost allocation tag(s): %s", len(to_activate), to_activate)
             ce.update_cost_allocation_tags_status(
                 CostAllocationTagsStatus=[{"TagKey": k, "Status": "Active"} for k in to_activate]
+            )
+            audit(
+                "activate",
+                "cost-allocation-tags",
+                Outcome.SUCCEEDED,
+                f"Activated {len(to_activate)} cost allocation tag(s): {', '.join(to_activate)}",
+                tag_keys=to_activate,
             )
             return to_activate
         except ClientError as e:

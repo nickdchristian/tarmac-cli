@@ -14,6 +14,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.config_schema import OUDef
 from ..core.exceptions import GovernanceError
+from ..core.logging import bind
 from ..core.models import PreflightCheckStatus, PreflightReport, StackDeployReport
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
@@ -64,6 +65,16 @@ from .ui import (
     print_success,
     print_warning,
 )
+
+PHASE_NAMES = {
+    0: "preflight",
+    1: "organization",
+    2: "organizational-units",
+    3: "cloudtrail",
+    4: "accounts",
+    5: "hardening",
+    6: "identity",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +314,8 @@ def run_pipeline(
         for p in phases_to_run:
             runner = phase_runners.get(p)
             if runner:
-                runner()
+                with bind(phase=PHASE_NAMES.get(p, str(p))):
+                    runner()
             else:
                 if json_output:
                     print(json.dumps({"status": "FAILED", "error": f"Invalid phase: {p}"}, indent=2))

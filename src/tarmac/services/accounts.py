@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from botocore.exceptions import ClientError
 
+from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import AccountBaselineConfig, AccountDef, AccountsCatalog
@@ -255,11 +256,15 @@ class AccountService:
             )
 
         if dry_run:
-            logger.info(
-                "[DRY-RUN] Would suspend account '%s' (%s) into Suspended OU (close=%s)",
-                account_name,
-                account_id,
-                close,
+            audit(
+                "suspend",
+                f"account:{account_id}",
+                Outcome.SUCCEEDED,
+                f"Would move account '{account_name}' ({account_id}) to the Suspended OU"
+                + (" and close it" if close else ""),
+                dry_run=True,
+                account_id=account_id,
+                close=close,
             )
             return AccountSuspensionResult(
                 name=account_name,
@@ -288,10 +293,23 @@ class AccountService:
             try:
                 self.org_client.close_account(AccountId=account_id)
                 closed = True
-                logger.info("Closed AWS account '%s' (%s) via Organizations API.", account_name, account_id)
+                audit(
+                    "close",
+                    f"account:{account_id}",
+                    Outcome.SUCCEEDED,
+                    f"Requested closure of account '{account_name}' ({account_id}); "
+                    "AWS suspends it and removes it after 90 days",
+                    account_id=account_id,
+                )
             except ClientError as e:
                 close_error = e.response.get("Error", {}).get("Message", str(e))
-                logger.warning("Could not close account '%s' (%s): %s", account_name, account_id, e)
+                audit(
+                    "close",
+                    f"account:{account_id}",
+                    Outcome.FAILED,
+                    f"Could not close account '{account_name}' ({account_id}): {close_error}",
+                    account_id=account_id,
+                )
 
         msg = (
             f"Account {account_name} moved to Suspended OU and tagged."
@@ -327,9 +345,6 @@ class AccountService:
                 f"Cannot move account '{account_name}': unable to determine current parent."
             )
 
-        logger.info(
-            "Moving account '%s' from parent %s to OU %s...", account_name, current_parent, target_ou_id
-        )
         try:
             self.org_client.move_account(
                 AccountId=account_id,
@@ -337,9 +352,25 @@ class AccountService:
                 DestinationParentId=target_ou_id,
             )
             self._parent_cache[account_id] = target_ou_id
-            logger.info("Moved account '%s' to target OU %s", account_name, target_ou_id)
+            audit(
+                "move",
+                f"account:{account_id}",
+                Outcome.SUCCEEDED,
+                f"Moved account '{account_name}' ({account_id}) from {current_parent} to OU {target_ou_id}",
+                account_id=account_id,
+                from_parent=current_parent,
+                to_parent=target_ou_id,
+            )
             return True
         except ClientError as e:
+            audit(
+                "move",
+                f"account:{account_id}",
+                Outcome.FAILED,
+                f"Could not move account '{account_name}' ({account_id}) to OU {target_ou_id}: "
+                f"{aws_error_message(e)}",
+                account_id=account_id,
+            )
             raise AccountProvisioningError(
                 f"Failed to move account '{account_name}' to OU '{target_ou_id}'",
                 details=aws_error_message(e),
@@ -380,28 +411,31 @@ class AccountService:
             return False
 
         if dry_run:
-            logger.info(
-                "[DRY-RUN] Would apply %d tags to account '%s' (%s): %s",
-                len(tags_to_apply),
-                account_name,
-                account_id,
-                tags_to_apply,
+            audit(
+                "tag",
+                f"account:{account_id}",
+                Outcome.SUCCEEDED,
+                f"Would apply {len(tags_to_apply)} tag(s) to account '{account_name}' ({account_id})",
+                dry_run=True,
+                account_id=account_id,
+                tags=tags_to_apply,
             )
             return True
 
-        logger.info(
-            "Applying %d tags to account '%s' (%s)...",
-            len(tags_to_apply),
-            account_name,
-            account_id,
-        )
         try:
             tag_list = [{"Key": k, "Value": v} for k, v in tags_to_apply.items()]
             self.org_client.tag_resource(ResourceId=account_id, Tags=tag_list)
             merged_tags = dict(current_tags)
             merged_tags.update(tags_to_apply)
             self._tags_cache[account_id] = merged_tags
-            logger.info("Successfully updated tags on account '%s'", account_name)
+            audit(
+                "tag",
+                f"account:{account_id}",
+                Outcome.SUCCEEDED,
+                f"Applied {len(tags_to_apply)} tag(s) to account '{account_name}' ({account_id})",
+                account_id=account_id,
+                tags=tags_to_apply,
+            )
             return True
         except ClientError as e:
             msg = aws_error_message(e)
@@ -410,6 +444,13 @@ class AccountService:
                     " (Note: AWS Organizations tags only permit letters, numbers, spaces, "
                     "and _ . : / = + - @; commas and other punctuation are not allowed)"
                 )
+            audit(
+                "tag",
+                f"account:{account_id}",
+                Outcome.FAILED,
+                f"Could not tag account '{account_name}' ({account_id}): {msg}",
+                account_id=account_id,
+            )
             raise AccountProvisioningError(
                 f"Failed to apply tags to account '{account_name}' ({account_id})",
                 details=msg,
@@ -479,13 +520,20 @@ class AccountService:
                 continue
 
             if dry_run:
-                logger.info("[DRY-RUN] Would create account '%s' (%s) in OU %s", name, email, target_ou_id)
+                audit(
+                    "create",
+                    f"account:{name}",
+                    Outcome.SUCCEEDED,
+                    f"Would create account '{name}' ({email}) in OU {target_ou_id}",
+                    dry_run=True,
+                    email=email,
+                    ou_id=target_ou_id,
+                )
                 results[idx] = _make_result(
                     acct_def, "DRY-RUN-ID", target_ou_id, "SIMULATED_CREATE", "SIMULATED"
                 )
                 continue
 
-            logger.info("Requesting creation of account '%s' (%s)...", name, email)
             try:
                 create_params: dict[str, Any] = {
                     "Email": email,
@@ -495,6 +543,15 @@ class AccountService:
                 if acct_def.tags:
                     create_params["Tags"] = [{"Key": k, "Value": str(v)} for k, v in acct_def.tags.items()]
                 resp = self.org_client.create_account(**create_params)
+                audit(
+                    "create",
+                    f"account:{name}",
+                    Outcome.SUCCEEDED,
+                    f"Requested creation of account '{name}' ({email}); waiting for AWS to finish",
+                    email=email,
+                    ou_id=target_ou_id,
+                    request_id=str(resp["CreateAccountStatus"]["Id"]),
+                )
                 pending_creations.append(
                     {
                         "index": idx,
@@ -505,7 +562,13 @@ class AccountService:
                 )
             except ClientError as e:
                 detail = aws_error_message(e)
-                logger.error("Failed to request creation of account '%s': %s", name, detail)
+                audit(
+                    "create",
+                    f"account:{name}",
+                    Outcome.FAILED,
+                    f"Could not request creation of account '{name}': {detail}",
+                    email=email,
+                )
                 failures.append(f"Failed to request creation of account '{name}': {detail}")
 
         if pending_creations:
