@@ -311,6 +311,20 @@ Deleted objects are purged for good seven days later and cannot be recovered, so
 
 `cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.
 
+### Existing resources with the same name
+
+Tarmac will not overwrite or delete something it did not create. If an SCP or a budget it would manage already
+exists with the same name:
+
+* **SCP** that is not tagged `tarmac:managed-by=tarmac` and whose content differs from your policy file: the run stops
+  and lists the live and declared statement IDs. (An untagged SCP that already matches is taken over quietly, which is
+  what happens after `tarmac import`.)
+* **Budget** named `<account>-monthly-budget` that tarmac did not create: the account's budget step fails with its
+  current limit. Tarmac would otherwise delete it and create its own.
+
+After reviewing, re-run with `--adopt-existing` (on `deploy run`, `org scp plan|apply`, `account apply` and
+`account baseline`) to let tarmac take it over. The old budget's limit and period are recorded in the audit log.
+
 ## Safe Teardown
 
 Tarmac includes built-in safeguards to prevent accidental infrastructure or state loss:

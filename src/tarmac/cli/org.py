@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 from rich.panel import Panel
 
+from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import GovernanceError
 from ..core.models import SCPReconciliationResult, VpcCleanupReport
@@ -281,8 +282,14 @@ def _execute_scp_reconciliation(
 def plan_scps(
     config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
     region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
+    adopt_existing: bool = typer.Option(
+        False,
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
 ) -> None:
     """Preview Service Control Policy changes without applying them."""
+    set_adopt_existing(adopt_existing)
     print_header("Service Control Policies Plan (Dry-Run)")
     _execute_scp_reconciliation(config_dir, region, dry_run=True)
 
@@ -292,8 +299,14 @@ def apply_scps(
     config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
     region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
+    adopt_existing: bool = typer.Option(
+        False,
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
 ) -> None:
     """Reconcile and attach declared Service Control Policies."""
+    set_adopt_existing(adopt_existing)
     mode = "Dry-Run" if dry_run else "Apply"
     print_header(f"Service Control Policies ({mode})")
     _execute_scp_reconciliation(config_dir, region, dry_run=dry_run)

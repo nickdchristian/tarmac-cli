@@ -84,6 +84,7 @@ def test_scp_update_is_audited(caplog, mgr, client):
     svc = SCPService(mgr)
     svc.get_policy_content = MagicMock(return_value='{"a": 1}')  # type: ignore[method-assign]
     svc._ensure_ownership_tag = MagicMock()  # type: ignore[method-assign]
+    svc.is_tarmac_managed = MagicMock(return_value=True)  # type: ignore[method-assign]
 
     svc.sync_policy("Guard", "d", '{"a": 2}', {"Guard": {"Id": "p-7"}})
 
