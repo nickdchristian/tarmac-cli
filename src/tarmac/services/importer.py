@@ -19,14 +19,13 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
-from ..core.models import TAG_MANAGED_BY
+from ..core.placeholders import PLACEHOLDER_PHONE
 from ..core.tagging import validate_tags
 from .identity import IdentityService
 from .preflight import _LIVE_STACK_STATUSES, TARMAC_STACK_SUFFIXES
 
 logger = logging.getLogger(__name__)
 
-PLACEHOLDER_PHONE = "+10000000000"
 _FULL_ACCESS_POLICY = "FullAWSAccess"
 _READ_ERRORS = (ClientError, BotoCoreError)
 
@@ -60,7 +59,7 @@ def _clean_tags(tags: dict[str, str], todos: list[str], owner: str) -> dict[str,
     """Keep tags Tarmac's schema accepts; AWS-reserved, ownership and invalid tags are dropped."""
     kept: dict[str, str] = {}
     for key, value in tags.items():
-        if key.lower().startswith("aws:") or key == TAG_MANAGED_BY:
+        if key.lower().startswith(("aws:", "tarmac:")):  # AWS-reserved and tarmac's own bookkeeping tags
             continue
         try:
             kept.update(validate_tags({key: value}))
@@ -92,6 +91,11 @@ class ImportService:
         paginator = self.org.get_paginator("list_organizational_units_for_parent")
         for page in paginator.paginate(ParentId=parent_id):
             for ou in sorted(page.get("OrganizationalUnits", []), key=lambda o: o["Name"]):
+                if ou["Name"] in names.values():
+                    self.report.todos.append(
+                        f"Two OUs are named '{ou['Name']}'. Tarmac identifies OUs by name, so rename one in "
+                        "AWS Organizations before deploying."
+                    )
                 names[ou["Id"]] = ou["Name"]
                 node: dict[str, Any] = {"name": ou["Name"], "description": ""}
                 children = self._ou_tree(ou["Id"], names)
@@ -163,6 +167,13 @@ class ImportService:
                                 f"'{target.get('Name', target['TargetId'])}', which Tarmac cannot express. "
                                 "That attachment is left alone."
                             )
+                if not targets:
+                    # Declaring it would attach it to the root and so change who it applies to.
+                    self.report.todos.append(
+                        f"SCP '{summary['Name']}' was not imported: it is not attached to the root or an OU. "
+                        "Tarmac would attach it to the root. Add it to organization.yaml yourself if that is intended."
+                    )
+                    continue
                 base = _slug(summary["Name"])
                 filename, n = base, 2
                 while filename in used_files:
@@ -181,15 +192,10 @@ class ImportService:
                         "name": summary["Name"],
                         "description": summary.get("Description", "") or "",
                         "policy_file": rel,
-                        "targets": sorted(set(targets)) or ["root"],
+                        "targets": sorted(set(targets)),
                     }
                 )
                 self.report.scps.append(summary["Name"])
-                if not targets:
-                    self.report.todos.append(
-                        f"SCP '{summary['Name']}' is not attached anywhere. It was imported with target 'root'; "
-                        "change that before deploying if it should stay detached."
-                    )
         return policies
 
     def _trails(self) -> str | None:

@@ -11,6 +11,8 @@ from botocore.exceptions import ClientError
 from typer.testing import CliRunner
 
 from tarmac.cli.main import app
+from tarmac.core.config_loader import load_all_configs
+from tarmac.core.placeholders import find_placeholder_values
 from tarmac.services.importer import ImportService
 
 
@@ -169,7 +171,7 @@ def test_writes_files_that_describe_the_organization(imported):
     assert org["ou_structure"][0]["children"][0]["name"] == "App"
     assert org["root_access_management"]["delegated_admin_account"] == "Audit"
     assert org["contacts"]["billing"]["email"] == "fin@acme-corp.io"
-    assert org["contacts"]["operations"]["phone"] == "+10000000000"
+    assert org["contacts"]["operations"]["phone"] == "+1234567890"  # the sample number, so validate flags it
     assert [a["name"] for a in accounts["accounts"]] == ["Audit"]
     assert accounts["accounts"][0]["ou"] == "Security"
     assert accounts["accounts"][0]["tags"] == {"Environment": "Core"}  # ownership tag is not imported
@@ -288,3 +290,55 @@ def test_identity_center_is_imported(monkeypatch, tmp_path: Path):
     assert ident["permission_sets"][0]["inline_policy_file"] == "policies/permission-sets/admin.json"
     assert "_id" not in ident["groups"][0]
     assert report.permission_sets == ["Admin"]
+
+
+def test_scp_attached_only_to_an_account_is_not_imported(tmp_path: Path):
+    session = FakeSession(with_sso=False)
+    original = session.clients["organizations"].get_paginator.side_effect
+
+    def paginator(name: str) -> MagicMock:
+        if name == "list_targets_for_policy":
+            pag = MagicMock()
+            pag.paginate.side_effect = lambda **kw: [
+                {"Targets": [{"Type": "ACCOUNT", "TargetId": "222", "Name": "Audit"}]}
+            ]
+            return pag
+        return original(name)
+
+    session.clients["organizations"].get_paginator.side_effect = paginator
+    report = ImportService(session, "us-east-1").discover_and_write(tmp_path / "cfg", include_identity=False)  # type: ignore[arg-type]
+
+    org = yaml.safe_load((tmp_path / "cfg" / "organization.yaml").read_text())
+    assert (
+        org["service_control_policies"]["policies"] == []
+    )  # importing it would have attached it to the root
+    assert not (tmp_path / "cfg" / "policies" / "scp").exists()
+    assert any("not attached to the root or an OU" in t for t in report.todos)
+
+
+def test_placeholder_contacts_are_flagged_by_validate(imported, monkeypatch):
+    cfg, _ = imported
+    monkeypatch.chdir(cfg)
+    bundle, _ = load_all_configs(cfg)
+    assert bundle is not None
+    assert any("phone" in p for p in find_placeholder_values(bundle))
+
+
+def test_cli_exits_nonzero_when_the_result_does_not_validate(monkeypatch, tmp_path: Path):
+    session = FakeSession(False)
+    session.clients["organizations"].describe_policy.return_value = {"Policy": {"Content": "{}"}}
+    monkeypatch.setattr("tarmac.cli.importer.AwsSessionManager", lambda region_name=None: session)
+    monkeypatch.setattr(
+        ImportService, "_validate", lambda self, d: self.report.validation_errors.append("boom")
+    )
+    result = CliRunner().invoke(app, ["import", "-c", str(tmp_path / "out"), "--no-identity"])
+    assert result.exit_code == 1
+    assert "boom" in result.output
+
+
+def test_existing_files_make_the_cli_fail_cleanly(monkeypatch, tmp_path: Path):
+    (tmp_path / "organization.yaml").write_text("x: 1")
+    monkeypatch.setattr("tarmac.cli.importer.AwsSessionManager", lambda region_name=None: FakeSession(False))
+    result = CliRunner().invoke(app, ["import", "-c", str(tmp_path), "--no-identity"])
+    assert result.exit_code == 1
+    assert "--force" in result.output

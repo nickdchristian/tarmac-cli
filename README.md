@@ -122,7 +122,8 @@ are attached, alternate contacts, trusted services, any existing organization tr
 (users, groups, permission sets with their inline policies, and group assignments). It writes
 `organization.yaml`, `accounts.yaml`, `identity.yaml` and the policy documents under `policies/`, sets
 `delete_default_vpc: false` everywhere, and prints a list of things to review: accounts sitting directly under the
-root (skipped), SCP attachments tarmac cannot express, a pre-existing organization trail, and placeholder contacts.
+root (skipped), SCPs attached only to accounts or nowhere (not imported, because tarmac would attach them to
+the root), SCP attachments tarmac cannot express, a pre-existing organization trail, and placeholder contacts.
 `organization.name` comes from existing tarmac stacks when there are any (so a re-import never orphans them),
 otherwise from `--name` or the management email domain. Use `--no-identity` to skip Identity Center and `--force`
 to overwrite existing files.
@@ -224,6 +225,7 @@ tarmac deploy run --phase 4   # Run only Account Factory provisioning
 | **`tarmac deploy run`** | Execute the automated multi-phase landing zone rollout (`--dry-run` to preview). |
 | **`tarmac status`** | Inspect live landing zone reconciliation and phase completion status. |
 | **`tarmac drift`** | Audit IAM Identity Center permission sets and member account budget drift. |
+| **`tarmac import`** | Read an existing organization (read-only) and write matching configuration files. |
 | **`tarmac deploy destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). |
 
 <details>

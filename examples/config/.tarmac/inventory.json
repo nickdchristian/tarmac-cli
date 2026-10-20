@@ -1,0 +1,15 @@
+{
+  "entries": {
+    "delegated-admin": {
+      "config-multiaccountsetup.amazonaws.com:777777777777": {
+        "account_id": "777777777777",
+        "service": "config-multiaccountsetup.amazonaws.com"
+      },
+      "config.amazonaws.com:777777777777": {
+        "account_id": "777777777777",
+        "service": "config.amazonaws.com"
+      }
+    }
+  },
+  "version": 1
+}
