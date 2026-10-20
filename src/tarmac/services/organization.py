@@ -54,11 +54,11 @@ class OrganizationService:
 
     def _describe_organization_id(self) -> str:
         org_id = self.org_client.describe_organization()["Organization"]["Id"]
-        logger.info("AWS Organization active: %s", org_id)
+        logger.debug("AWS Organization active: %s", org_id)
         return str(org_id)
 
     def _create_organization(self) -> str:
-        logger.info("Creating new AWS Organization with FeatureSet='ALL'...")
+        logger.debug("Creating new AWS Organization with FeatureSet='ALL'...")
         try:
             org_id = self.org_client.create_organization(FeatureSet="ALL")["Organization"]["Id"]
         except ClientError as e:

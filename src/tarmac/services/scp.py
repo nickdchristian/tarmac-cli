@@ -61,7 +61,7 @@ class SCPService:
         start_time = time.time()
         while time.time() - start_time < max_wait_seconds:
             if self._is_scp_enabled_on_root(root_id):
-                logger.info("SERVICE_CONTROL_POLICY is now ENABLED on root %s", root_id)
+                logger.debug("SERVICE_CONTROL_POLICY is now ENABLED on root %s", root_id)
                 return True
             time.sleep(2)
 
@@ -460,7 +460,7 @@ class SCPService:
                                 }
                             )
 
-                    logger.info(
+                    logger.debug(
                         "Importing pre-existing SCPs %s into CloudFormation stack '%s'...",
                         sorted(pre_existing),
                         stack_name,

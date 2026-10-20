@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+from ..core.audit import Outcome, audit
 from ..core.templates import export_bundled_templates
 
 logger = logging.getLogger(__name__)
@@ -221,11 +222,16 @@ def scaffold_project(
         dest = target_dir / filename
         if dest.exists() and not force:
             skipped.append(dest)
-            logger.info("Skipping existing file: %s", dest)
+            audit(
+                "create",
+                f"file:{dest}",
+                Outcome.SKIPPED,
+                f"Kept existing file {dest} (use --force to overwrite)",
+            )
         else:
             dest.write_text(content, encoding="utf-8")
             created.append(dest)
-            logger.info("Created configuration file: %s", dest)
+            audit("create", f"file:{dest}", Outcome.SUCCEEDED, f"Wrote configuration file {dest}")
 
     if with_templates:
         project_root = target_dir.parent if target_dir.name == "config" else target_dir

@@ -512,7 +512,7 @@ class AccountService:
                     )
                     continue
 
-                logger.info("Account '%s' exists (ID: %s)", name, acct_id)
+                logger.debug("Account '%s' exists (ID: %s)", name, acct_id)
                 moved = not dry_run and self.move_account_if_needed(acct_id, name, target_ou_id)
                 tags_updated = self.sync_account_tags(acct_id, name, acct_def.tags, dry_run=dry_run)
                 action = "MOVED" if moved else ("TAGGED" if tags_updated else "REUSED")

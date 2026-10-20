@@ -106,7 +106,7 @@ class OUService:
     def _create_ou(self, parent_id: str, ou_name: str) -> str:
         """Helper to create a single OU and handle race conditions."""
         try:
-            logger.info("Creating OU '%s' under parent %s...", ou_name, parent_id)
+            logger.debug("Creating OU '%s' under parent %s...", ou_name, parent_id)
             resp = self.org_client.create_organizational_unit(
                 ParentId=parent_id,
                 Name=ou_name,

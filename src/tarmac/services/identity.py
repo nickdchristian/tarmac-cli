@@ -98,7 +98,7 @@ class IdentityService:
             found = _probe_region_for_instance(session_mgr, region)
             if found:
                 arn, store_id = found
-                logger.info("Discovered active IAM Identity Center in '%s' (ARN: %s)", region, arn)
+                logger.debug("Discovered active IAM Identity Center in '%s' (ARN: %s)", region, arn)
                 return arn, store_id, region
 
         raise IdentityCenterError(
@@ -394,7 +394,7 @@ class IdentityService:
                     ),
                     sort_keys=False,
                 )
-                logger.info(
+                logger.debug(
                     "Importing pre-existing Permission Sets %s into CloudFormation stack '%s'...",
                     sorted(pre_existing),
                     stack_name,
@@ -634,7 +634,7 @@ class IdentityService:
                 status_obj = resp.get("AccountAssignmentCreationStatus", {})
                 status = status_obj.get("Status")
                 if status == "SUCCEEDED":
-                    logger.info("Assignment of group '%s' to account %s succeeded.", group_name, acct_id)
+                    logger.debug("Assignment of group '%s' to account %s succeeded.", group_name, acct_id)
                     return
                 if status == "FAILED":
                     reason = status_obj.get("FailureReason", "Unknown failure")

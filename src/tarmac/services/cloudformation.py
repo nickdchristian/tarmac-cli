@@ -132,7 +132,7 @@ class CloudFormationService:
             )
             self._delete_broken_stack(cfn_client, stack_name)
 
-        logger.info(
+        logger.debug(
             "Creating IMPORT change set '%s' for stack '%s' (%d resources)...",
             change_set_name,
             stack_name,
@@ -154,7 +154,7 @@ class CloudFormationService:
                 WaiterConfig={"Delay": 3, "MaxAttempts": 30},
             )
 
-            logger.info("Executing IMPORT change set '%s' on stack '%s'...", change_set_name, stack_name)
+            logger.debug("Executing IMPORT change set '%s' on stack '%s'...", change_set_name, stack_name)
             cfn_client.execute_change_set(StackName=stack_name, ChangeSetName=change_set_name)
 
             import_waiter = cfn_client.get_waiter("stack_import_complete")
@@ -173,7 +173,7 @@ class CloudFormationService:
 
             if cfn_tags:
                 try:
-                    logger.info("Applying tags to imported stack '%s'...", stack_name)
+                    logger.debug("Applying tags to imported stack '%s'...", stack_name)
                     cfn_client.update_stack(
                         StackName=stack_name,
                         UsePreviousTemplate=True,
@@ -222,7 +222,7 @@ class CloudFormationService:
     def _delete_broken_stack(self, cfn_client: Any, stack_name: str) -> None:
         """Delete a stack in an unusable state (e.g. ROLLBACK_COMPLETE, DELETE_FAILED) before recreating it."""
         try:
-            logger.info("Deleting broken stack '%s'...", stack_name)
+            logger.debug("Deleting broken stack '%s'...", stack_name)
             cfn_client.delete_stack(StackName=stack_name)
             waiter = cfn_client.get_waiter("stack_delete_complete")
             waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": 30})
@@ -254,7 +254,7 @@ class CloudFormationService:
             logger.debug("Stack '%s' does not exist or is already deleted.", stack_name)
             return False
 
-        logger.info("Deleting CloudFormation stack '%s' (current status: %s)...", stack_name, stack_status)
+        logger.debug("Deleting CloudFormation stack '%s' (current status: %s)...", stack_name, stack_status)
         if on_progress:
             on_progress(f"Waiting for CloudFormation stack '{stack_name}' deletion to complete...")
 
@@ -331,7 +331,7 @@ class CloudFormationService:
         action: Literal["CREATED", "UPDATED", "NO_CHANGES"] = "UPDATED" if stack_exists else "CREATED"
         try:
             if not stack_exists:
-                logger.info("Creating CloudFormation stack '%s'...", stack_name)
+                logger.debug("Creating CloudFormation stack '%s'...", stack_name)
                 cfn_client.create_stack(
                     StackName=stack_name,
                     TemplateBody=template_body,
@@ -341,7 +341,7 @@ class CloudFormationService:
                 )
                 waiter = cfn_client.get_waiter("stack_create_complete")
             else:
-                logger.info("Updating CloudFormation stack '%s'...", stack_name)
+                logger.debug("Updating CloudFormation stack '%s'...", stack_name)
                 cfn_client.update_stack(
                     StackName=stack_name,
                     TemplateBody=template_body,
@@ -351,7 +351,7 @@ class CloudFormationService:
                 )
                 waiter = cfn_client.get_waiter("stack_update_complete")
 
-            logger.info("Waiting for stack '%s' to complete...", stack_name)
+            logger.debug("Waiting for stack '%s' to complete...", stack_name)
             waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 10, "MaxAttempts": 60})
             audit(
                 "create" if action == "CREATED" else "update",
