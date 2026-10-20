@@ -231,7 +231,11 @@ def _deploy_log_archive_hardening_stack(
         cfn_client,
         f"{bundle.org.organization.name}-log-archive-hardening",
         template_file,
-        {"OrganizationId": org_id, "OrgName": bundle.org.organization.name},
+        {
+            "OrganizationId": org_id,
+            "OrgName": bundle.org.organization.name,
+            "EnableKmsEncryption": "true" if bundle.org.cloudtrail.enable_kms else "false",
+        },
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),

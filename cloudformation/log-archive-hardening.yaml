@@ -33,9 +33,24 @@ Parameters:
     Type: String
     Description: Organization name prefix for resource naming
 
+  EnableKmsEncryption:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      Encrypt the CloudTrail log bucket with a customer managed KMS key. Set to 'false' to use SSE-S3 (AES256)
+      and skip the key and its request charges. An existing key is retained when switching to 'false' because
+      logs written earlier still need it to be read.
+
+Conditions:
+  UseKmsEncryption: !Equals [!Ref EnableKmsEncryption, 'true']
+
 Resources:
   LogArchiveKmsKey:
     Type: AWS::KMS::Key
+    Condition: UseKmsEncryption
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -102,6 +117,7 @@ Resources:
 
   LogArchiveKmsAlias:
     Type: AWS::KMS::Alias
+    Condition: UseKmsEncryption
     Properties:
       AliasName: !Sub 'alias/${OrgName}-log-archive'
       TargetKeyId: !Ref LogArchiveKmsKey
@@ -183,9 +199,9 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: aws:kms
-              KMSMasterKeyID: !Ref LogArchiveKmsKey
-            BucketKeyEnabled: true
+              SSEAlgorithm: !If [UseKmsEncryption, 'aws:kms', 'AES256']
+              KMSMasterKeyID: !If [UseKmsEncryption, !Ref LogArchiveKmsKey, !Ref 'AWS::NoValue']
+            BucketKeyEnabled: !If [UseKmsEncryption, true, false]
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -248,12 +264,14 @@ Resources:
 
 Outputs:
   KmsKeyArn:
+    Condition: UseKmsEncryption
     Description: ARN of the Log Archive KMS key
     Value: !GetAtt LogArchiveKmsKey.Arn
     Export:
       Name: !Sub '${AWS::StackName}-KmsKeyArn'
 
   KmsKeyId:
+    Condition: UseKmsEncryption
     Description: ID of the Log Archive KMS key
     Value: !Ref LogArchiveKmsKey
     Export:
