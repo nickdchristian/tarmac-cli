@@ -38,6 +38,13 @@ class AwsSessionManager:
         # (e.g. the parallel default-VPC cleanup) can share one manager. The clients returned are safe to use.
         self._lock = threading.RLock()
 
+    def is_root_identity(self) -> bool:
+        """True when the current credentials belong to an account root user (ARN ends in ':root').
+
+        Root credentials cannot call sts:AssumeRole, so tarmac cannot reach member accounts with them.
+        """
+        return str(self.get_caller_identity().get("Arn", "")).endswith(":root")
+
     def get_caller_identity(self) -> dict[str, str]:
         """Fetch caller identity (Account, UserId, Arn) for current root credentials."""
         if self._cached_caller_identity is not None:

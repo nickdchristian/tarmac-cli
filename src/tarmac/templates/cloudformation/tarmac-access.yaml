@@ -1,0 +1,266 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Tarmac bootstrap access. Creates the non-root IAM role that tarmac runs as in the management account
+  (the root user cannot call sts:AssumeRole, so it cannot reach member accounts), plus an optional
+  low-privilege IAM user that may only assume that role. Deploy once from the console while signed in as
+  root (or any admin), then run tarmac as the role.
+
+Parameters:
+  RoleName:
+    Type: String
+    Default: TarmacDeploymentRole
+    Description: Name of the role tarmac runs as in the management account.
+    AllowedPattern: '^[A-Za-z0-9+=,.@_-]{1,64}$'
+
+  ManagedPolicyArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Leave empty to use the least-privilege policy defined in this template (recommended). Set to an existing
+      managed policy ARN (for example arn:aws:iam::aws:policy/AdministratorAccess) to use that instead.
+
+  RequireMfa:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Require MFA to assume the role (strongly recommended).
+
+  MaxSessionDurationSeconds:
+    Type: Number
+    Default: 14400
+    MinValue: 3600
+    MaxValue: 43200
+    Description: Maximum session length. A full deployment can take longer than one hour.
+
+  CreateBootstrapUser:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create a break-glass-style IAM user whose only permission is to assume the tarmac role (plus managing its
+      own MFA and access key). Set to false if you already have a non-root identity (for example an
+      IAM Identity Center admin) that will assume the role.
+
+  BootstrapUserName:
+    Type: String
+    Default: tarmac-bootstrap
+    AllowedPattern: '^[A-Za-z0-9+=,.@_-]{1,64}$'
+    Description: Name of the optional bootstrap user.
+
+Conditions:
+  UseBuiltInPolicy: !Equals [!Ref ManagedPolicyArn, '']
+  CreateUser: !Equals [!Ref CreateBootstrapUser, 'true']
+  MfaRequired: !Equals [!Ref RequireMfa, 'true']
+
+Resources:
+  # Least-privilege permissions for the management account. Everything tarmac does inside member accounts goes
+  # through OrganizationAccountAccessRole, so only the sts:AssumeRole grant below applies there.
+  TarmacPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: UseBuiltInPolicy
+    Properties:
+      Description: Least-privilege permissions for tarmac in the management account.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReachMemberAccounts
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::*:role/OrganizationAccountAccessRole'
+          - Sid: Identity
+            Effect: Allow
+            Action: sts:GetCallerIdentity
+            Resource: '*'
+          - Sid: OrganizationsRead
+            Effect: Allow
+            Action:
+              - organizations:Describe*
+              - organizations:List*
+            Resource: '*'
+          - Sid: OrganizationsManage
+            Effect: Allow
+            Action:
+              - organizations:CreateOrganization
+              - organizations:CreateOrganizationalUnit
+              - organizations:CreateAccount
+              - organizations:CloseAccount
+              - organizations:MoveAccount
+              - organizations:CreatePolicy
+              - organizations:UpdatePolicy
+              - organizations:DeletePolicy
+              - organizations:AttachPolicy
+              - organizations:DetachPolicy
+              - organizations:EnablePolicyType
+              - organizations:EnableAWSServiceAccess
+              - organizations:RegisterDelegatedAdministrator
+              - organizations:DeregisterDelegatedAdministrator
+              - organizations:TagResource
+              - organizations:UntagResource
+            Resource: '*'
+          - Sid: CloudFormationStacks
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:Describe*
+              - cloudformation:List*
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+            Resource: '*'
+          - Sid: OrganizationTrail
+            Effect: Allow
+            Action:
+              - cloudtrail:CreateTrail
+              - cloudtrail:UpdateTrail
+              - cloudtrail:DeleteTrail
+              - cloudtrail:StartLogging
+              - cloudtrail:StopLogging
+              - cloudtrail:PutEventSelectors
+              - cloudtrail:Get*
+              - cloudtrail:Describe*
+              - cloudtrail:List*
+              - cloudtrail:AddTags
+              - cloudtrail:RemoveTags
+            Resource: '*'
+          - Sid: IdentityCenter
+            Effect: Allow
+            Action:
+              - sso:*
+              - sso-directory:DescribeDirectory
+              - sso-directory:SearchUsers
+              - sso-directory:SearchGroups
+              - identitystore:*
+            Resource: '*'
+          - Sid: SecurityServices
+            Effect: Allow
+            Action:
+              - guardduty:*
+              - securityhub:*
+              - config:Describe*
+              - config:List*
+              - config:Get*
+            Resource: '*'
+          - Sid: BillingAndSupportReads
+            Effect: Allow
+            Action:
+              - ce:*
+              - account:GetAlternateContact
+              - account:PutAlternateContact
+              - support:DescribeSeverityLevels
+              - servicequotas:GetServiceQuota
+              - servicequotas:ListServiceQuotas
+              - sns:ListTopics
+              - sns:ListSubscriptionsByTopic
+              - s3:ListBucket
+              - ec2:DescribeRegions
+              - iam:GetAccountSummary
+              - iam:ListUsers
+              - iam:ListAccountAliases
+            Resource: '*'
+          - Sid: RootAccessManagement
+            Effect: Allow
+            Action:
+              - iam:EnableOrganizationsRootCredentialsManagement
+              - iam:EnableOrganizationsRootSessions
+            Resource: '*'
+          - Sid: ServiceLinkedRoles
+            Effect: Allow
+            Action: iam:CreateServiceLinkedRole
+            Resource: '*'
+            Condition:
+              StringLike:
+                iam:AWSServiceName:
+                  - organizations.amazonaws.com
+                  - sso.amazonaws.com
+                  - cloudtrail.amazonaws.com
+                  - guardduty.amazonaws.com
+                  - securityhub.amazonaws.com
+                  - config.amazonaws.com
+                  - ram.amazonaws.com
+          - Sid: NeverModifyOwnAccess
+            Effect: Deny
+            Action:
+              - iam:*
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${RoleName}'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${AWS::StackName}-*'
+
+  TarmacRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Role tarmac runs as to govern the AWS Organization.
+      MaxSessionDuration: !Ref MaxSessionDurationSeconds
+      ManagedPolicyArns:
+        - !If [UseBuiltInPolicy, !Ref TarmacPolicy, !Ref ManagedPolicyArn]
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Trusting the account delegates to IAM: only identities in this account that ALSO have an
+          # identity policy allowing sts:AssumeRole on this role can use it. The root user cannot.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+            Condition: !If
+              - MfaRequired
+              # BoolIfExists: IAM users must use MFA; IAM Identity Center (SSO) sessions carry no MFA flag and pass.
+              - BoolIfExists:
+                  aws:MultiFactorAuthPresent: 'true'
+              - !Ref AWS::NoValue
+      Tags:
+        - Key: tarmac:managed-by
+          Value: tarmac
+
+  BootstrapUser:
+    Type: AWS::IAM::User
+    Condition: CreateUser
+    Properties:
+      UserName: !Ref BootstrapUserName
+      Policies:
+        - PolicyName: AssumeTarmacRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt TarmacRole.Arn
+        - PolicyName: ManageOwnMfaAndAccessKey
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:GetUser
+                  - iam:ListMFADevices
+                  - iam:ListVirtualMFADevices
+                  - iam:CreateVirtualMFADevice
+                  - iam:EnableMFADevice
+                  - iam:ResyncMFADevice
+                  - iam:ListAccessKeys
+                  - iam:CreateAccessKey
+                  - iam:UpdateAccessKey
+                  - iam:DeleteAccessKey
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/${!aws:username}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:mfa/${!aws:username}'
+      Tags:
+        - Key: tarmac:managed-by
+          Value: tarmac
+
+Outputs:
+  TarmacRoleArn:
+    Description: Role ARN to put in your AWS CLI profile (role_arn).
+    Value: !GetAtt TarmacRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TarmacRoleArn'
+  BootstrapUserName:
+    Condition: CreateUser
+    Description: IAM user to create an access key and MFA device for, then delete after IAM Identity Center is set up.
+    Value: !Ref BootstrapUser
+    Export:
+      Name: !Sub '${AWS::StackName}-BootstrapUserName'

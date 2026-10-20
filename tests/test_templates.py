@@ -217,6 +217,7 @@ def test_template_parity_and_export_consistency():
         "audit-account-hardening.yaml",
         "log-archive-hardening.yaml",
         "organization-cloudtrail.yaml",
+        "tarmac-access.yaml",
         "terraform-backend.yaml",
     ]
 

@@ -167,6 +167,29 @@ def _confirm_deployment(dry_run: bool, yes: bool) -> None:
         raise typer.Exit(code=0)
 
 
+def _refuse_root_identity(session_mgr: AwsSessionManager, dry_run: bool = False) -> None:
+    """Stop live runs made with root credentials (they cannot assume member-account roles)."""
+    if dry_run:
+        return
+    try:
+        is_root = session_mgr.is_root_identity()
+    except Exception as e:  # unauthenticated: let the phases report it in context
+        logger.debug("Root identity check skipped: %s", e)
+        return
+    if is_root is True:
+        error_console.print(
+            Panel(
+                "You are authenticated as the account root user. Root cannot call sts:AssumeRole, "
+                "so tarmac cannot reach member accounts.\n"
+                "Run [bold]tarmac access template[/bold], deploy it, and re-run as the tarmac role "
+                "(see README: Bootstrap access).",
+                title="[bold red]Root Credentials Not Supported[/bold red]",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(code=1)
+
+
 def _resolve_phases_to_run(phase: int | None, skip_preflight: bool) -> list[int]:
     """Determine the list of phases to execute based on flags."""
     if phase is not None:
@@ -209,6 +232,7 @@ def run_pipeline(
 
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
+    _refuse_root_identity(session_mgr, dry_run)
     project_root = bundle.config_dir.parent
     org_service = OrganizationService(session_mgr)
 
