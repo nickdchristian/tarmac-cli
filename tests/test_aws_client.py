@@ -1,6 +1,8 @@
 """Unit tests for AwsSessionManager and AWS authentication handling."""
 
+import threading
 import time
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -148,3 +150,31 @@ def test_aws_session_manager_sts_client_uses_boto_config():
         assert getattr(mgr.boto_config, "connect_timeout", None) == 10
         assert getattr(mgr.boto_config, "read_timeout", None) == 30
         mock_session.client.assert_called_once_with("sts", config=mgr.boto_config)
+
+
+def test_session_manager_serializes_client_creation_across_threads():
+    with patch("boto3.Session") as session_cls:
+        mgr = AwsSessionManager(region_name="us-east-1")
+        root = session_cls.return_value
+        active = 0
+        peak = 0
+        guard = threading.Lock()
+
+        def slow_client(*_a: Any, **_k: Any) -> MagicMock:
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            threading.Event().wait(0.01)
+            with guard:
+                active -= 1
+            return MagicMock()
+
+        root.client.side_effect = slow_client
+        threads = [threading.Thread(target=lambda: mgr.get_client("ec2", "us-east-1")) for _ in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+    assert peak == 1

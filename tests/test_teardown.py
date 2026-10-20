@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import boto3
 import pytest
 from botocore.exceptions import ClientError
+from helpers import make_config
 from typer.testing import CliRunner
 
 from tarmac.cli.deploy import app
@@ -958,3 +959,102 @@ def test_teardown_phase_dispatches_each_phase_to_its_handlers(test_bundle, phase
 def test_teardown_phase_unknown_phase_does_nothing(test_bundle):
     svc = _audit_service(MagicMock())
     assert svc.teardown_phase(9, test_bundle, "us-east-1", account_id_map={"x": "1"}) == []
+
+
+def test_teardown_skips_permission_sets_not_owned_by_tarmac(tmp_path: Path):
+    cfg = make_config(tmp_path, None)
+    bundle, errors = load_all_configs(cfg)
+    assert bundle is not None, errors
+    declared = bundle.identity.identity_center.permission_sets[0].name
+
+    mgr = MagicMock()
+    mgr.get_caller_identity.return_value = {"Account": "111122223333"}
+    mock_sso = MagicMock()
+    mock_cfn = MagicMock()
+    mock_cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    mgr.get_client.side_effect = lambda name, **_: mock_sso if name == "sso-admin" else mock_cfn
+    mock_sso.list_instances.return_value = {
+        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-1", "IdentityStoreId": "d-1"}]
+    }
+    pager = MagicMock()
+    pager.paginate.side_effect = lambda **kw: (
+        [{"Tags": []}] if "ResourceArn" in kw else [{"PermissionSets": ["arn:ps-1"]}]
+    )
+    mock_sso.get_paginator.return_value = pager
+    mock_sso.describe_permission_set.return_value = {"PermissionSet": {"Name": declared}}
+
+    items = TeardownService(mgr).teardown_identity(bundle, "us-east-1", dry_run=False)
+
+    skipped = [i for i in items if i.resource_type == "Permission Set"]
+    assert [i.action for i in skipped] == ["SKIPPED"]
+    mock_sso.delete_permission_set.assert_not_called()
+
+
+def test_empty_s3_bucket_raises_when_s3_reports_delete_errors():
+    s3 = MagicMock()
+    s3.head_bucket.return_value = {}
+    versions = MagicMock()
+    versions.paginate.return_value = [{"Versions": [{"Key": "locked", "VersionId": "1"}]}]
+    s3.get_paginator.return_value = versions
+    s3.delete_objects.return_value = {
+        "Errors": [{"Key": "locked", "Code": "AccessDenied", "Message": "Object Lock"}]
+    }
+
+    with pytest.raises(GovernanceError) as exc:
+        empty_s3_bucket(s3, "my-bucket")
+    assert "AccessDenied" in str(exc.value)
+
+
+def test_empty_s3_bucket_raises_on_listing_failure():
+    s3 = MagicMock()
+    s3.head_bucket.return_value = {}
+    pager = MagicMock()
+    pager.paginate.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "List")
+    s3.get_paginator.return_value = pager
+    with pytest.raises(GovernanceError):
+        empty_s3_bucket(s3, "my-bucket")
+
+
+def test_delete_retained_bucket_reports_failure_and_ignores_missing():
+    svc = TeardownService(MagicMock())
+    s3 = MagicMock()
+    s3.delete_bucket.side_effect = ClientError({"Error": {"Code": "BucketNotEmpty", "Message": "full"}}, "x")
+    items = svc._delete_retained_bucket(s3, "b", "Acct", "1")
+    assert [i.action for i in items] == ["FAILED"]
+    assert "full" in items[0].message
+
+    s3.delete_bucket.side_effect = ClientError({"Error": {"Code": "NoSuchBucket", "Message": "gone"}}, "x")
+    assert svc._delete_retained_bucket(s3, "b", "Acct", "1") == []
+
+    s3.delete_bucket.side_effect = None
+    assert svc._delete_retained_bucket(s3, "b", "Acct", "1") == []
+
+
+def test_teardown_budgets_only_deletes_exact_tarmac_monitors(tmp_path: Path):
+    cfg = make_config(tmp_path, None)
+    bundle, errors = load_all_configs(cfg)
+    assert bundle is not None, errors
+    acct = bundle.accounts.accounts[0]
+
+    mgr = MagicMock()
+    mgr.get_caller_identity.return_value = {"Account": "111122223333"}
+    mock_ce = MagicMock()
+    mock_ce.get_anomaly_monitors.return_value = {
+        "AnomalyMonitors": [
+            {"MonitorName": f"{acct.name}-cost-anomaly-monitor", "MonitorArn": "arn:ours"},
+            {"MonitorName": f"{acct.name}-team-spend-watch", "MonitorArn": "arn:theirs"},
+            {"MonitorName": "my-tarmac-notes", "MonitorArn": "arn:theirs2"},
+        ]
+    }
+    cfn = MagicMock()
+    cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    mgr.get_member_client.side_effect = lambda _id, svc, **_: mock_ce if svc == "ce" else cfn
+
+    TeardownService(mgr).teardown_budgets(bundle, dry_run=False, account_id_map={acct.name: "444455556666"})
+
+    deleted = [c.kwargs["MonitorArn"] for c in mock_ce.delete_anomaly_monitor.call_args_list]
+    assert deleted == ["arn:ours"]

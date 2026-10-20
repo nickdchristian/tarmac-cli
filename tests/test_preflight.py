@@ -1,9 +1,11 @@
 """Unit tests for PreflightService."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
+from helpers import make_config
 
 from tarmac.core.config_loader import ConfigBundle, load_all_configs
 from tarmac.core.exceptions import AWSAuthenticationError
@@ -494,3 +496,25 @@ def test_check_s3_bucket_collision_does_not_fall_back_to_management_client(mock_
     assert len(results) == 2
     assert all(r.status == PreflightCheckStatus.INFO for r in results)
     assert all("skipped" in r.live_value.lower() for r in results)
+
+
+def test_account_quota_unverifiable_is_warning_not_pass(tmp_path: Path):
+    cfg = make_config(tmp_path, None)
+    bundle, errors = load_all_configs(cfg)
+    assert bundle is not None, errors
+
+    mgr = MagicMock()
+    org = MagicMock()
+    pager = MagicMock()
+    pager.paginate.return_value = [{"Accounts": [{"Id": "111111111111", "Status": "ACTIVE"}]}]
+    org.get_paginator.return_value = pager
+    sq = MagicMock()
+    sq.get_service_quota.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "GetServiceQuota"
+    )
+    mgr.get_client.side_effect = lambda name, **_: sq if name == "service-quotas" else org
+
+    res = PreflightService(mgr, bundle).check_account_quota()
+    assert res.status == PreflightCheckStatus.WARN
+    assert "could not be verified" in res.live_value
+    assert res.action_required

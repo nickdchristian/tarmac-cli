@@ -534,3 +534,54 @@ def test_baseline_account_does_not_mark_baselined_when_budget_fails():
     assert report.budget_report is not None
     assert report.budget_report.status == "FAILED"
     mock_org.tag_resource.assert_not_called()
+
+
+def test_parallel_vpc_cleanup_runs_every_region_and_keeps_order():
+    mgr = MagicMock()
+    seen: set[str] = set()
+
+    def member_client(_acct: str, _svc: str, region_name: str | None = None) -> MagicMock:
+        ec2 = MagicMock()
+        seen.add(str(region_name))
+        ec2.describe_vpcs.return_value = {"Vpcs": []}
+        return ec2
+
+    mgr.get_member_client.side_effect = member_client
+    regions = ["us-east-1", "us-west-2", "eu-west-1", "ap-south-1"]
+    reports = BaselineService(mgr).cleanup_default_vpcs("123456789012", "Acct", regions=regions)
+
+    assert [r.region for r in reports] == regions
+    assert seen == set(regions)
+    assert all(r.skipped and not r.error for r in reports)
+
+
+def test_vpc_cleanup_unexpected_error_is_contained_and_flagged():
+    mgr = MagicMock()
+    mgr.get_member_client.side_effect = RuntimeError("credential provider race")
+    reports = BaselineService(mgr).cleanup_default_vpcs("123456789012", "Acct", regions=["a", "b"])
+    assert len(reports) == 2
+    assert all(r.error for r in reports)
+
+
+def test_baseline_account_not_marked_complete_when_a_region_errors():
+    from tarmac.core.config_schema import AccountBaselineConfig, AccountDef
+
+    mgr = MagicMock()
+    mgr.default_region = "us-east-1"
+    mgr.get_member_client.side_effect = RuntimeError("credential provider race")
+    org = MagicMock()
+    pager = MagicMock()
+    pager.paginate.return_value = [{"Tags": []}]
+    org.get_paginator.return_value = pager
+    mgr.get_client.return_value = org
+
+    acct = AccountDef(
+        name="NewAccount",
+        email="new@example.com",
+        ou="Workloads",
+        baseline=AccountBaselineConfig(delete_default_vpc=True),
+    )
+    report = BaselineService(mgr).baseline_account(acct, "123456789012", regions=["us-east-1"])
+
+    assert report.vpc_reports[0].error is True
+    org.tag_resource.assert_not_called()  # not marked tarmac:baseline=completed, so it is retried next run
