@@ -105,7 +105,8 @@ def _render_records(records: list[Record], show_all: bool) -> None:
     table.add_column("What happened", overflow="fold")
     table.add_column("Where", style="dim", overflow="fold")
     for record in records:
-        data: dict[str, Any] = record.get("data") if isinstance(record.get("data"), dict) else {}
+        raw = record.get("data")
+        data: dict[str, Any] = raw if isinstance(raw, dict) else {}
         message = escape(str(record.get("message", "")))
         if record.get("event") == "audit":
             outcome = str(data.get("outcome", ""))
