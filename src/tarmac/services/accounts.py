@@ -255,7 +255,7 @@ class AccountService:
         if not suspended_ou_id:
             raise GovernanceError(
                 "No 'Suspended' OU exists in the organization, so the account cannot be quarantined.",
-                details="Declare a 'Suspended' OU in organization.yaml and run 'tarmac ou sync' first.",
+                details="Declare a 'Suspended' OU in organization.yaml and run 'tarmac deploy run --phase 2' first.",
             )
 
         if dry_run:

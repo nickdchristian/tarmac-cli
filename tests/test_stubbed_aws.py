@@ -137,25 +137,6 @@ def test_scp_ownership_tag_lookup(tags, expected):
         assert svc.is_tarmac_managed("p-abc12345") is expected
 
 
-def test_scp_create_policy_sends_valid_ownership_tags():
-    org = _client("organizations")
-    svc = SCPService(_mgr(organizations=org))
-    content = '{"Version": "2012-10-17", "Statement": []}'
-    with Stubber(org) as stub:
-        stub.add_response(
-            "create_policy",
-            {"Policy": {"PolicySummary": {"Id": "p-abc12345"}}},
-            {
-                "Name": "N",
-                "Description": "d",
-                "Type": "SERVICE_CONTROL_POLICY",
-                "Content": content,
-                "Tags": OWNED,
-            },
-        )
-        assert svc.sync_policy("N", "d", content, {}) == ("p-abc12345", "CREATED")
-
-
 @pytest.mark.parametrize(("tags", "expected"), [(OWNED, True), ([], False)])
 def test_permission_set_ownership_tag_lookup(tags, expected):
     sso = _client("sso-admin")

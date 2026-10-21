@@ -73,6 +73,7 @@ def test_deploy_refuses_root_but_allows_roles() -> None:
     unauth = MagicMock(spec=AwsSessionManager)
     unauth.is_root_identity.side_effect = RuntimeError("no creds")
     _refuse_root_identity(unauth)  # must not raise: phases report auth problems themselves
+    _refuse_root_identity(_mgr(ROOT), allow_root=True)  # phase 1 alone may run as root
 
 
 def test_access_template_prints_and_writes(tmp_path: Path) -> None:
@@ -86,17 +87,29 @@ def test_access_template_prints_and_writes(tmp_path: Path) -> None:
     assert "TarmacRole" in out.read_text(encoding="utf-8")
 
 
-def test_access_check_reports_root_and_role() -> None:
-    with patch("tarmac.cli.access.AwsSessionManager", return_value=_mgr(ROOT)):
-        assert runner.invoke(app, ["access", "check"]).exit_code == 1
-    ok = _mgr(ROLE)
-    with patch("tarmac.cli.access.AwsSessionManager", return_value=ok):
-        assert runner.invoke(app, ["access", "check"]).exit_code == 0
+def test_info_strict_reports_root_and_role() -> None:
+    """`tarmac info --strict` exits 1 unless the credentials are non-root and can read the organization."""
+
+    def info_mgr(identity: dict[str, str]) -> AwsSessionManager:
+        mgr = _mgr(identity)
+        mgr.default_region = "us-east-1"
+        return mgr
+
+    with patch("tarmac.cli.main.AwsSessionManager", return_value=info_mgr(ROOT)):
+        root = runner.invoke(app, ["info", "--strict"])
+    assert root.exit_code == 1
+    assert "Root credentials" in root.output
+
+    ok = info_mgr(ROLE)
+    with patch("tarmac.cli.main.AwsSessionManager", return_value=ok):
+        assert runner.invoke(app, ["info", "--strict"]).exit_code == 0
+
     cast(MagicMock, ok.get_client).return_value.describe_organization.side_effect = ClientError(
         {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "DescribeOrganization"
     )
-    with patch("tarmac.cli.access.AwsSessionManager", return_value=ok):
-        assert runner.invoke(app, ["access", "check"]).exit_code == 1
+    with patch("tarmac.cli.main.AwsSessionManager", return_value=ok):
+        assert runner.invoke(app, ["info", "--strict"]).exit_code == 1
+        assert runner.invoke(app, ["info"]).exit_code == 0
 
 
 def test_access_template_is_least_surprising() -> None:

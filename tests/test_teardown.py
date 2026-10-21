@@ -314,7 +314,7 @@ def test_teardown_deployment_helper(test_bundle):
 
 def test_cli_teardown_dry_run(monkeypatch, teardown_config_dir: Path):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    res = runner.invoke(app, ["teardown", "--dry-run", "-c", str(teardown_config_dir), "-y"])
+    res = runner.invoke(app, ["destroy", "--dry-run", "-c", str(teardown_config_dir), "-y"])
     assert res.exit_code == 0
     assert "Teardown Summary" in res.stdout
     assert "Teardown dry-run simulation complete" in res.stdout
@@ -810,18 +810,21 @@ def test_teardown_scps_removes_tagged_legacy_policy(test_bundle):
     clients["organizations"].delete_policy.assert_called_once_with(PolicyId="p-legacy")
 
 
-def test_scp_create_and_template_carry_ownership_tag(tmp_path):
+def test_scp_template_carries_ownership_tag(tmp_path):
+    from tarmac.core.config_schema import SCPDef, ServiceControlPoliciesConfig
     from tarmac.services.scp import SCPService
 
-    mgr = MagicMock(spec=AwsSessionManager)
-    org = MagicMock()
-    org.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-new"}}}
-    mgr.get_client.return_value = org
-    scp = SCPService(mgr)
+    (tmp_path / "p.json").write_text('{"Version": "2012-10-17", "Statement": []}')
+    config = ServiceControlPoliciesConfig(
+        enabled=True, policies=[SCPDef(name="N", policy_file=str(tmp_path / "p.json"), targets=["root"])]
+    )
 
-    scp.sync_policy("N", "d", "{}", {}, dry_run=False)
+    resources = SCPService(MagicMock(spec=AwsSessionManager)).synthesize_template(
+        config, "r-1", {}, tmp_path
+    )["Resources"]
 
-    assert org.create_policy.call_args.kwargs["Tags"] == [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
+    (policy,) = resources.values()
+    assert policy["Properties"]["Tags"] == [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
 
 
 # --- previously untested destructive paths: audit stack, milestone reset, phase dispatch ---------

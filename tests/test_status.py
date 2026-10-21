@@ -272,7 +272,7 @@ def test_drift_service_handles_import_complete_sso_region_and_remediation_comman
     # Missing OU and SCP remediation commands match real CLI subcommands
     missing_ous = [i for i in report.items if i.category == "OU" and i.status == "MISSING"]
     assert missing_ous
-    assert all(i.remediation == "tarmac ou sync" for i in missing_ous)
+    assert all(i.remediation == "tarmac deploy run --phase 2" for i in missing_ous)
     missing_scps = [i for i in report.items if i.category == "SCP" and i.status == "MISSING"]
     assert missing_scps
-    assert all(i.remediation == "tarmac org scp apply" for i in missing_scps)
+    assert all(i.remediation == "tarmac deploy run --phase 2" for i in missing_scps)

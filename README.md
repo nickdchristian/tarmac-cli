@@ -76,18 +76,20 @@ one-time steps that AWS does not allow to be automated. The most direct path is 
 
 1. Sign in as the root user, enable **MFA**, and add a payment method.
 2. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac
-   (`pip install --user tarmac-cli`) and create the organization: `tarmac org bootstrap`.
+   (`pip install --user tarmac-cli`), run `tarmac init`, and create the organization: `tarmac deploy run --phase 1`
+   (phase 1 is the only one allowed to run as root).
 3. In the console, enable **IAM Identity Center** (it requires an existing organization).
 4. In Identity Center create a user, create a permission set (for example `AdministratorAccess`), and **assign that
    user and permission set to the management account**. If this assignment is missing, `aws configure sso` stops
    with `No AWS accounts are available to you`.
 5. In CloudShell run `aws configure sso`, then `aws sso login --use-device-code --profile <profile>` (see
    [Using AWS CloudShell](#using-aws-cloudshell) for why the device-code flag is needed).
-6. `export AWS_PROFILE=<profile>`, then confirm with `tarmac access check`.
+6. `export AWS_PROFILE=<profile>`, then confirm with `tarmac info --strict`.
 7. `tarmac preflight`, then `tarmac deploy run --dry-run`, then `tarmac deploy run`. Phases are idempotent, so a
    failed run can simply be repeated.
 
-`tarmac preflight` and live `tarmac deploy run` refuse to run as root, so do not run them before step 6.
+`tarmac preflight` and live `tarmac deploy run` (other than `--phase 1`) refuse to run as root, so do not run them before
+step 6.
 Each member account needs a **unique email address**; AWS never lets a closed account's email be reused, and
 `tarmac validate` warns about the sample addresses written by `tarmac init`. Gmail users can create unique
 addresses with the `+` trick (`you+prod@gmail.com`, `you+log@gmail.com`); all of them arrive in one inbox.
@@ -113,7 +115,7 @@ The quickest way to start is to let tarmac write the configuration for you:
 
 ```bash
 tarmac import --config-dir my-lz          # read-only: nothing in AWS is changed
-cd my-lz && tarmac validate && tarmac drift
+cd my-lz && tarmac validate && tarmac status --detail
 tarmac deploy run --dry-run
 ```
 
@@ -167,16 +169,17 @@ needs one non-root principal first. `tarmac preflight` and live `tarmac deploy r
 
    This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a policy scoped to what tarmac does (see below; MFA enforced for IAM
    users, IAM Identity Center sessions pass; 4-hour sessions).
-2. Create the organization (`tarmac org bootstrap` from CloudShell, or the console), enable **IAM Identity Center**, create an
+2. Create the organization (`tarmac deploy run --phase 1` from CloudShell, or the console), enable **IAM Identity Center**, create an
    administrator user, and sign in with `aws sso login`. Run tarmac as that identity. Choose the Identity Center Region
    deliberately: an organization can have it in one Region only, and moving it later means deleting the instance and creating
    another ([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)).
-3. `tarmac access check` confirms the credentials are non-root and can read the organization; on failure it prints a hint.
+3. `tarmac info --strict` confirms the credentials are non-root and can read the organization; it exits 1 and says why
+   when they cannot.
 
 Before Identity Center exists you can instead run `tarmac access bootstrap --with-bootstrap-user`. (The IAM Identity Center path above avoids creating an IAM user with a long-lived key and is the simpler route.) That also creates an
 assume-only IAM user (`tarmac-bootstrap`) and adds a `[profile tarmac]` block to `~/.aws/config`. Create an access key and
 an MFA device for the user in the IAM console, put the key in a `[profile tarmac-bootstrap]` profile, and run
-`AWS_PROFILE=tarmac tarmac access check`. Delete the user and its key once SSO works.
+`AWS_PROFILE=tarmac tarmac info --strict`. Delete the user and its key once SSO works.
 
 `tarmac access template` prints the underlying CloudFormation template if you would rather deploy it yourself.
 
@@ -224,11 +227,11 @@ the package. `<org>` is `organization.name` from `organization.yaml`.
 | Template | Stack | Account / Region | Deployed by | What it creates |
 | :--- | :--- | :--- | :--- | :--- |
 | [`tarmac-access.yaml`](src/tarmac/templates/cloudformation/tarmac-access.yaml) | `tarmac-access` | Management / `us-east-1` by default | `tarmac access bootstrap` | The `TarmacDeploymentRole` tarmac runs as, its managed policy, and optionally an assume-only `tarmac-bootstrap` IAM user |
-| [`log-archive-hardening.yaml`](src/tarmac/templates/cloudformation/log-archive-hardening.yaml) | `<org>-log-archive-hardening` | Log Archive / primary | Phase 3, `tarmac baseline logs` | The central CloudTrail bucket, an access-logs bucket, a separate AWS Config bucket (when Config recorders are enabled) and a KMS key (when `cloudtrail.enable_kms` is on) |
-| [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Management / primary | Phase 3, `tarmac baseline cloudtrail` | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket |
+| [`log-archive-hardening.yaml`](src/tarmac/templates/cloudformation/log-archive-hardening.yaml) | `<org>-log-archive-hardening` | Log Archive / primary | Phase 3 | The central CloudTrail bucket, an access-logs bucket, a separate AWS Config bucket (when Config recorders are enabled) and a KMS key (when `cloudtrail.enable_kms` is on) |
+| [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Management / primary | Phase 3 | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket |
 | [`account-budget.yaml`](src/tarmac/templates/cloudformation/account-budget.yaml) | `<account>-monthly-budget` | Each member account with a budget / primary | Phase 4, `tarmac account baseline` | A monthly cost budget and an SNS topic for its email and webhook alerts |
-| [`terraform-backend.yaml`](src/tarmac/templates/cloudformation/terraform-backend.yaml) | `<org>-terraform-backend` | Deployment / primary | Phase 5, `tarmac baseline backend` | The Terraform state bucket, plus a DynamoDB lock table only when `enable_dynamodb` asks for one |
-| [`audit-account-hardening.yaml`](src/tarmac/templates/cloudformation/audit-account-hardening.yaml) | `<org>-audit-account-hardening` | Audit / primary | Phase 5, `tarmac baseline audit` | An AWS Config aggregator, a KMS-encrypted SNS alert topic, and EventBridge rules forwarding Config non-compliance, GuardDuty findings, Security Hub findings and root activity to it |
+| [`terraform-backend.yaml`](src/tarmac/templates/cloudformation/terraform-backend.yaml) | `<org>-terraform-backend` | Deployment / primary | Phase 5 | The Terraform state bucket, plus a DynamoDB lock table only when `enable_dynamodb` asks for one |
+| [`audit-account-hardening.yaml`](src/tarmac/templates/cloudformation/audit-account-hardening.yaml) | `<org>-audit-account-hardening` | Audit / primary | Phase 5 | An AWS Config aggregator, a KMS-encrypted SNS alert topic, and EventBridge rules forwarding Config non-compliance, GuardDuty findings, Security Hub findings and root activity to it |
 | [`config-recorder.yaml`](src/tarmac/templates/cloudformation/config-recorder.yaml) | `<org>-config-recorder` (StackSet + management stack) | Every account / declared Regions | Phase 5, when `security_services.config_recorder.enabled` | An AWS Config recorder and delivery channel per account and Region, delivering to the Log Archive |
 | [`management-root-alert.yaml`](src/tarmac/templates/cloudformation/management-root-alert.yaml) | `<org>-management-root-alert` | Management / `us-east-1` and primary (all declared Regions with `all_regions`) | Phase 5, when `security_services.root_alert.enabled` | An EventBridge rule and SNS topic that alert the security contact (and the incident webhook, if set) when the root user signs in or calls an API |
 
@@ -257,35 +260,41 @@ To review or change any of this before it reaches AWS:
 | :--- | :--- |
 | **`tarmac init`** | Scaffold starter configuration manifests and CloudFormation templates. |
 | **`tarmac validate`** | Validate configuration manifests against Pydantic schemas and cross-references. |
-| **`tarmac preflight`** | Run 17 diagnostic checks for management account operational readiness (`doctor` alias). |
-| **`tarmac info`** | Display caller identity, AWS account details, and Organization status. |
-| **`tarmac deploy run`** | Execute the automated multi-phase landing zone rollout (`--dry-run` to preview). |
-| **`tarmac status`** | Inspect live landing zone reconciliation and phase completion status. |
-| **`tarmac drift`** | Audit IAM Identity Center permission sets and member account budget drift. |
+| **`tarmac preflight`** | Run 17 diagnostic checks for management account operational readiness. |
+| **`tarmac info`** | Display caller identity, AWS account details, and Organization status. `--strict` exits 1 unless the credentials can run tarmac. |
+| **`tarmac deploy run`** | Execute the multi-phase landing zone rollout. `--phase N` runs one phase, `--dry-run` previews. |
+| **`tarmac status`** | Compare the live environment with the configuration. `--detail` lists every drifted or missing item; `--strict` exits 1 on drift. |
 | **`tarmac import`** | Read an existing organization (read-only) and write matching configuration files. |
 | **`tarmac deploy destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the access role. |
 
+Everything that changes AWS goes through `tarmac deploy run`, one phase at a time if you like:
+
+| To change | Run |
+| :--- | :--- |
+| Organization, contacts, trusted services, root access, cost tags, management default VPCs | `tarmac deploy run --phase 1` |
+| OUs and Service Control Policies | `tarmac deploy run --phase 2` |
+| Log Archive and organization CloudTrail | `tarmac deploy run --phase 3` |
+| Member accounts, their budgets and default VPCs | `tarmac deploy run --phase 4` |
+| Terraform backend, audit hardening, Config recorders, root alert, GuardDuty / Security Hub | `tarmac deploy run --phase 5` |
+| IAM Identity Center permission sets, users, groups and assignments | `tarmac deploy run --phase 6` |
+
 <details>
-<summary><strong>Granular Service Commands</strong></summary>
+<summary><strong>Other commands</strong></summary>
 
-For targeted management outside the end-to-end pipeline:
-
-* **Organizations & OUs**:
-  * `tarmac org bootstrap` — Enable AWS Organizations and trusted services.
-  * `tarmac org contacts` — Synchronize alternate contacts (Billing, Security, Ops).
-  * `tarmac ou sync` — Idempotently synchronize OU tree hierarchy.
-  * `tarmac org scp apply` — Reconcile and attach Service Control Policies.
-* **Account Factory**:
-  * `tarmac account plan` — Preview proposed account actions (Create, Move, No-op).
-  * `tarmac account apply` — Provision missing accounts and assign to OUs.
-  * `tarmac account sync-tags` — Synchronize governance tags with member accounts.
-* **Security & Baseline**:
-  * `tarmac baseline cloudtrail` — Deploy organization-wide CloudTrail.
-  * `tarmac baseline backend` — Deploy Terraform S3 state and DynamoDB locks.
-  * `tarmac baseline security` — Deploy GuardDuty, Security Hub, and log hardening.
-* **IAM Identity Center**:
-  * `tarmac identity status` — View Identity Center instance status and region.
-  * `tarmac identity sync` — Synchronize permission sets, users, groups, and assignments.
+* **Accounts**:
+  * `tarmac account list` — List every account with its status and parent OU.
+  * `tarmac account baseline [NAME]` — Re-run tags, default VPC cleanup and budgets for one account or all.
+  * `tarmac account sync-tags [NAME]` — Synchronize declared tags with member accounts.
+  * `tarmac account suspend NAME` — Quarantine an account in the Suspended OU (`--close` to close it).
+  * `tarmac account export` — Write the account inventory to `outputs/`.
+  * `tarmac account anomaly-status` — List Cost Anomaly Detection monitors and subscriptions.
+* **Inspection**:
+  * `tarmac ou list` — List the live OU tree.
+  * `tarmac identity status` — Show the Identity Center instance, identity store and portal URL.
+  * `tarmac deploy inventory` — Show what tarmac has recorded as created by it.
+  * `tarmac logs FILE` — Summarize runs recorded with `--log-file`.
+* **Access**:
+  * `tarmac access bootstrap` / `tarmac access template` — Create, or print, the role tarmac runs as.
 
 </details>
 
@@ -513,8 +522,7 @@ exists with the same name:
 * **Budget** named `<account>-monthly-budget` that tarmac did not create: the account's budget step fails with its
   current limit. Tarmac would otherwise delete it and create its own.
 
-After reviewing, re-run with `--adopt-existing` (on `deploy run`, `org scp plan|apply`, `account apply` and
-`account baseline`) to let tarmac take it over. The old budget's limit and period are recorded in the audit log.
+After reviewing, re-run with `--adopt-existing` (on `deploy run` and `account baseline`) to let tarmac take it over. The old budget's limit and period are recorded in the audit log.
 
 ### GuardDuty features (all off unless you ask)
 
@@ -538,12 +546,12 @@ not managed by tarmac.
 
 ### Terraform state locking
 
-`tarmac baseline backend` creates a versioned, encrypted S3 bucket for Terraform state. Locking is S3-only by default, so
+Phase 5 creates a versioned, encrypted S3 bucket for Terraform state. Locking is S3-only by default, so
 Terraform needs `use_lockfile = true` (Terraform 1.10 or later) and there is no DynamoDB table to pay for. Terraform now marks
 DynamoDB-based locking as deprecated
 ([S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3)). Set `terraform_backend.enable_dynamodb: true`
-to create the lock table anyway. A backend that already has the table keeps it unless you set `enable_dynamodb: false` or pass
-`--s3-only`, and tarmac warns before removing it, because Terraform configurations that still set `dynamodb_table` would
+to create the lock table anyway. A backend that already has the table keeps it unless you set `enable_dynamodb: false`, and tarmac
+warns before removing it, because Terraform configurations that still set `dynamodb_table` would
 stop locking.
 
 ## Safe Teardown

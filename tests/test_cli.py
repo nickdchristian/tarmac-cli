@@ -1,13 +1,12 @@
 """Tests for the tarmac Typer CLI commands."""
 
 import json
+import re
 from unittest.mock import MagicMock
 
-import pytest
 from typer.testing import CliRunner
 
 from tarmac.cli.main import app
-from tarmac.core.models import IdentitySyncReport
 
 runner = CliRunner()
 
@@ -17,7 +16,7 @@ def test_cli_help_and_subcommand_helps():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "Tarmac: Enterprise AWS Governance & Multi-Account Landing Zone CLI" in result.stdout
-    for subcmd in ["org", "ou", "account", "identity", "baseline", "deploy", "preflight", "doctor"]:
+    for subcmd in ["access", "ou", "account", "identity", "deploy", "preflight", "status", "info"]:
         sub_res = runner.invoke(app, [subcmd, "--help"])
         assert sub_res.exit_code == 0
 
@@ -63,68 +62,6 @@ def test_cli_info(monkeypatch):
     assert "111111111111" in result.stdout
     assert "o-test12345" in result.stdout
     assert "Authenticated as Management Account" in result.stdout
-
-
-def test_cli_baseline_backend_s3_only(sample_config_dir, monkeypatch):
-    from unittest.mock import MagicMock
-
-    from tarmac.core.models import StackDeployReport
-
-    mock_session_mgr = MagicMock()
-    mock_org = MagicMock()
-    mock_org.list_accounts.return_value = {"Accounts": [{"Name": "Deployment", "Id": "222222222222"}]}
-    mock_session_mgr.get_client.return_value = mock_org
-
-    mock_service = MagicMock()
-    mock_service.deploy_stack.return_value = StackDeployReport(
-        stack_name="test-terraform-backend",
-        action="CREATED",
-        outputs={"BucketName": "test-bucket"},
-    )
-
-    monkeypatch.setattr("tarmac.cli.baseline.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.baseline.CloudFormationService", lambda sm: mock_service)
-
-    result = runner.invoke(
-        app,
-        ["baseline", "backend", "--config-dir", str(sample_config_dir), "--s3-only"],
-    )
-    assert result.exit_code == 0
-    assert mock_service.deploy_stack.call_count == 1
-    call_args = mock_service.deploy_stack.call_args[0]
-    params = call_args[3]
-    assert params["EnableDynamoDB"] == "false"
-
-
-def test_cli_baseline_cloudtrail_sse_s3(sample_config_dir, monkeypatch):
-    from unittest.mock import MagicMock
-
-    from tarmac.core.models import StackDeployReport
-
-    mock_session_mgr = MagicMock()
-    mock_org = MagicMock()
-    mock_org.describe_organization.return_value = {"Organization": {"Id": "o-test12345"}}
-    mock_session_mgr.get_client.return_value = mock_org
-
-    mock_service = MagicMock()
-    mock_service.deploy_stack.return_value = StackDeployReport(
-        stack_name="test-cloudtrail",
-        action="CREATED",
-        outputs={"BucketName": "test-cloudtrail-bucket"},
-    )
-
-    monkeypatch.setattr("tarmac.cli.baseline.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.baseline.CloudFormationService", lambda sm: mock_service)
-
-    result = runner.invoke(
-        app,
-        ["baseline", "cloudtrail", "--config-dir", str(sample_config_dir), "--sse-s3"],
-    )
-    assert result.exit_code == 0
-    assert mock_service.deploy_stack.call_count == 1
-    call_args = mock_service.deploy_stack.call_args[0]
-    params = call_args[3]
-    assert params["EnableKmsEncryption"] == "false"
 
 
 def test_cli_deploy_run_with_custom_tags(sample_config_dir, monkeypatch):
@@ -309,43 +246,6 @@ def test_cli_info_json(monkeypatch):
     assert data["is_management_account"] is True
 
 
-def test_cli_plan_json(sample_config_dir, monkeypatch):
-    import json
-    from unittest.mock import MagicMock
-
-    from tarmac.core.config_schema import AccountBaselineConfig
-    from tarmac.core.models import AccountPlanItem
-
-    mock_session_mgr = MagicMock()
-    mock_ou_service = MagicMock()
-    mock_ou_service.get_root_id.return_value = "r-1234"
-    mock_ou_service.list_existing_ous_for_parent.return_value = {"Security": "ou-sec-123"}
-
-    mock_acct_service = MagicMock()
-    mock_acct_service.plan.return_value = [
-        AccountPlanItem(
-            name="Log-Archive",
-            email="log@example.com",
-            ou="Security",
-            action="CREATE",
-            account_id=None,
-            reason="Account not found in organization",
-            baseline=AccountBaselineConfig(),
-        )
-    ]
-
-    monkeypatch.setattr("tarmac.cli.account.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.account.OUService", lambda sm: mock_ou_service)
-    monkeypatch.setattr("tarmac.cli.account.AccountService", lambda sm: mock_acct_service)
-
-    result = runner.invoke(app, ["account", "plan", "--config-dir", str(sample_config_dir), "--json"])
-    assert result.exit_code == 0
-    data = json.loads(result.stdout)
-    assert len(data) == 1
-    assert data[0]["name"] == "Log-Archive"
-    assert data[0]["action"] == "CREATE"
-
-
 def test_cli_status(sample_config_dir, monkeypatch):
     import json
     from unittest.mock import MagicMock
@@ -410,11 +310,10 @@ def test_cli_status_with_drift(sample_config_dir, monkeypatch):
     assert "DRIFT" in result.stdout
     assert "PENDING" in result.stdout
     assert "Pending Actions & Remediation" in result.stdout
-    assert "tarmac ou" in result.stdout
-    assert "tarmac account apply" in result.stdout
-    assert "tarmac baseline cloudtrail" in result.stdout
-    assert "tarmac baseline backend" in result.stdout
-    assert "tarmac identity sync" in result.stdout
+    # Rich wraps long cells; compare against the text with table borders and line breaks removed.
+    flat = " ".join(re.sub(r"[│┃╭╮╰╯─━]", " ", result.stdout).split())
+    for phase in (2, 3, 4, 5, 6):
+        assert f"tarmac deploy run --phase {phase}" in flat
 
 
 def test_cli_deploy_run_prompts_and_yes(sample_config_dir, monkeypatch):
@@ -483,29 +382,6 @@ def test_cli_identity_status(monkeypatch, sample_config_dir):
     assert "d-teststore" in result.stdout
 
 
-def test_cli_identity_sync(monkeypatch, sample_config_dir):
-    mock_session_mgr = MagicMock()
-    mock_service = MagicMock()
-
-    mock_service.sync_identity.return_value = IdentitySyncReport(
-        permission_sets_synced=["AdministratorAccess"],
-        users_synced=["admin"],
-        groups_synced=["flumen-admin"],
-        assignments_created=2,
-        memberships_added=1,
-    )
-
-    monkeypatch.setattr("tarmac.cli.identity.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.identity.IdentityService", lambda *a, **kw: mock_service)
-
-    result = runner.invoke(app, ["identity", "sync", "--config-dir", str(sample_config_dir)])
-    assert result.exit_code == 0
-    assert "Synchronized" in result.stdout
-    assert "Configured" in result.stdout
-    assert "Synchronized group memberships" in result.stdout
-    mock_service.sync_identity.assert_called_once()
-
-
 def test_cli_anomaly_status(monkeypatch, sample_config_dir):
     mock_session_mgr = MagicMock()
     mock_baseliner = MagicMock()
@@ -521,10 +397,10 @@ def test_cli_anomaly_status(monkeypatch, sample_config_dir):
         ],
     )
 
-    monkeypatch.setattr("tarmac.cli.baseline.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.baseline.BaselineService", lambda sm: mock_baseliner)
+    monkeypatch.setattr("tarmac.cli.account.AwsSessionManager", lambda **kw: mock_session_mgr)
+    monkeypatch.setattr("tarmac.cli.account.BaselineService", lambda sm: mock_baseliner)
 
-    result = runner.invoke(app, ["baseline", "anomaly-status", "--config-dir", str(sample_config_dir)])
+    result = runner.invoke(app, ["account", "anomaly-status", "--config-dir", str(sample_config_dir)])
     assert result.exit_code == 0
     assert "flumen-prod-cost-anomaly-monitor" in result.stdout
     assert "flumen-prod-anomaly-alerts" in result.stdout
@@ -622,45 +498,8 @@ def test_cli_account_suspend_close_failure_exits_nonzero(monkeypatch, sample_con
     assert "quota exceeded" in result.output
 
 
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_cli_org_cleanup_vpc(monkeypatch, sample_config_dir, dry_run: bool):
-    """Verify org cleanup-vpc live and dry-run execution."""
-    from unittest.mock import MagicMock
-
-    from tarmac.core.models import VpcCleanupReport
-
-    mock_session_mgr = MagicMock()
-    mock_session_mgr.get_caller_identity.return_value = {"Account": "000000000000"}
-    mock_baseliner = MagicMock()
-    mock_baseliner.cleanup_default_vpcs.return_value = [
-        VpcCleanupReport(
-            region="us-east-1",
-            vpc_id="vpc-default123",
-            deleted_vpc=not dry_run,
-            skipped=dry_run,
-            detached_igws=["igw-111"] if not dry_run else [],
-            deleted_subnets=["subnet-222"] if not dry_run else [],
-            message="Purged default VPC" if not dry_run else "Dry run simulation",
-        )
-    ]
-
-    monkeypatch.setattr("tarmac.cli.org.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.org.BaselineService", lambda sm: mock_baseliner)
-
-    cmd = ["org", "cleanup-vpc", "--config-dir", str(sample_config_dir)]
-    if dry_run:
-        cmd.append("--dry-run")
-    result = runner.invoke(app, cmd)
-    assert result.exit_code == 0
-    assert "vpc-default123" in result.stdout
-    if dry_run:
-        assert "DRY-RUN" in result.stdout
-    else:
-        assert "Purged default VPC" in result.stdout
-
-
-def test_cli_preflight_and_doctor_execution(monkeypatch, sample_config_dir):
-    """Verify preflight and doctor commands execute with table and JSON formatting."""
+def test_cli_preflight_execution(monkeypatch, sample_config_dir):
+    """Verify the preflight command executes with table and JSON formatting."""
     import json
     from unittest.mock import MagicMock
 
@@ -691,10 +530,6 @@ def test_cli_preflight_and_doctor_execution(monkeypatch, sample_config_dir):
     assert res.exit_code == 0
     assert "PASS" in res.stdout
     assert "1 passed" in res.stdout
-
-    res_doc = runner.invoke(app, ["doctor", "--config-dir", str(sample_config_dir)])
-    assert res_doc.exit_code == 0
-    assert "PASS" in res_doc.stdout
 
     res_json = runner.invoke(app, ["preflight", "--config-dir", str(sample_config_dir), "--json"])
     assert res_json.exit_code == 0
@@ -754,53 +589,6 @@ def test_cli_preflight_failures_and_strict_mode(monkeypatch, sample_config_dir):
 
     res_strict = runner.invoke(app, ["preflight", "--config-dir", str(sample_config_dir), "--strict"])
     assert res_strict.exit_code == 1
-
-
-def test_cli_org_scp_plan(sample_config_dir, monkeypatch):
-    """Verify org scp plan dry-run output."""
-    from unittest.mock import MagicMock
-
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-    mock_client.list_roots.return_value = {"Roots": [{"Id": "r-root1"}]}
-
-    paginator = MagicMock()
-    paginator.paginate.return_value = [{"OrganizationalUnits": []}]
-    mock_client.get_paginator.return_value = paginator
-
-    monkeypatch.setattr("tarmac.cli.org.AwsSessionManager", lambda **kwargs: mock_session)
-
-    result = runner.invoke(app, ["org", "scp", "plan", "--config-dir", str(sample_config_dir)])
-    assert result.exit_code == 0
-    assert "Service Control Policies Plan (Dry-Run)" in result.stdout
-    assert "DenyMemberRootActivity" in result.stdout
-    assert "DenyLeaveOrganization" in result.stdout
-
-
-def test_cli_org_scp_apply(sample_config_dir, monkeypatch):
-    """Verify org scp apply dry-run output."""
-    from unittest.mock import MagicMock
-
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-    mock_client.list_roots.return_value = {
-        "Roots": [{"Id": "r-root1", "PolicyTypes": [{"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}]}]
-    }
-
-    paginator = MagicMock()
-    paginator.paginate.return_value = [{"Policies": []}, {"OrganizationalUnits": []}]
-    mock_client.get_paginator.return_value = paginator
-    mock_client.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-123", "Name": "Test"}}}
-    mock_client.list_targets_for_policy.return_value = {"Targets": []}
-
-    monkeypatch.setattr("tarmac.cli.org.AwsSessionManager", lambda **kwargs: mock_session)
-
-    result = runner.invoke(app, ["org", "scp", "apply", "--dry-run", "--config-dir", str(sample_config_dir)])
-    assert result.exit_code == 0
-    assert "Service Control Policies (Dry-Run)" in result.stdout
-    assert "DenyMemberRootActivity" in result.stdout
 
 
 def test_cli_deploy_run_preflight_failure(monkeypatch, sample_config_dir):
@@ -892,8 +680,9 @@ def test_cli_account_list(sample_config_dir, monkeypatch):
     assert data[1]["status"] == "SUSPENDED"
 
 
-def test_cli_drift_command(monkeypatch, sample_config_dir):
+def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
     from tarmac.services.drift import DriftItem, DriftReport
+    from tarmac.services.status import LandingZoneStatus
 
     mock_session_mgr = MagicMock()
     mock_drift_service = MagicMock()
@@ -913,7 +702,7 @@ def test_cli_drift_command(monkeypatch, sample_config_dir):
                 declared="OU: NonProduction",
                 live="Missing",
                 status="MISSING",
-                remediation="tarmac account apply",
+                remediation="tarmac deploy run --phase 4",
             ),
         ],
         has_drift=True,
@@ -924,35 +713,41 @@ def test_cli_drift_command(monkeypatch, sample_config_dir):
 
     monkeypatch.setattr("tarmac.cli.main.AwsSessionManager", lambda **kw: mock_session_mgr)
     monkeypatch.setattr("tarmac.cli.main.DriftService", lambda sm: mock_drift_service)
+    mock_status_service = MagicMock()
+    mock_status_service.inspect.return_value = LandingZoneStatus(
+        org_id="o-test12345",
+        feature_set="ALL",
+        ous_declared=1,
+        ous_live=1,
+        accounts_declared=1,
+        accounts_live=0,
+        cloudtrail_status="CREATE_COMPLETE",
+        backend_status="CREATE_COMPLETE",
+        sso_configured=True,
+    )
+    monkeypatch.setattr("tarmac.cli.main.StatusService", lambda sm: mock_status_service)
 
-    res = runner.invoke(app, ["drift", "--config-dir", str(sample_config_dir)])
+    plain = runner.invoke(app, ["status", "--config-dir", str(sample_config_dir)])
+    assert plain.exit_code == 0
+    assert "Landing Zone Drift Inspection" not in plain.stdout
+    mock_drift_service.inspect_drift.assert_not_called()
+
+    res = runner.invoke(app, ["status", "--detail", "--config-dir", str(sample_config_dir)])
     assert res.exit_code == 0
     assert "Landing Zone Drift Inspection" in res.stdout
     assert "Security" in res.stdout
     assert "dev-app" in res.stdout
     assert "MISSING" in res.stdout
 
-    res_json = runner.invoke(app, ["drift", "--config-dir", str(sample_config_dir), "--json"])
+    res_json = runner.invoke(app, ["status", "--detail", "--config-dir", str(sample_config_dir), "--json"])
     assert res_json.exit_code == 0
-    assert '"has_drift": true' in res_json.stdout
+    payload = json.loads(res_json.stdout)
+    assert payload["org_id"] == "o-test12345"
+    assert payload["drift"]["has_drift"] is True
 
     # Test strict mode exits with code 1 when drift is detected
-    res_strict = runner.invoke(app, ["drift", "--config-dir", str(sample_config_dir), "--strict"])
+    res_strict = runner.invoke(app, ["status", "--config-dir", str(sample_config_dir), "--strict"])
     assert res_strict.exit_code == 1
-
-
-def test_cli_activate_cost_tags_command(monkeypatch, sample_config_dir):
-    mock_session_mgr = MagicMock()
-    mock_org_service = MagicMock()
-    mock_org_service.activate_cost_allocation_tags.return_value = ["Environment", "CostCenter"]
-
-    monkeypatch.setattr("tarmac.cli.org.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.org.OrganizationService", lambda sm: mock_org_service)
-
-    res = runner.invoke(app, ["org", "activate-cost-tags", "--config-dir", str(sample_config_dir)])
-    assert res.exit_code == 0
-    assert "Activated 2 Cost Allocation Tag(s)" in res.stdout
-    assert "Environment, CostCenter" in res.stdout
 
 
 def test_cli_deploy_run_dry_run_full(sample_config_dir, monkeypatch):

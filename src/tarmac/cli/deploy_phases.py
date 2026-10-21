@@ -196,6 +196,12 @@ def _run_phase_2_ou(
             tags=custom_tags,
             dry_run=False,
         )
+        unresolved = {r.name: r.unresolved_targets for r in results if r.unresolved_targets}
+        if unresolved:
+            raise GovernanceError(
+                "Phase 2 failed: SCP targets not found in the organization.",
+                details="; ".join(f"{name}: {', '.join(targets)}" for name, targets in unresolved.items()),
+            )
         print_success(f"Phase 2 complete: Reconciled {len(results)} Service Control Policies.")
     else:
         print_success("Phase 2 complete: OUs synchronized.")

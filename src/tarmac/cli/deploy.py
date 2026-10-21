@@ -100,11 +100,19 @@ def _validate_phase(phase: int | None, allowed: range) -> None:
         raise typer.Exit(code=2)
 
 
-def _refuse_root_identity(session_mgr: AwsSessionManager, dry_run: bool = False) -> None:
-    """Stop live runs with unusable credentials, or with root credentials (they cannot assume member roles)."""
+def _refuse_root_identity(
+    session_mgr: AwsSessionManager, dry_run: bool = False, allow_root: bool = False
+) -> None:
+    """Stop live runs with unusable credentials, or with root credentials (they cannot assume member roles).
+
+    ``allow_root`` is for phase 1 on its own: it only touches the management account, so a brand-new account can
+    create its organization from CloudShell as root before any other identity exists.
+    """
     if dry_run:
         return
     require_credentials_or_exit(session_mgr)
+    if allow_root:
+        return
     try:
         is_root = session_mgr.is_root_identity()
     except Exception as e:  # unauthenticated: let the phases report it in context
@@ -116,7 +124,7 @@ def _refuse_root_identity(session_mgr: AwsSessionManager, dry_run: bool = False)
                 "You are authenticated as the account root user. Root cannot call sts:AssumeRole, "
                 "so tarmac cannot reach member accounts.\n"
                 "Run [bold]tarmac access template[/bold], deploy it, and re-run as the tarmac role "
-                "(see README: Bootstrap access).",
+                "(see README: Bootstrap access). Only [bold]--phase 1[/bold] may run as root.",
                 title="[bold red]Root Credentials Not Supported[/bold red]",
                 border_style="red",
             )
@@ -175,11 +183,10 @@ def run_pipeline(
 
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
-    _refuse_root_identity(session_mgr, dry_run)
+    phases_to_run = _resolve_phases_to_run(phase, skip_preflight)
+    _refuse_root_identity(session_mgr, dry_run, allow_root=phases_to_run == [1])
     project_root = bundle.config_dir.parent
     org_service = OrganizationService(session_mgr)
-
-    phases_to_run = _resolve_phases_to_run(phase, skip_preflight)
 
     if json_output and dry_run:
         plan_dict = _build_dry_run_plan_dict(
@@ -446,9 +453,8 @@ def _confirm_teardown(
         raise typer.Exit(code=0)
 
 
-@app.command("teardown")
-@app.command("destroy", help="Alias for 'tarmac deploy teardown': delete all deployment resources.")
-def teardown_pipeline(
+@app.command("destroy")
+def destroy_pipeline(
     phase: Annotated[
         int | None, typer.Option("--phase", "-p", help="Specific phase to tear down (2-6)")
     ] = None,

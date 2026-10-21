@@ -24,9 +24,7 @@ UNUSABLE_STACK_STATES = frozenset(
 )
 
 
-def lock_table_wanted(
-    cfn_client: Any, stack_name: str, configured: bool | None, s3_only: bool = False
-) -> tuple[bool, str | None]:
+def lock_table_wanted(cfn_client: Any, stack_name: str, configured: bool | None) -> tuple[bool, str | None]:
     """Decide whether the Terraform backend stack should have a DynamoDB lock table.
 
     Returns (wanted, warning). With nothing configured a new backend is S3-only, which is cheaper and is what
@@ -35,12 +33,9 @@ def lock_table_wanted(
     """
     current = _stack_parameter(cfn_client, stack_name, "EnableDynamoDB")
     has_table = current == "true"
-    if s3_only:
-        wanted = False
-    elif configured is None:
+    if configured is None:
         return has_table, None
-    else:
-        wanted = configured
+    wanted = configured
     if has_table and not wanted:
         return False, (
             f"Stack '{stack_name}' has a DynamoDB lock table and this deployment removes it. Terraform "

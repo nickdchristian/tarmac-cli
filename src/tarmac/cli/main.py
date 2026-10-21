@@ -20,13 +20,11 @@ from ..services.drift import DriftService
 from ..services.identity import SUPPORTED_SSO_REGIONS, _probe_region_for_instance
 from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
-from . import access, account, baseline, deploy, identity, org, ou
-from .account import apply_accounts
+from . import access, account, deploy, identity, ou
 from .common import (
     ConfigDirOption,
     JsonOption,
     RegionOption,
-    YesOption,
     exit_on_error,
     load_configs_or_exit,
     warn_if_example_newer,
@@ -54,20 +52,14 @@ app = typer.Typer(
 )
 
 app.add_typer(access.app, name="access")
-app.add_typer(org.app, name="org")
 app.add_typer(ou.app, name="ou")
 app.add_typer(account.app, name="account")
 app.add_typer(identity.app, name="identity")
-app.add_typer(baseline.app, name="baseline")
 app.add_typer(deploy.app, name="deploy")
 
 app.command(
     "preflight",
     help="Audit management account manual prerequisites and operational readiness.",
-)(run_preflight_checks)
-app.command(
-    "doctor",
-    help="Alias for 'tarmac preflight': diagnose environment health and prerequisites.",
 )(run_preflight_checks)
 
 
@@ -243,32 +235,6 @@ def validate_config(
             console.print(f"  [yellow]•[/yellow] {problem}")
 
 
-@app.command("apply")
-def apply_shortcut(
-    config_dir: ConfigDirOption = None,
-    region: RegionOption = None,
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Simulate provisioning without making changes")
-    ] = False,
-    skip_baseline: Annotated[
-        bool, typer.Option("--skip-baseline", help="Skip running post-creation baselines")
-    ] = False,
-    yes: YesOption = False,
-) -> None:
-    """Provision declared accounts (shortcut for 'tarmac account apply').
-
-    To deploy the full end-to-end landing zone, use 'tarmac deploy run'.
-    """
-
-    apply_accounts(
-        config_dir=config_dir,
-        region=region,
-        dry_run=dry_run,
-        skip_baseline=skip_baseline,
-        yes=yes,
-    )
-
-
 def _fetch_org_details(session_mgr: AwsSessionManager) -> tuple[dict[str, str], str]:
     """Fetch org ID, master ID, feature set, and error message if any."""
     try:
@@ -330,6 +296,13 @@ def show_info(
         ),
     ] = None,
     json_output: JsonOption = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Exit with code 1 unless these credentials can run tarmac (non-root, can read the organization)",
+        ),
+    ] = False,
 ) -> None:
     """Show current AWS authentication details, caller identity, and Organization status."""
 
@@ -341,6 +314,8 @@ def show_info(
         org_info, org_err = _fetch_org_details(session_mgr)
         sso_region = _resolve_sso_region(resolved_region)
         sso_arn, sso_found_region = _find_sso_instance(session_mgr, sso_region)
+        is_root = session_mgr.is_root_identity() is True
+        can_run_tarmac = not is_root and bool(org_info.get("id"))
 
         if json_output:
             payload = {
@@ -352,8 +327,12 @@ def show_info(
                 "feature_set": org_info.get("feature_set"),
                 "is_management_account": caller_acct == org_info.get("master_id"),
                 "identity_center_arn": sso_arn or None,
+                "is_root": is_root,
+                "can_run_tarmac": can_run_tarmac,
             }
             print(json.dumps(payload, indent=2))
+            if strict and not can_run_tarmac:
+                raise typer.Exit(code=1)
             return
 
         print_header("AWS Authentication & Identity Info")
@@ -388,13 +367,30 @@ def show_info(
                 "identity may call sso-admin.[/yellow]",
             )
 
+        table.add_row("Credentials", _credentials_verdict(is_root, can_run_tarmac))
         console.print(table)
+        if strict and not can_run_tarmac:
+            raise typer.Exit(code=1)
+
+
+def _credentials_verdict(is_root: bool, can_run_tarmac: bool) -> str:
+    if is_root:
+        return (
+            "[bold red]✗ Root credentials cannot assume roles in member accounts. Run 'tarmac access bootstrap' "
+            "from CloudShell, then use the tarmac role or an SSO admin.[/bold red]"
+        )
+    if not can_run_tarmac:
+        return (
+            "[yellow]✗ Cannot read the organization. Use management account credentials with Organizations read "
+            "access, and create the organization with 'tarmac deploy run --phase 1' if it does not exist.[/yellow]"
+        )
+    return "[green]✓ Non-root and can read the organization[/green]"
 
 
 def _eval_org_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
     active = status.org_id != "Unknown"
     badge = "[bold green]ACTIVE[/bold green]" if active else "[bold red]MISSING[/bold red]"
-    action = None if active else "Organization not found. Run: tarmac org bootstrap"
+    action = None if active else "Organization not found. Run: tarmac deploy run --phase 1"
     return ("AWS Organization", bundle.org.organization.name, status.org_id, badge, action)
 
 
@@ -402,7 +398,7 @@ def _eval_ous_status(status: Any) -> tuple[str, str, str, str, str | None]:
     synced = status.ous_declared <= status.ous_live
     diff = status.ous_declared - status.ous_live
     badge = "[bold green]SYNCED[/bold green]" if synced else "[bold yellow]DRIFT[/bold yellow]"
-    action = f"Missing {diff} OU(s). Run: tarmac ou sync" if not synced else None
+    action = f"Missing {diff} OU(s). Run: tarmac deploy run --phase 2" if not synced else None
     return (
         "Organizational Units",
         f"{status.ous_declared} OUs declared",
@@ -416,7 +412,7 @@ def _eval_accounts_status(status: Any) -> tuple[str, str, str, str, str | None]:
     synced = status.accounts_declared <= status.accounts_live
     diff = status.accounts_declared - status.accounts_live
     badge = "[bold green]SYNCED[/bold green]" if synced else "[bold yellow]PENDING[/bold yellow]"
-    action = f"{diff} account(s) pending creation. Run: tarmac account apply" if not synced else None
+    action = f"{diff} account(s) pending creation. Run: tarmac deploy run --phase 4" if not synced else None
 
     live_label = f"{status.accounts_live} accounts live"
     suspended_count = getattr(status, "accounts_suspended", 0)
@@ -435,7 +431,7 @@ def _eval_accounts_status(status: Any) -> tuple[str, str, str, str, str | None]:
 def _eval_cloudtrail_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
     synced = "COMPLETE" in status.cloudtrail_status
     badge = "[bold green]DEPLOYED[/bold green]" if synced else "[bold yellow]PENDING[/bold yellow]"
-    action = "CloudTrail stack not deployed. Run: tarmac baseline cloudtrail" if not synced else None
+    action = "CloudTrail stack not deployed. Run: tarmac deploy run --phase 3" if not synced else None
     return (
         "Organization CloudTrail",
         bundle.org.cloudtrail.trail_name,
@@ -448,7 +444,7 @@ def _eval_cloudtrail_status(status: Any, bundle: Any) -> tuple[str, str, str, st
 def _eval_backend_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
     synced = "COMPLETE" in status.backend_status
     badge = "[bold green]DEPLOYED[/bold green]" if synced else "[bold yellow]PENDING[/bold yellow]"
-    action = "Backend stack not deployed. Run: tarmac baseline backend" if not synced else None
+    action = "Backend stack not deployed. Run: tarmac deploy run --phase 5" if not synced else None
     return (
         "Terraform Backend",
         bundle.org.terraform_backend.bucket_prefix,
@@ -468,7 +464,7 @@ def _eval_sso_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str 
         "[bold green]SYNCED[/bold green]" if status.sso_configured else "[bold yellow]PENDING[/bold yellow]"
     )
     action = (
-        "SSO instance not detected. Enable in AWS Console or run: tarmac identity sync"
+        "SSO instance not detected. Enable in AWS Console or run: tarmac deploy run --phase 6"
         if not status.sso_configured
         else None
     )
@@ -529,29 +525,6 @@ def _render_status_table(bundle: Any, status: Any) -> None:
         print_success("Landing zone is fully reconciled and in sync with configuration.\n")
 
 
-@app.command("status")
-def show_status(
-    config_dir: ConfigDirOption = None,
-    region: RegionOption = None,
-    json_output: JsonOption = False,
-) -> None:
-    """Show reconciliation status between declared YAML and live AWS environment."""
-
-    bundle = load_configs_or_exit(config_dir)
-    target_region = region or bundle.org.organization.primary_region
-
-    with exit_on_error("Status Inspection Failed"):
-        session_mgr = AwsSessionManager(region_name=target_region)
-        status_service = StatusService(session_mgr)
-        status = status_service.inspect(bundle, target_region)
-
-        if json_output:
-            print(json.dumps(dataclasses.asdict(status), indent=2))
-            return
-
-        _render_status_table(bundle, status)
-
-
 def _render_drift_table(report: Any) -> None:
     print_header("Landing Zone Drift Inspection")
     table = create_table(expand=True)
@@ -596,28 +569,38 @@ def _render_drift_table(report: Any) -> None:
         )
 
 
-@app.command("drift")
-def show_drift(
+@app.command("status")
+def show_status(
     config_dir: ConfigDirOption = None,
     region: RegionOption = None,
     json_output: JsonOption = False,
-    strict: Annotated[bool, typer.Option("--strict", help="Exit with code 1 if drift is detected")] = False,
+    detail: Annotated[
+        bool, typer.Option("--detail", help="Also check every declared item against AWS and show drift")
+    ] = False,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Exit with code 1 if drift is detected (implies --detail)")
+    ] = False,
 ) -> None:
-    """Audit live AWS resources against declared YAML manifests across all governance pillars."""
+    """Show how the live AWS environment compares with the declared configuration."""
 
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    with exit_on_error("Drift Inspection Failed"):
+    with exit_on_error("Status Inspection Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
-        drift_service = DriftService(session_mgr)
-        report = drift_service.inspect_drift(bundle, target_region)
+        status = StatusService(session_mgr).inspect(bundle, target_region)
+        report = DriftService(session_mgr).inspect_drift(bundle, target_region) if detail or strict else None
 
         if json_output:
-            print(json.dumps(dataclasses.asdict(report), indent=2))
+            payload = dataclasses.asdict(status)
+            if report is not None:
+                payload["drift"] = dataclasses.asdict(report)
+            print(json.dumps(payload, indent=2))
         else:
-            _render_drift_table(report)
-        if strict and report.has_drift:
+            _render_status_table(bundle, status)
+            if report is not None:
+                _render_drift_table(report)
+        if strict and report is not None and report.has_drift:
             raise typer.Exit(code=1)
 
 

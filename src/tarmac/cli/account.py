@@ -1,10 +1,9 @@
 """CLI commands for the AWS Account Factory."""
 
 import json
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
-from rich.table import Table
 
 from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
@@ -27,180 +26,6 @@ from .common import (
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
 
 app = typer.Typer(help="Declarative AWS Account Factory commands.")
-
-_PLAN_ACTION_STYLES = {"CREATE": "green", "MOVE": "yellow", "SUSPEND": "bold red", "SUSPENDED": "magenta"}
-
-
-@app.command("plan")
-def plan_accounts(
-    config_dir: ConfigDirOption = None,
-    region: RegionOption = None,
-    json_output: JsonOption = False,
-):
-    """Generate and display the account provisioning plan."""
-    bundle = load_configs_or_exit(config_dir)
-    target_region = region or bundle.org.organization.primary_region
-
-    with exit_on_error("Account Plan Failed"):
-        session_mgr = AwsSessionManager(region_name=target_region)
-        ou_service = OUService(session_mgr)
-        service = AccountService(session_mgr)
-
-        ou_map = ou_service.list_all_ous(ou_service.get_root_id())
-        plan_items = service.plan(bundle.accounts, ou_map)
-
-        if json_output:
-            plan_dicts = [
-                {
-                    "name": item.name,
-                    "email": item.email,
-                    "ou": item.ou,
-                    "action": item.action,
-                    "account_id": item.account_id,
-                    "reason": item.reason,
-                    "baseline": item.baseline.model_dump(),
-                }
-                for item in plan_items
-            ]
-            print(json.dumps(plan_dicts, indent=2))
-            return
-
-        print_header("Account Factory: Execution Plan")
-        table = create_table(title="Account Factory Plan")
-        table.add_column("Account Name", style="cyan")
-        table.add_column("Email", style="white")
-        table.add_column("Target OU", style="magenta")
-        table.add_column("Action", style="bold")
-        table.add_column("Details", style="dim")
-
-        for item in plan_items:
-            style = _PLAN_ACTION_STYLES.get(item.action, "dim")
-            table.add_row(item.name, item.email, item.ou, f"[{style}]{item.action}[/{style}]", item.reason)
-
-        console.print(table)
-        suspended_count = sum(1 for i in plan_items if i.action == "SUSPENDED")
-        if suspended_count:
-            print_info(
-                f"Discovered {suspended_count} suspended or quarantined account(s) in AWS Organizations."
-            )
-
-
-def _provision_declared_accounts(
-    bundle: Any,
-    service: AccountService,
-    baseliner: BaselineService,
-    ou_map: dict[str, str],
-    dry_run: bool,
-    skip_baseline: bool,
-    results_table: Table,
-) -> None:
-    results = service.provision_accounts(
-        bundle.accounts.accounts,
-        ou_map=ou_map,
-        dry_run=dry_run,
-        org_tags=bundle.get_organization_tags(),
-    )
-    acct_def_map = {a.name: a for a in bundle.accounts.accounts}
-
-    for result in results:
-        status_style = "green" if result.status == "SUCCEEDED" else "dim"
-        results_table.add_row(
-            result.name,
-            result.account_id or "-",
-            result.ou_name,
-            result.action_taken,
-            f"[{status_style}]{result.status}[/{status_style}]",
-        )
-
-        acct_def = acct_def_map.get(result.name)
-        if (
-            acct_def
-            and result.account_id
-            and result.account_id != "DRY-RUN-ID"
-            and not skip_baseline
-            and not dry_run
-        ):
-            baseline_report = baseliner.baseline_account(
-                acct_def,
-                result.account_id,
-                regions=None,
-                dry_run=dry_run,
-                org_tags=bundle.get_organization_tags(),
-            )
-            _print_baseline_summary(baseline_report)
-
-    suspended_ou_id = ou_map.get("Suspended")
-    for item in service.plan(bundle.accounts, ou_map):
-        if item.action == "SUSPEND" and item.account_id:
-            sus_res = service.suspend_account(
-                account_id=item.account_id,
-                account_name=item.name,
-                suspended_ou_id=suspended_ou_id,
-                dry_run=dry_run,
-            )
-            status_style = "yellow" if sus_res.status == "SUCCEEDED" else "dim"
-            results_table.add_row(
-                sus_res.name,
-                sus_res.account_id,
-                "Suspended",
-                "SUSPEND",
-                f"[{status_style}]{sus_res.status}[/{status_style}]",
-            )
-
-
-@app.command("apply")
-def apply_accounts(
-    config_dir: ConfigDirOption = None,
-    region: RegionOption = None,
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Simulate provisioning without making changes")
-    ] = False,
-    skip_baseline: Annotated[
-        bool, typer.Option("--skip-baseline", help="Skip running post-creation baselines")
-    ] = False,
-    yes: YesOption = False,
-    adopt_existing: AdoptExistingOption = False,
-):
-    """Provision declared accounts and place them into target OUs."""
-    set_adopt_existing(adopt_existing)
-    confirm_or_exit(
-        "Are you sure you want to provision/move accounts in AWS?",
-        yes=yes,
-        dry_run=dry_run,
-        cancelled="Account provisioning cancelled by user.",
-    )
-
-    print_header("Account Factory: Provisioning Accounts")
-    bundle = load_configs_or_exit(config_dir)
-    target_region = region or bundle.org.organization.primary_region
-
-    with exit_on_error("Account Provisioning Failed"):
-        session_mgr = AwsSessionManager(region_name=target_region)
-        ou_service = OUService(session_mgr)
-        service = AccountService(session_mgr)
-        baseliner = BaselineService(session_mgr)
-
-        ou_map = ou_service.sync_ou_structure(bundle.org.ou_structure).synced_ous
-
-        results_table = create_table(title="Provisioning Summary")
-        results_table.add_column("Account Name", style="cyan")
-        results_table.add_column("Account ID", style="green")
-        results_table.add_column("OU", style="magenta")
-        results_table.add_column("Action", style="yellow")
-        results_table.add_column("Status", style="bold")
-
-        _provision_declared_accounts(
-            bundle, service, baseliner, ou_map, dry_run, skip_baseline, results_table
-        )
-
-        console.print(results_table)
-        if dry_run:
-            print_info("Dry run: the inventory export was not updated.")
-        else:
-            export_path = service.export_inventory(
-                bundle.accounts, ou_map, bundle.config_dir.parent / "outputs"
-            )
-            print_success(f"Updated inventory export at [cyan]{export_path}[/cyan]")
 
 
 def _get_tag_sync_status(dry_run: bool, updated: bool) -> str:
@@ -500,3 +325,41 @@ def list_accounts_cmd(
         )
         if not suspended and suspended_count > 0:
             print_info(f"Total accounts: {len(acct_rows)} ({suspended_count} suspended / quarantined)")
+
+
+@app.command("anomaly-status")
+def anomaly_status(config_dir: ConfigDirOption = None, region: RegionOption = None):
+    """List all Cost Anomaly Detection monitors and subscriptions in the Management Account."""
+    print_header("Cost Anomaly Detection Status")
+    bundle = load_configs_or_exit(config_dir)
+    target_region = region or bundle.org.organization.primary_region
+
+    with exit_on_error("Anomaly Status Check Failed"):
+        session_mgr = AwsSessionManager(region_name=target_region)
+        monitors, subs = BaselineService(session_mgr).get_anomaly_overview()
+
+        table = create_table(title="Cost Anomaly Monitors")
+        table.add_column("Monitor Name", style="cyan")
+        table.add_column("Type", style="yellow")
+        table.add_column("Scope / Linked Account", style="green")
+        for m in monitors:
+            spec = m.get("MonitorSpecification", {})
+            dim_values = spec.get("Dimensions", {}).get("Values", ["All Linked Accounts / Dimensional"])
+            table.add_row(
+                m.get("MonitorName", "Unknown"), m.get("MonitorType", "Unknown"), ", ".join(dim_values)
+            )
+        console.print(table)
+
+        sub_table = create_table(title="Alert Subscriptions")
+        sub_table.add_column("Subscription Name", style="cyan")
+        sub_table.add_column("Threshold", style="yellow")
+        sub_table.add_column("Frequency", style="magenta")
+        sub_table.add_column("Subscribers", style="green")
+        for s in subs:
+            sub_table.add_row(
+                s.get("SubscriptionName", "Unknown"),
+                f"${s.get('Threshold', 0):.2f}",
+                s.get("Frequency", "Unknown"),
+                ", ".join(sub.get("Address", "") for sub in s.get("Subscribers", [])),
+            )
+        console.print(sub_table)

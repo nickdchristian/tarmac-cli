@@ -8,7 +8,6 @@ import yaml
 from typer.testing import CliRunner
 
 from tarmac.cli.deploy import app
-from tarmac.core.config_schema import SecurityServicesConfig
 from tarmac.core.models import StackDeployReport
 
 runner = CliRunner()
@@ -93,31 +92,3 @@ def test_deploy_passes_the_setting_to_the_log_archive_stack(
     trail = next(p for name, p in params_by_stack.items() if name.endswith("organization-cloudtrail"))
     assert archive["EnableKmsEncryption"] == expected
     assert trail["EnableKmsEncryption"] == expected
-
-
-@pytest.mark.parametrize(("enable_kms", "expected"), [(True, "true"), (False, "false")])
-def test_baseline_command_passes_the_setting_to_the_log_archive_stack(enable_kms, expected):
-    from types import SimpleNamespace
-
-    from tarmac.cli.baseline import _deploy_log_archive_stack
-
-    bundle = SimpleNamespace(
-        org=SimpleNamespace(
-            organization=SimpleNamespace(name="acme"),
-            security_services=SecurityServicesConfig(),
-            cloudtrail=SimpleNamespace(
-                enable_kms=enable_kms, retention_days=None, object_lock=None, model_fields_set={"object_lock"}
-            ),
-        ),
-        config_dir=ROOT / "examples" / "config",
-        get_log_archive_account_name=lambda: "log-archive",
-        get_organization_tags=lambda: {},
-        get_account_tags=lambda name: {},
-    )
-    service = MagicMock()
-    service.deploy_stack.return_value = StackDeployReport(stack_name="s", action="CREATED", outputs={})
-
-    _deploy_log_archive_stack(service, MagicMock(), bundle, "eu-west-1", "888888888888", "o-test12345", True)
-
-    params = service.deploy_stack.call_args.args[3]
-    assert params["EnableKmsEncryption"] == expected

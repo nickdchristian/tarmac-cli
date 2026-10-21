@@ -111,7 +111,7 @@ class DriftService:
                     declared="Present",
                     live=f"Present ({live_ous[ou_name]})" if in_sync else "Missing",
                     status="IN_SYNC" if in_sync else "MISSING",
-                    remediation="" if in_sync else "tarmac ou sync",
+                    remediation="" if in_sync else "tarmac deploy run --phase 2",
                 )
             )
 
@@ -134,7 +134,7 @@ class DriftService:
                         declared=f"OU: {acct.ou}",
                         live="Not Provisioned",
                         status="MISSING",
-                        remediation="tarmac account apply",
+                        remediation="tarmac deploy run --phase 4",
                     )
                 )
                 continue
@@ -152,7 +152,7 @@ class DriftService:
                         declared=f"OU: {acct.ou}",
                         live=f"OU: {parent_name}",
                         status="DRIFTED",
-                        remediation="tarmac account apply",
+                        remediation="tarmac deploy run --phase 4",
                     )
                 )
             else:
@@ -233,7 +233,7 @@ class DriftService:
                         declared="Attached",
                         live="Missing in AWS",
                         status="MISSING",
-                        remediation="tarmac org scp apply",
+                        remediation="tarmac deploy run --phase 2",
                     )
                 )
                 continue
@@ -256,7 +256,7 @@ class DriftService:
                             declared="File content",
                             live="Policy drifted",
                             status="DRIFTED",
-                            remediation="tarmac org scp apply",
+                            remediation="tarmac deploy run --phase 2",
                         )
                     )
                     continue
@@ -284,7 +284,7 @@ class DriftService:
                         declared=f"Attached to {policy_def.targets}",
                         live=f"Unattached to {missing_targets}",
                         status="DRIFTED",
-                        remediation="tarmac org scp apply",
+                        remediation="tarmac deploy run --phase 2",
                     )
                 )
             else:
@@ -438,7 +438,7 @@ class DriftService:
                         if in_sync
                         else "Missing in Identity Center",
                         status="IN_SYNC" if in_sync else "MISSING",
-                        remediation="" if in_sync else "tarmac identity sync",
+                        remediation="" if in_sync else "tarmac deploy run --phase 6",
                     )
                 )
         except AWS_ERRORS as e:

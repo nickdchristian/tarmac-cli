@@ -54,13 +54,6 @@ def test_removing_an_existing_table_is_allowed_but_warned_about():
     assert "use_lockfile" in warning
 
 
-def test_the_s3_only_flag_removes_an_existing_table_with_a_warning():
-    wanted, warning = lock_table_wanted(_cfn("true"), STACK, True, s3_only=True)
-
-    assert wanted is False
-    assert warning is not None
-
-
 def test_an_unreadable_stack_counts_as_new():
     cfn = MagicMock()
     cfn.describe_stacks.return_value = MagicMock()

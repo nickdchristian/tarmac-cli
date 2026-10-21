@@ -5,13 +5,12 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import AWSAuthenticationError, GovernanceError
+from ..core.exceptions import GovernanceError
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
-from .ui import console, error_console, print_header, print_info, print_success, print_warning
+from .ui import console, error_console, print_header, print_info, print_success
 
 app = typer.Typer(help="Bootstrap the non-root role tarmac runs as", no_args_is_help=True)
 
@@ -107,12 +106,12 @@ def access_bootstrap(
         print_info(
             f"{'Added' if added else 'Kept existing'} profile '{profile}' in {aws_config}. Next: in the IAM console "
             f"create an access key and an MFA device for '{BOOTSTRAP_USER}', add them to a '{BOOTSTRAP_USER}' "
-            f"profile, then run: AWS_PROFILE={profile} tarmac access check"
+            f"profile, then run: AWS_PROFILE={profile} tarmac info --strict"
         )
     else:
         print_info(
             "Next: enable IAM Identity Center (pick its Region deliberately: it can only be moved by deleting the "
-            "instance), create an administrator user, sign in with 'aws sso login', then run: tarmac access check"
+            "instance), create an administrator user, sign in with 'aws sso login', then run: tarmac info --strict"
         )
 
 
@@ -134,35 +133,3 @@ def access_template(
         "Deploy it in the management account (CloudFormation console, signed in as root or an admin, "
         "capability CAPABILITY_NAMED_IAM), then follow README: Bootstrap access."
     )
-
-
-@app.command("check")
-def access_check() -> None:
-    """Verify the current credentials can run tarmac (non-root, management account)."""
-    print_header("Tarmac Access Check")
-    try:
-        session_mgr = AwsSessionManager()
-        identity = session_mgr.get_caller_identity()
-        is_root = session_mgr.is_root_identity()
-    except AWSAuthenticationError as e:
-        error_console.print(f"[red]Not authenticated:[/red] {e}")
-        error_console.print("Hint: run 'aws sso login' or set AWS_PROFILE to your tarmac profile.")
-        raise typer.Exit(code=1)
-
-    print_info(f"Authenticated as {identity.get('Arn', 'unknown')} (account {identity.get('Account', '?')})")
-    if is_root:
-        error_console.print(
-            "[red]Root credentials cannot assume roles in member accounts.[/red] "
-            "Run 'tarmac access bootstrap' from CloudShell, then use the tarmac role or an SSO admin."
-        )
-        raise typer.Exit(code=1)
-    try:
-        session_mgr.get_client("organizations").describe_organization()
-    except (ClientError, BotoCoreError) as e:
-        print_warning(f"Could not describe the organization: {e}")
-        print_info(
-            "Hint: use credentials for the management account, make sure the organization exists "
-            "('tarmac org bootstrap'), and that this principal has Organizations read access."
-        )
-        raise typer.Exit(code=1)
-    print_success("Credentials are non-root and can read the organization.")

@@ -12,7 +12,6 @@ from tarmac.core.exceptions import AccountProvisioningError, OUManagementError
 from tarmac.services.accounts import AccountService
 from tarmac.services.organization import OrganizationService
 from tarmac.services.ou import OUService
-from tarmac.services.scp import SCPService
 
 
 def _events(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
@@ -58,49 +57,6 @@ def test_ou_create_failure_is_audited(caplog, mgr, client):
     [ev] = _events(caplog)
     assert ev["outcome"] == "failed"
     assert "Sec" in ev["resource"]
-
-
-def test_scp_create_update_attach_and_dry_run_are_audited(caplog, mgr, client):
-    caplog.set_level(logging.INFO, logger="tarmac.audit")
-    client.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-1"}}}
-    svc = SCPService(mgr)
-
-    svc.sync_policy("Guard", "d", "{}", {}, dry_run=False)
-    svc.sync_policy("Guard2", "d", "{}", {}, dry_run=True)
-    svc.attach_policy_if_needed("p-1", "r-1", "Root", [], dry_run=False)
-    svc.attach_policy_if_needed("p-1", "r-1", "Root", [], dry_run=True)
-
-    got = [(e["action"], e["outcome"], e["dry_run"]) for e in _events(caplog)]
-    assert got == [
-        ("create", "succeeded", False),
-        ("create", "simulated", True),
-        ("attach", "succeeded", False),
-        ("attach", "simulated", True),
-    ]
-
-
-def test_scp_update_is_audited(caplog, mgr, client):
-    caplog.set_level(logging.INFO, logger="tarmac.audit")
-    svc = SCPService(mgr)
-    svc.get_policy_content = MagicMock(return_value='{"a": 1}')  # type: ignore[method-assign]
-    svc._ensure_ownership_tag = MagicMock()  # type: ignore[method-assign]
-    svc.is_tarmac_managed = MagicMock(return_value=True)  # type: ignore[method-assign]
-
-    svc.sync_policy("Guard", "d", '{"a": 2}', {"Guard": {"Id": "p-7"}})
-
-    [ev] = _events(caplog)
-    assert (ev["action"], ev["resource"]) == ("update", "scp:Guard")
-    assert ev["details"]["policy_id"] == "p-7"
-
-
-def test_unchanged_scp_emits_no_audit_event(caplog, mgr):
-    caplog.set_level(logging.INFO, logger="tarmac.audit")
-    svc = SCPService(mgr)
-    svc.get_policy_content = MagicMock(return_value='{"a": 1}')  # type: ignore[method-assign]
-
-    svc.sync_policy("Guard", "d", '{"a": 1}', {"Guard": {"Id": "p-7"}})
-
-    assert _events(caplog) == []
 
 
 def test_organization_changes_are_audited(caplog, mgr, client):

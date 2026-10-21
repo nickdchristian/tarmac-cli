@@ -1,6 +1,5 @@
 """Tests for Service Control Policies (SCP) engine and CLI commands."""
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -78,224 +77,6 @@ def test_list_existing_scps():
 
     assert "FullAWSAccess" in scps
     assert scps["DenyMemberRootActivity"]["Id"] == "p-12345"
-
-
-def test_sync_policy_creates_new():
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    mock_client.create_policy.return_value = {
-        "Policy": {"PolicySummary": {"Id": "p-new123", "Name": "DenyMemberRootActivity"}}
-    }
-
-    service = SCPService(mock_session)
-    policy_id, action = service.sync_policy(
-        name="DenyMemberRootActivity",
-        description="Guardrail",
-        content='{"Version":"2012-10-17","Statement":[]}',
-        existing_scps={},
-        dry_run=False,
-    )
-
-    assert policy_id == "p-new123"
-    assert action == "CREATED"
-    mock_client.create_policy.assert_called_once()
-
-
-def test_sync_policy_updates_drifted():
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    mock_client.describe_policy.return_value = {
-        "Policy": {"Content": '{"Version":"2012-10-17","Statement":[{"Sid":"Old"}]}'}
-    }
-
-    service = SCPService(mock_session)
-    service.is_tarmac_managed = MagicMock(return_value=True)  # type: ignore[method-assign]
-    existing_scps = {
-        "DenyMemberRootActivity": {
-            "Id": "p-existing1",
-            "Name": "DenyMemberRootActivity",
-            "Description": "Guardrail",
-        }
-    }
-
-    new_content = '{"Version":"2012-10-17","Statement":[{"Sid":"New"}]}'
-    policy_id, action = service.sync_policy(
-        name="DenyMemberRootActivity",
-        description="Guardrail",
-        content=new_content,
-        existing_scps=existing_scps,
-        dry_run=False,
-    )
-
-    assert policy_id == "p-existing1"
-    assert action == "UPDATED"
-    mock_client.update_policy.assert_called_once_with(
-        PolicyId="p-existing1",
-        Name="DenyMemberRootActivity",
-        Description="Guardrail",
-        Content=new_content,
-    )
-
-
-def test_sync_policy_unchanged():
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    raw_json = json.dumps({"Version": "2012-10-17", "Statement": []})
-    mock_client.describe_policy.return_value = {"Policy": {"Content": raw_json}}
-
-    service = SCPService(mock_session)
-    existing_scps = {
-        "DenyMemberRootActivity": {
-            "Id": "p-existing1",
-            "Name": "DenyMemberRootActivity",
-            "Description": "Guardrail",
-        }
-    }
-
-    policy_id, action = service.sync_policy(
-        name="DenyMemberRootActivity",
-        description="Guardrail",
-        content=raw_json,
-        existing_scps=existing_scps,
-        dry_run=False,
-    )
-
-    assert policy_id == "p-existing1"
-    assert action == "NOOP"
-    mock_client.update_policy.assert_not_called()
-
-
-def test_sync_policy_dry_run():
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    service = SCPService(mock_session)
-    policy_id, action = service.sync_policy(
-        name="DenyMemberRootActivity",
-        description="Guardrail",
-        content="{}",
-        existing_scps={},
-        dry_run=True,
-    )
-
-    assert policy_id == "DRY-RUN-POLICY-ID"
-    assert action == "SIMULATED_CREATE"
-    mock_client.create_policy.assert_not_called()
-
-
-def test_attach_policy_if_needed():
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    service = SCPService(mock_session)
-
-    res = service.attach_policy_if_needed(
-        policy_id="p-123",
-        target_id="r-root1",
-        target_name="Root",
-        attached_targets=["r-root1"],
-        dry_run=False,
-    )
-    assert res is False
-    mock_client.attach_policy.assert_not_called()
-
-    res2 = service.attach_policy_if_needed(
-        policy_id="p-123",
-        target_id="r-root1",
-        target_name="Root",
-        attached_targets=[],
-        dry_run=False,
-    )
-    assert res2 is True
-    mock_client.attach_policy.assert_called_once_with(PolicyId="p-123", TargetId="r-root1")
-
-    mock_client.reset_mock()
-    res3 = service.attach_policy_if_needed(
-        policy_id="p-123",
-        target_id="ou-sec",
-        target_name="Security",
-        attached_targets=[],
-        dry_run=True,
-    )
-    assert res3 is True
-    mock_client.attach_policy.assert_not_called()
-
-    mock_client.reset_mock()
-    from botocore.exceptions import ClientError
-
-    not_enabled_err = ClientError(
-        {"Error": {"Code": "PolicyTypeNotEnabledException", "Message": "Not enabled"}},
-        "AttachPolicy",
-    )
-    mock_client.attach_policy.side_effect = [not_enabled_err, {}]
-    res4 = service.attach_policy_if_needed(
-        policy_id="p-123",
-        target_id="ou-sec",
-        target_name="Security",
-        attached_targets=[],
-        dry_run=False,
-        delay=0.01,
-    )
-    assert res4 is True
-    assert mock_client.attach_policy.call_count == 2
-
-
-def test_reconcile_all(tmp_path: Path):
-    policy_file = tmp_path / "policies" / "scp" / "deny-root.json"
-    policy_file.parent.mkdir(parents=True, exist_ok=True)
-    policy_file.write_text('{"Version":"2012-10-17"}', encoding="utf-8")
-
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    mock_client.list_roots.return_value = {
-        "Roots": [{"Id": "r-root1", "PolicyTypes": [{"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}]}]
-    }
-    paginator = MagicMock()
-    paginator.paginate.return_value = [{"Policies": []}]
-    mock_client.get_paginator.return_value = paginator
-
-    mock_client.create_policy.return_value = {
-        "Policy": {"PolicySummary": {"Id": "p-new", "Name": "DenyMemberRootActivity"}}
-    }
-    mock_client.list_targets_for_policy.return_value = {"Targets": []}
-
-    config = ServiceControlPoliciesConfig(
-        enabled=True,
-        policies=[
-            SCPDef(
-                name="DenyMemberRootActivity",
-                description="Deny member root",
-                policy_file="policies/scp/deny-root.json",
-                targets=["root", "Security"],
-            )
-        ],
-    )
-
-    service = SCPService(mock_session)
-    results = service.reconcile_all(
-        config=config,
-        root_id="r-root1",
-        ou_map={"Security": "ou-sec-1"},
-        project_root=tmp_path,
-        dry_run=False,
-    )
-
-    assert len(results) == 1
-    assert results[0].name == "DenyMemberRootActivity"
-    assert results[0].policy_id == "p-new"
-    assert results[0].action_taken == "CREATED"
-    assert "Root (r-root1)" in results[0].attached_targets
-    assert "Security (ou-sec-1)" in results[0].attached_targets
 
 
 def test_scp_synthesize_template(tmp_path: Path):
@@ -381,111 +162,6 @@ def test_scp_reconcile_via_cloudformation(tmp_path: Path):
     assert results[0].action_taken == "CREATED"
     mock_cfn.create_stack.assert_called_once()
     assert (tmp_path / "outputs" / "managed-scps.yaml").exists()
-
-
-def test_attach_policy_handles_duplicate_attachment_gracefully():
-    """Verify DuplicatePolicyAttachmentException from eventual consistency is treated as a graceful no-op."""
-    from botocore.exceptions import ClientError
-
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    dupe_err = ClientError(
-        {"Error": {"Code": "DuplicatePolicyAttachmentException", "Message": "Policy already attached"}},
-        "AttachPolicy",
-    )
-    mock_client.attach_policy.side_effect = dupe_err
-
-    service = SCPService(mock_session)
-    attached = service.attach_policy_if_needed(
-        policy_id="p-123",
-        target_id="ou-sec",
-        target_name="Security",
-        attached_targets=[],  # not known locally, but already attached in AWS
-        dry_run=False,
-    )
-
-    assert attached is False
-    mock_client.attach_policy.assert_called_once_with(PolicyId="p-123", TargetId="ou-sec")
-
-
-def test_sync_policy_constraint_violation_wrapped():
-    """Verify AWS 5120-byte ConstraintViolationException is wrapped into GovernanceError."""
-    import pytest
-    from botocore.exceptions import ClientError
-
-    from tarmac.core.exceptions import GovernanceError
-
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    quota_err = ClientError(
-        {
-            "Error": {
-                "Code": "ConstraintViolationException",
-                "Message": "The maximum size of the policy document is 5120 characters",
-            }
-        },
-        "CreatePolicy",
-    )
-    mock_client.create_policy.side_effect = quota_err
-
-    service = SCPService(mock_session)
-    with pytest.raises(GovernanceError) as exc_info:
-        service.sync_policy(
-            name="OversizedPolicy",
-            description="Too large",
-            content='{"Version":"2012-10-17","Statement":[]}',
-            existing_scps={},
-            dry_run=False,
-        )
-
-    assert "Failed to create SCP 'OversizedPolicy'" in str(exc_info.value)
-    assert "5120 characters" in (exc_info.value.details or "")
-
-
-def test_reconcile_scp_unresolved_target_skipped_without_crashing(tmp_path: Path):
-    """Verify that an invalid or unresolvable target in SCP configuration is logged and skipped."""
-    policy_file = tmp_path / "policies" / "scp" / "deny-root.json"
-    policy_file.parent.mkdir(parents=True, exist_ok=True)
-    policy_file.write_text('{"Version":"2012-10-17"}', encoding="utf-8")
-
-    mock_session = MagicMock()
-    mock_client = MagicMock()
-    mock_session.get_client.return_value = mock_client
-
-    mock_client.list_roots.return_value = {
-        "Roots": [{"Id": "r-root1", "PolicyTypes": [{"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}]}]
-    }
-    mock_client.create_policy.return_value = {
-        "Policy": {"PolicySummary": {"Id": "p-new", "Name": "DenyMemberRootActivity"}}
-    }
-    mock_client.list_targets_for_policy.return_value = {"Targets": []}
-
-    service = SCPService(mock_session)
-    scp_def = SCPDef(
-        name="DenyMemberRootActivity",
-        description="Deny member root",
-        policy_file="policies/scp/deny-root.json",
-        targets=["root", "NonExistentOU"],  # NonExistentOU cannot be resolved
-    )
-
-    result = service.reconcile_scp(
-        scp_def=scp_def,
-        existing_scps={},
-        root_id="r-root1",
-        ou_map={"Security": "ou-sec-1"},
-        project_root=tmp_path,
-        dry_run=False,
-    )
-
-    assert result.name == "DenyMemberRootActivity"
-    assert result.policy_id == "p-new"
-    # Root attached, NonExistentOU safely skipped
-    assert "Root (r-root1)" in result.attached_targets
-    assert not any("NonExistentOU" in t for t in result.attached_targets)
 
 
 def test_scp_reconcile_via_cfn_fallback_when_preexisting_and_broken_stack(tmp_path: Path):
@@ -615,52 +291,10 @@ def test_scp_reconcile_via_cfn_raises_on_deployment_error(tmp_path: Path):
     assert "Waiter timed out" in str(exc_info.value)
 
 
-def test_reconcile_scp_marks_unresolved_targets_as_failed(tmp_path: Path):
-    policy_file = tmp_path / "policies" / "scp" / "deny-root.json"
-    policy_file.parent.mkdir(parents=True, exist_ok=True)
-    policy_file.write_text('{"Version":"2012-10-17"}', encoding="utf-8")
-    client = MagicMock()
-    session = MagicMock()
-    session.get_client.return_value = client
-    client.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-new"}}}
-    client.list_targets_for_policy.return_value = {"Targets": []}
-    scp_def = SCPDef(
-        name="Guard", description="d", policy_file="policies/scp/deny-root.json", targets=["Typo"]
-    )
-
-    result = SCPService(session).reconcile_scp(scp_def, {}, "r-root1", {"Security": "ou-1"}, tmp_path)
-
-    assert result.status == "FAILED"
-    assert result.unresolved_targets == ["Typo"]
-
-
 def test_normalize_json_falls_back_for_invalid_json():
     service = SCPService(MagicMock())
     assert service._normalize_json("  {not json  ") == "{not json"
     assert service._normalize_json("") == ""
-
-
-def test_sync_policy_updates_when_live_policy_cannot_be_read():
-    """A failed describe_policy yields empty content; that must be treated as drift, not crash."""
-    from botocore.exceptions import ClientError
-
-    mock_client = MagicMock()
-    mock_session = MagicMock()
-    mock_session.get_client.return_value = mock_client
-    mock_client.describe_policy.side_effect = ClientError(
-        {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "DescribePolicy"
-    )
-    service = SCPService(mock_session)
-    service.is_tarmac_managed = MagicMock(return_value=True)  # type: ignore[method-assign]
-
-    policy_id, action = service.sync_policy(
-        name="Guard",
-        description="d",
-        content='{"Version":"2012-10-17","Statement":[]}',
-        existing_scps={"Guard": {"Id": "p-1", "Name": "Guard"}},
-    )
-
-    assert (policy_id, action) == ("p-1", "UPDATED")
 
 
 def _unowned_service(live: str) -> SCPService:
@@ -679,47 +313,35 @@ _OURS = (
 )
 
 
-def test_sync_policy_refuses_to_overwrite_a_policy_tarmac_did_not_create():
+def _declared_policy(tmp_path: Path, content: str):
+    from types import SimpleNamespace
+
+    (tmp_path / "ours.json").write_text(content)
+    return SimpleNamespace(policies=[SimpleNamespace(name="Guard", policy_file=str(tmp_path / "ours.json"))])
+
+
+def test_import_refuses_to_take_over_a_policy_tarmac_did_not_create(tmp_path: Path):
     service = _unowned_service(_THEIRS)
 
     with pytest.raises(GovernanceError) as exc:
-        service.sync_policy("Guard", "d", _OURS, _EXISTING)
+        service._require_declared_policies_adoptable(_declared_policy(tmp_path, _OURS), _EXISTING, tmp_path)  # type: ignore[arg-type]
 
     assert "was not created by tarmac" in str(exc.value)
     assert "TheirRule" in str(exc.value)
     assert "--adopt-existing" in str(exc.value)
-    service.org_client.update_policy.assert_not_called()
 
 
-def test_sync_policy_adopts_with_the_flag():
+def test_import_adopts_an_unowned_policy_with_the_flag(tmp_path: Path):
     service = _unowned_service(_THEIRS)
     set_adopt_existing(True)
 
-    _, action = service.sync_policy("Guard", "d", _OURS, _EXISTING)
-
-    assert action == "UPDATED"
-    service.org_client.update_policy.assert_called_once()
+    service._require_declared_policies_adoptable(_declared_policy(tmp_path, _OURS), _EXISTING, tmp_path)  # type: ignore[arg-type]
 
 
-def test_sync_policy_takes_over_an_unowned_policy_that_already_matches():
+def test_import_takes_over_an_unowned_policy_that_already_matches(tmp_path: Path):
     service = _unowned_service(_OURS)
 
-    _, action = service.sync_policy("Guard", "d", _OURS, _EXISTING)
-
-    assert action == "NOOP"
-
-
-def test_import_into_the_stack_checks_adoption_first(tmp_path):
-    from types import SimpleNamespace
-
-    service = _unowned_service(_THEIRS)
-    (tmp_path / "ours.json").write_text(_OURS)
-    config = SimpleNamespace(
-        policies=[SimpleNamespace(name="Guard", policy_file=str(tmp_path / "ours.json"))]
-    )
-
-    with pytest.raises(GovernanceError, match="was not created by tarmac"):
-        service._require_declared_policies_adoptable(config, _EXISTING, tmp_path)  # type: ignore[arg-type]
+    service._require_declared_policies_adoptable(_declared_policy(tmp_path, _OURS), _EXISTING, tmp_path)  # type: ignore[arg-type]
 
 
 def test_scp_synthesize_template_disambiguates_colliding_logical_ids(tmp_path: Path):

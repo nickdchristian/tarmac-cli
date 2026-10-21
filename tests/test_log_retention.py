@@ -118,31 +118,6 @@ def test_deploy_passes_retention_to_the_log_archive_stack(
     assert archive["LogRetentionDays"] == expected
 
 
-@pytest.mark.parametrize(("retention", "expected"), [(None, "0"), (30, "30")])
-def test_baseline_command_passes_retention(retention, expected):
-    from tarmac.cli.baseline import _deploy_log_archive_stack
-
-    bundle = SimpleNamespace(
-        org=SimpleNamespace(
-            organization=SimpleNamespace(name="acme"),
-            security_services=SecurityServicesConfig(),
-            cloudtrail=SimpleNamespace(
-                enable_kms=True, retention_days=retention, object_lock=None, model_fields_set={"object_lock"}
-            ),
-        ),
-        config_dir=ROOT / "examples" / "config",
-        get_log_archive_account_name=lambda: "log-archive",
-        get_organization_tags=lambda: {},
-        get_account_tags=lambda name: {},
-    )
-    service = MagicMock()
-    service.deploy_stack.return_value = StackDeployReport(stack_name="s", action="CREATED", outputs={})
-
-    _deploy_log_archive_stack(service, MagicMock(), bundle, "eu-west-1", "888888888888", "o-test12345", True)
-
-    assert service.deploy_stack.call_args.args[3]["LogRetentionDays"] == expected
-
-
 @pytest.mark.parametrize(("retention", "needle"), [(None, "NO EXPIRATION"), (45, "APPLY LIFECYCLE RULE")])
 def test_dry_run_plan_says_what_will_happen_to_old_logs(monkeypatch, retention, needle):
     buffer = StringIO()
