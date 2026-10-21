@@ -8,6 +8,7 @@ import typer
 
 from ..core import inventory
 from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_configs
+from ..core.exceptions import AWSAuthenticationError
 from ..core.tagging import parse_cli_tags
 from .ui import error_console, print_warning
 
@@ -112,3 +113,21 @@ def log_archive_parameters(bundle: ConfigBundle, org_id: str) -> dict[str, str]:
         params["ObjectLockMode"] = cloudtrail.object_lock.mode
         params["ObjectLockRetentionDays"] = str(cloudtrail.object_lock.retention_days)
     return params
+
+
+def require_credentials_or_exit(session_mgr: Any) -> None:
+    """Check once, up front, that the AWS credentials work; exit 1 with the likely fixes if they do not.
+
+    Without this, expired or missing credentials only surface at the first AWS call, after prompts and config
+    work, and as whatever error that call happens to raise.
+    """
+    try:
+        session_mgr.get_caller_identity()
+    except AWSAuthenticationError as exc:
+        error_console.print(f"[red]✗ AWS credentials are not usable:[/red] {exc.details or exc}")
+        error_console.print(
+            "  Check that they are set and not expired: [bold]aws sts get-caller-identity[/bold]. "
+            "For IAM Identity Center profiles run [bold]aws sso login[/bold]; make sure AWS_PROFILE "
+            "(or AWS_ACCESS_KEY_ID / AWS_SESSION_TOKEN) points at the account and role you intend."
+        )
+        raise typer.Exit(code=1) from exc
