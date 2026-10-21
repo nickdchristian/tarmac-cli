@@ -8,6 +8,7 @@ import boto3
 import pytest
 from botocore.stub import Stubber
 
+from tarmac.core import adoption
 from tarmac.core.config_schema import SecurityHubConfig
 from tarmac.core.exceptions import GovernanceError
 from tarmac.services.security import SecurityServicesService
@@ -52,6 +53,7 @@ def test_first_run_switches_to_central_creates_the_policy_and_applies_it_to_the_
     sh = _sh()
     with Stubber(sh) as stub:
         stub.add_response("describe_organization_configuration", _org_config("LOCAL"))
+        stub.add_response("list_members", {"Members": []}, {"OnlyAssociated": True, "MaxResults": 1})
         stub.add_response(
             "update_organization_configuration",
             {},
@@ -198,7 +200,15 @@ def test_service_uses_central_configuration_by_default_and_skips_per_region_call
     sh.create_configuration_policy.return_value = {"Id": "pol-1"}
     sh.get_configuration_policy_association.return_value = {}
     sh.start_configuration_policy_association.return_value = {"AssociationStatus": "PENDING"}
-    sh.list_finding_aggregators.return_value = {"FindingAggregators": [{}]}
+    sh.list_finding_aggregators.return_value = {
+        "FindingAggregators": [
+            {"FindingAggregatorArn": "arn:aws:securityhub:us-east-1:111122223333:finding-aggregator/abc"}
+        ]
+    }
+    sh.get_finding_aggregator.return_value = {
+        "RegionLinkingMode": "SPECIFIED_REGIONS",
+        "Regions": ["eu-west-1"],
+    }
 
     report = _service(sh).configure_securityhub(
         "111122223333", "us-east-1", ["us-east-1", "eu-west-1"], SecurityHubConfig(enabled=True)
@@ -232,7 +242,12 @@ def test_service_keeps_local_configuration_when_central_is_off():
 
 def test_service_reports_a_central_configuration_failure():
     sh = MagicMock()
-    sh.list_finding_aggregators.return_value = {"FindingAggregators": [{}]}
+    sh.list_finding_aggregators.return_value = {
+        "FindingAggregators": [
+            {"FindingAggregatorArn": "arn:aws:securityhub:us-east-1:111122223333:finding-aggregator/abc"}
+        ]
+    }
+    sh.get_finding_aggregator.return_value = {"RegionLinkingMode": "NO_REGIONS", "Regions": []}
     sh.describe_organization_configuration.return_value = _org_config("CENTRAL", "FAILED")
 
     report = _service(sh).configure_securityhub(
@@ -241,3 +256,141 @@ def test_service_reports_a_central_configuration_failure():
 
     assert report.status == "FAILED"
     assert "Central configuration failed" in report.message
+
+
+# -- finding aggregator scope ---------------------------------------------------------------------------------
+
+AGG_ARN = "arn:aws:securityhub:us-east-1:111122223333:finding-aggregator/abc"
+
+
+def _aggregator_service(existing: dict[str, Any] | None) -> tuple[SecurityServicesService, MagicMock]:
+    sh = MagicMock()
+    sh.list_finding_aggregators.return_value = {
+        "FindingAggregators": [{"FindingAggregatorArn": AGG_ARN}] if existing is not None else []
+    }
+    if existing is not None:
+        sh.get_finding_aggregator.return_value = existing
+    return _service(sh), sh
+
+
+def test_the_aggregator_links_exactly_the_declared_regions_under_central_configuration():
+    service, sh = _aggregator_service(None)
+    service._ensure_finding_aggregator(sh, ["eu-west-1", "ap-southeast-2"])
+    sh.create_finding_aggregator.assert_called_once_with(
+        RegionLinkingMode="SPECIFIED_REGIONS", Regions=["ap-southeast-2", "eu-west-1"]
+    )
+
+
+def test_a_single_region_deployment_links_no_other_regions():
+    service, sh = _aggregator_service(None)
+    service._ensure_finding_aggregator(sh, [])
+    sh.create_finding_aggregator.assert_called_once_with(RegionLinkingMode="NO_REGIONS")
+
+
+def test_local_configuration_still_aggregates_every_region():
+    service, sh = _aggregator_service(None)
+    service._ensure_finding_aggregator(sh)
+    sh.create_finding_aggregator.assert_called_once_with(RegionLinkingMode="ALL_REGIONS")
+
+
+def test_an_aggregator_that_links_other_regions_is_narrowed_to_the_declared_ones():
+    service, sh = _aggregator_service({"RegionLinkingMode": "ALL_REGIONS", "Regions": []})
+    service._ensure_finding_aggregator(sh, ["eu-west-1"])
+    sh.update_finding_aggregator.assert_called_once_with(
+        FindingAggregatorArn=AGG_ARN, RegionLinkingMode="SPECIFIED_REGIONS", Regions=["eu-west-1"]
+    )
+    sh.create_finding_aggregator.assert_not_called()
+
+
+def test_an_aggregator_that_already_matches_is_left_alone():
+    service, sh = _aggregator_service({"RegionLinkingMode": "SPECIFIED_REGIONS", "Regions": ["eu-west-1"]})
+    service._ensure_finding_aggregator(sh, ["eu-west-1"])
+    sh.update_finding_aggregator.assert_not_called()
+    sh.create_finding_aggregator.assert_not_called()
+
+
+def test_local_configuration_does_not_rewrite_an_existing_aggregator():
+    service, sh = _aggregator_service({"RegionLinkingMode": "SPECIFIED_REGIONS", "Regions": ["eu-west-1"]})
+    service._ensure_finding_aggregator(sh)
+    sh.update_finding_aggregator.assert_not_called()
+
+
+# -- brownfield guards ----------------------------------------------------------------------------------------
+
+
+def _local_org_with_members(sh: Any) -> None:
+    stub = Stubber(sh)
+    stub.add_response("describe_organization_configuration", _org_config("LOCAL"))
+    stub.add_response(
+        "list_members",
+        {"Members": [{"AccountId": "444455556666"}]},
+        {"OnlyAssociated": True, "MaxResults": 1},
+    )
+    stub.activate()
+
+
+def test_switching_to_central_stops_when_members_are_already_configured_one_by_one():
+    sh = _sh()
+    _local_org_with_members(sh)
+    with pytest.raises(GovernanceError, match="configured one by one") as exc:
+        _central(sh).apply()
+    assert "--adopt-existing" in str(exc.value.details)
+    assert "central_configuration: false" in str(exc.value.details)
+
+
+def test_adopt_existing_lets_the_switch_proceed_without_looking_at_members():
+    sh = MagicMock()
+    sh.describe_organization_configuration.return_value = _org_config("LOCAL")
+    sh.describe_standards.return_value = STANDARDS
+    sh.get_paginator.return_value.paginate.return_value = [{"ConfigurationPolicySummaries": []}]
+    sh.create_configuration_policy.return_value = {"Id": "pol-1"}
+    sh.get_configuration_policy_association.return_value = {}
+    sh.start_configuration_policy_association.return_value = {"AssociationStatus": "PENDING"}
+    adoption.set_adopt_existing(True)
+    try:
+        _central(sh).apply()
+    finally:
+        adoption.set_adopt_existing(False)
+    sh.list_members.assert_not_called()
+    sh.update_organization_configuration.assert_called_once()
+
+
+def _root_with_policy(sh: Any, existing: str) -> Stubber:
+    stub = Stubber(sh)
+    stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
+    stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
+    stub.add_response("describe_standards", STANDARDS)
+    stub.add_response(
+        "list_configuration_policies",
+        {"ConfigurationPolicySummaries": [{"Id": "pol-1", "Name": POLICY_NAME}]},
+    )
+    stub.add_response(
+        "get_configuration_policy", {"Id": "pol-1", "ConfigurationPolicy": POLICY}, {"Identifier": "pol-1"}
+    )
+    stub.add_response(
+        "get_configuration_policy_association",
+        {**_ASSOC_KEYS, "ConfigurationPolicyId": existing, "AssociationStatus": "SUCCESS"},
+        {"Target": {"RootId": ROOT}},
+    )
+    return stub
+
+
+def test_a_root_that_already_uses_someone_elses_policy_is_not_replaced():
+    sh = _sh()
+    _root_with_policy(sh, "their-policy").activate()
+    with pytest.raises(GovernanceError, match="did not create") as exc:
+        _central(sh).apply()
+    assert "--adopt-existing" in str(exc.value.details)
+
+
+def test_a_root_without_a_policy_is_taken_over_without_adoption():
+    sh = _sh()
+    stub = _root_with_policy(sh, "SELF_MANAGED_SECURITY_HUB")
+    stub.add_response(
+        "start_configuration_policy_association",
+        {**_ASSOC_KEYS, "AssociationStatus": "PENDING"},
+        {"ConfigurationPolicyIdentifier": "pol-1", "Target": {"RootId": ROOT}},
+    )
+    stub.activate()
+    _central(sh).apply()
+    stub.assert_no_pending_responses()

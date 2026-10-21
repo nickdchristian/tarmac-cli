@@ -14,12 +14,15 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.adoption import ADOPT_HINT, adopt_existing
 from ..core.audit import Outcome, audit
 from ..core.exceptions import GovernanceError
 
 logger = logging.getLogger(__name__)
 
 POLICY_NAME = "tarmac-security-baseline"
+# What GetConfigurationPolicyAssociation reports for a target that is not under a configuration policy.
+SELF_MANAGED = "SELF_MANAGED_SECURITY_HUB"
 
 
 def resolve_standard_arn(available: list[dict[str, Any]], desired: str) -> str:
@@ -62,8 +65,29 @@ class SecurityHubCentralConfiguration:
 
     # -- central mode ---------------------------------------------------------------------------------------
 
+    def _require_no_local_members(self) -> None:
+        """Switching to central configuration makes the policy authoritative for member accounts.
+
+        Accounts that already run Security Hub with their own standards may lose the ones the policy does not list;
+        the AWS documentation does not say what happens to them, so do not do it to an existing setup unasked.
+        """
+        if adopt_existing():
+            return
+        members = self.sh.list_members(OnlyAssociated=True, MaxResults=1).get("Members", [])
+        if members:
+            raise GovernanceError(
+                "Security Hub already has member accounts configured one by one (local configuration).",
+                details=(
+                    "Switching the organization to central configuration lets one policy decide their standards, "
+                    "which may turn off standards they enabled themselves. "
+                    f"{ADOPT_HINT} Or set security_services.securityhub.central_configuration: false to keep "
+                    "local configuration."
+                ),
+            )
+
     def _enable_central_mode(self) -> None:
         if self._configuration_type() != "CENTRAL":
+            self._require_no_local_members()
             self.sh.update_organization_configuration(
                 AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
             )
@@ -185,7 +209,17 @@ class SecurityHubCentralConfiguration:
 
     def _ensure_association(self, policy_id: str) -> None:
         current = self._current_association()
-        if current.get("ConfigurationPolicyId") == policy_id and current.get("AssociationStatus") != "FAILED":
+        existing = str(current.get("ConfigurationPolicyId") or "")
+        if existing not in ("", SELF_MANAGED, policy_id) and not adopt_existing():
+            raise GovernanceError(
+                f"The organization root already uses Security Hub configuration policy '{existing}', "
+                "which tarmac did not create.",
+                details=(
+                    f"Applying '{self.policy_name}' to the root would replace it for every account that inherits it. "
+                    f"{ADOPT_HINT}"
+                ),
+            )
+        if existing == policy_id and current.get("AssociationStatus") != "FAILED":
             audit(
                 "associate",
                 f"securityhub-policy:{self.policy_name}",

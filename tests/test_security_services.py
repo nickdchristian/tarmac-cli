@@ -190,11 +190,13 @@ def test_securityhub_idempotent_when_already_enabled():
     std_arn = "arn:aws:securityhub:::standards/aws-foundational-security-best-practices/v/1.0.0"
     mock_sh_audit.describe_standards.return_value = {"Standards": [{"StandardsArn": std_arn, "Name": "FSBP"}]}
     mock_sh_audit.get_enabled_standards.return_value = {"StandardsSubscriptions": [{"StandardsArn": std_arn}]}
+    mock_sh_audit.list_members.return_value = {"Members": []}
     mock_sh_audit.list_finding_aggregators.return_value = {
         "FindingAggregators": [
             {"FindingAggregatorArn": "arn:aws:securityhub:eu-west-1:111122223333:aggregator/123"}
         ]
     }
+    mock_sh_audit.get_finding_aggregator.return_value = {"RegionLinkingMode": "NO_REGIONS", "Regions": []}
 
     service = SecurityServicesService(mock_session_mgr)
     cfg = SecurityHubConfig(
@@ -339,6 +341,7 @@ def _sh_service(
     }
     sh = MagicMock()
     sh.describe_hub.return_value = {}
+    sh.list_members.return_value = {"Members": []}
     sh.describe_standards.return_value = {
         "Standards": standards
         or [
@@ -356,7 +359,12 @@ def _sh_service(
     if aggregator_error:
         sh.list_finding_aggregators.side_effect = aggregator_error
     else:
-        sh.list_finding_aggregators.return_value = {"FindingAggregators": [{"x": 1}]}
+        sh.list_finding_aggregators.return_value = {
+            "FindingAggregators": [
+                {"FindingAggregatorArn": "arn:aws:securityhub:us-east-1:111122223333:finding-aggregator/x"}
+            ]
+        }
+        sh.get_finding_aggregator.return_value = {"RegionLinkingMode": "NO_REGIONS", "Regions": []}
     mgr.get_member_client.return_value = sh
     return SecurityServicesService(mgr)
 

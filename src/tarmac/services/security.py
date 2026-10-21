@@ -299,7 +299,8 @@ class SecurityServicesService:
             with bind(region=home_region):
                 sh = self.session_mgr.get_member_client(audit_id, "securityhub", region_name=home_region)
                 self._ensure_hub_enabled(sh, audit_id, home_region)
-                self._ensure_finding_aggregator(sh)
+                # Central policies take effect in every linked Region, so link only the declared ones.
+                self._ensure_finding_aggregator(sh, [r for r in all_regions if r != home_region])
                 SecurityHubCentralConfiguration(
                     sh,
                     policy_name=POLICY_NAME,
@@ -328,7 +329,7 @@ class SecurityServicesService:
             regions=all_regions,
             message=(
                 f"Delegated to {audit_id}; central configuration from {home_region} applies standards "
-                f"{config.standards} to the organization (linked Regions follow the finding aggregator)"
+                f"{config.standards} to the organization in {', '.join(all_regions)}"
             ),
         )
 
@@ -411,17 +412,43 @@ class SecurityServicesService:
                     standard=matching_arn,
                 )
 
-    def _ensure_finding_aggregator(self, sh_client: Any) -> None:
-        """Ensure a Finding Aggregator exists in the primary region linking all member regions.
+    def _ensure_finding_aggregator(self, sh_client: Any, linked_regions: list[str] | None = None) -> None:
+        """Ensure a Finding Aggregator exists in the primary region.
+
+        With ``linked_regions`` None it links every Region (local configuration only aggregates findings). With a
+        list it links exactly those Regions (none, if empty): under central configuration the linked Regions are
+        where the policy turns Security Hub on in every account, so they must be the Regions you declared.
 
         ClientError propagates so the caller can report the Security Hub setup as incomplete.
         """
+        mode, regions = "ALL_REGIONS", []
+        if linked_regions is not None:
+            mode, regions = (
+                ("SPECIFIED_REGIONS", sorted(linked_regions)) if linked_regions else ("NO_REGIONS", [])
+            )
+        settings: dict[str, Any] = {"RegionLinkingMode": mode, **({"Regions": regions} if regions else {})}
+
         aggregators = sh_client.list_finding_aggregators().get("FindingAggregators", [])
+        if aggregators and linked_regions is not None:
+            arn = aggregators[0]["FindingAggregatorArn"]
+            current = sh_client.get_finding_aggregator(FindingAggregatorArn=arn)
+            if (current.get("RegionLinkingMode"), sorted(current.get("Regions", []))) != (mode, regions):
+                sh_client.update_finding_aggregator(FindingAggregatorArn=arn, **settings)
+                audit(
+                    "update",
+                    "securityhub-finding-aggregator",
+                    Outcome.SUCCEEDED,
+                    f"Security Hub finding aggregator now links {', '.join(regions) or 'no Regions'} ({mode})",
+                    regions=regions,
+                )
+            return
         if not aggregators:
-            sh_client.create_finding_aggregator(RegionLinkingMode="ALL_REGIONS")
+            sh_client.create_finding_aggregator(**settings)
             audit(
                 "create",
                 "securityhub-finding-aggregator",
                 Outcome.SUCCEEDED,
-                "Created Security Hub finding aggregator linking all regions",
+                "Created Security Hub finding aggregator linking "
+                + (", ".join(regions) if linked_regions is not None else "all regions")
+                + (" (none)" if mode == "NO_REGIONS" else ""),
             )

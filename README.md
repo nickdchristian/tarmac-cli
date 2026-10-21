@@ -324,6 +324,16 @@ and applies one policy, `tarmac-security-baseline`, to the organization root. Ex
 Hub with exactly the standards you list, in the primary Region (the aggregation Region) and the Regions linked to the
 finding aggregator. The old local mode left new accounts with Security Hub on but no standards.
 
+The linked Regions are exactly the Regions you declare (the primary Region aggregates; the rest are linked, or none for a
+single-Region deployment). A central policy turns Security Hub on in every linked Region of every account, so tarmac
+never links "all Regions" in this mode. An existing aggregator is narrowed to match.
+
+Switching an existing organization is guarded. tarmac stops, rather than guess, when Security Hub already has member
+accounts configured one by one, or when the root already uses a configuration policy tarmac did not create, because a
+policy can replace what those accounts enabled themselves. Review the difference and re-run with `--adopt-existing`, or
+set `central_configuration: false` to keep local configuration. This behaviour has not been verified against a live
+organization yet.
+
 Notes: policies can only be managed from the primary Region, which must not be an opt-in Region. In central mode the
 per-account settings are managed by the policy, so change standards in `organization.yaml` rather than by hand.
 `tarmac deploy destroy --disable-security-services` removes the policy and returns the organization to local
