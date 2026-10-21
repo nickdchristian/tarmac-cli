@@ -81,8 +81,6 @@ class ImportService:
         self.org: Any = session_mgr.get_client("organizations")
         self.report = ImportReport()
 
-    # ---------------------------------------------------------------- discovery
-
     def _organization(self) -> dict[str, Any]:
         org: dict[str, Any] = self.org.describe_organization()["Organization"]
         self.report.organization_id = str(org.get("Id", ""))
@@ -273,8 +271,6 @@ class ImportService:
         except _READ_ERRORS:
             return set()
 
-    # ---------------------------------------------------------------- identity
-
     def _identity(self, config_dir: Path, account_names: dict[str, str]) -> dict[str, Any] | None:
         try:
             service = IdentityService(self.session_mgr, preferred_region=self.region)
@@ -449,8 +445,6 @@ class ImportService:
                 f"{user_assignments} permission-set assignment(s) made directly to users were left out: tarmac "
                 "assigns through groups only."
             )
-
-    # ---------------------------------------------------------------- orchestration
 
     def discover_and_write(
         self,

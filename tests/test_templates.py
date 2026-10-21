@@ -235,7 +235,6 @@ def test_template_exports_are_stack_prefixed():
                 f"Output {out_name} export name '{sub_str}' in {name} not prefixed with '${{AWS::StackName}}-'"
             )
 
-    # Specific assertion for terraform-backend OrgName support
     tf_content = yaml.load(
         (pkg_dir / "terraform-backend.yaml").read_text(encoding="utf-8"), Loader=CfnYamlLoader
     )

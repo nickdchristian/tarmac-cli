@@ -18,7 +18,6 @@ from ..core.templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
 
-# The template 'tarmac access bootstrap' deploys, and the region it defaults to.
 ACCESS_TEMPLATE = "cloudformation/tarmac-access.yaml"
 ACCESS_DEFAULT_REGION = "us-east-1"
 _LIVE_STACK_STATUSES = [

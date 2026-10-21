@@ -59,8 +59,6 @@ class ConfigRecorderService:
         self._poll_seconds = poll_seconds
         self._timeout_seconds = timeout_seconds
 
-    # ------------------------------------------------------------------ deploy
-
     def deploy(
         self,
         *,
@@ -335,8 +333,6 @@ class ConfigRecorderService:
             tags=tags,
             org_tags=org_tags,
         )
-
-    # ---------------------------------------------------------------- teardown
 
     def remove(
         self,

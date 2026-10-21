@@ -395,7 +395,6 @@ def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path:
 
         reports = service.teardown_identity(mock_bundle, "us-east-1", dry_run=False)
 
-        # First stack checked is myorg-sso-permission-sets
         assert mock_del_stack.call_count == 2
         mock_id_inst.delete_permission_set.assert_called_once_with(
             "arn:aws:sso:::instance/ssoins-1",
@@ -441,7 +440,6 @@ def test_teardown_service_callbacks(test_bundle):
     item1 = TeardownItemReport("CloudFormation Stack", "ct", "Mgmt", "111", "DELETED")
     item2 = TeardownItemReport("S3 Bucket", "logs", "Log", "222", "EMPTY")
 
-    # Use _new_results_list to verify item reporting
     def fake_teardown_cloudtrail(*args, **kwargs):
         res = service._new_results_list()
         service._notify_progress("Deleting cloudtrail stack...")

@@ -745,7 +745,6 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
     assert payload["org_id"] == "o-test12345"
     assert payload["drift"]["has_drift"] is True
 
-    # Test strict mode exits with code 1 when drift is detected
     res_strict = runner.invoke(app, ["status", "--config-dir", str(sample_config_dir), "--strict"])
     assert res_strict.exit_code == 1
 

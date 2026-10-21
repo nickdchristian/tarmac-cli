@@ -560,7 +560,6 @@ def test_provision_accounts_batch_mixed_existing_and_new():
     mock_org_client = MagicMock()
     mock_session_mgr.get_client.return_value = mock_org_client
 
-    # list_accounts returns Existing-1
     acct_paginator = MagicMock()
     acct_paginator.paginate.return_value = [
         {"Accounts": [{"Id": "111111111111", "Name": "Existing-1", "Status": "ACTIVE"}]}

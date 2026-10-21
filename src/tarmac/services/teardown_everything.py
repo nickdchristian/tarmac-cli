@@ -51,8 +51,6 @@ def _item(
 class EverythingTeardown(TeardownBase):
     """Identity principals, OUs, organization settings and the access role that Tarmac created."""
 
-    # ------------------------------------------------------------------ Identity Center users and groups
-
     def teardown_identity_principals(
         self, bundle: ConfigBundle, target_region: str, inventory: Inventory, dry_run: bool = False
     ) -> list[TeardownItemReport]:
@@ -168,8 +166,6 @@ class EverythingTeardown(TeardownBase):
                     instance_arn, a["AccountId"], a["PermissionSetArn"], principal_type, principal_id
                 )
 
-    # ------------------------------------------------------------------ OUs
-
     def teardown_ous(self, inventory: Inventory, dry_run: bool = False) -> list[TeardownItemReport]:
         """Delete OUs Tarmac created, deepest first, and only while they hold no accounts or OUs."""
         results: list[TeardownItemReport] = self._new_results_list()
@@ -267,8 +263,6 @@ class EverythingTeardown(TeardownBase):
             for page in org.get_paginator("list_children").paginate(ParentId=ou_id, ChildType=child_type):
                 names.extend(c["Id"] for c in page.get("Children", []))
         return names
-
-    # ------------------------------------------------------------------ organization settings (phase 1)
 
     def teardown_org_settings(
         self, bundle: ConfigBundle, inventory: Inventory, dry_run: bool = False
@@ -421,8 +415,6 @@ class EverythingTeardown(TeardownBase):
         inventory.forget(kind, key)
         return _item(label, name, "DELETED", "Reverted a setting tarmac enabled", account_id=mgmt_id)
 
-    # ------------------------------------------------------------------ accounts (never closed)
-
     def report_accounts_kept(self, dry_run: bool = False) -> list[TeardownItemReport]:
         """List the member accounts tarmac manages; closing them stays a deliberate, per-account step."""
         results: list[TeardownItemReport] = self._new_results_list()
@@ -461,8 +453,6 @@ class EverythingTeardown(TeardownBase):
         except (ClientError, BotoCoreError):
             return False
         return False
-
-    # ------------------------------------------------------------------ access role and bootstrap user
 
     def teardown_access(self, region: str, dry_run: bool = False) -> list[TeardownItemReport]:
         """Remove the access stack (role, policy, bootstrap user) from `tarmac access bootstrap`.

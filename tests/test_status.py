@@ -23,7 +23,6 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
     mock_org.describe_organization.return_value = {"Organization": {"Id": "o-live123", "FeatureSet": "ALL"}}
     mock_org.list_roots.return_value = {"Roots": [{"Id": "r-root-live"}]}
 
-    # Paginator for list_accounts
     accts_paginator = MagicMock()
     accts_paginator.paginate.return_value = [
         {

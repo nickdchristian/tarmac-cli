@@ -22,7 +22,6 @@ def test_setup_logging_debug_mode():
     tarmac_logger = logging.getLogger("tarmac")
     assert tarmac_logger.level == logging.DEBUG
 
-    # Verify external libraries are suppressed to WARNING
     for noisy in ("botocore", "urllib3", "boto3", "s3transfer"):
         assert logging.getLogger(noisy).level == logging.WARNING
 

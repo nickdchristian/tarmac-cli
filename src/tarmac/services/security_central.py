@@ -63,8 +63,6 @@ class SecurityHubCentralConfiguration:
         policy_id = self._ensure_policy()
         self._ensure_association(policy_id)
 
-    # -- central mode ---------------------------------------------------------------------------------------
-
     def _require_no_local_members(self) -> None:
         """Switching to central configuration makes the policy authoritative for member accounts.
 
@@ -126,8 +124,6 @@ class SecurityHubCentralConfiguration:
                 )
             self._sleep(5.0)
             waited += 5.0
-
-    # -- policy ---------------------------------------------------------------------------------------------
 
     def _desired_policy(self) -> dict[str, Any]:
         available = self.sh.describe_standards().get("Standards", [])
@@ -195,8 +191,6 @@ class SecurityHubCentralConfiguration:
             policy_id=policy_id,
         )
         return policy_id
-
-    # -- association ----------------------------------------------------------------------------------------
 
     def _current_association(self) -> dict[str, Any]:
         try:
