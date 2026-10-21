@@ -361,6 +361,10 @@ Security Hub CSPM standards need a recorder to evaluate most of their controls (
 enabled, which manages its own). While Security Hub is enabled and `config_recorder` is not mentioned in your
 configuration, `deploy` warns; write `config_recorder: null` (or `enabled: false`) to acknowledge it.
 
+`cloudtrail.object_lock: null` works the same way: both warnings are silenced by the key being present in
+`organization.yaml`, which tarmac never writes for you (neither `tarmac init` nor `tarmac import` adds it). If you
+generate that file with another tool, keep the key, or the warning comes back.
+
 Notes:
 
 * An account and Region can have only one customer-managed recorder. If one already exists (for example from Control
