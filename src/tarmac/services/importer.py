@@ -21,7 +21,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
 from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
-from ..core.stack_names import TARMAC_STACK_SUFFIXES
+from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
 from .identity import IdentityService
 from .preflight import _LIVE_STACK_STATUSES
@@ -199,8 +199,8 @@ class ImportService:
                 self.report.scps.append(summary["Name"])
         return policies
 
-    def _trails(self) -> str | None:
-        """Names of organization trails; returns the first for cloudtrail.trail_name."""
+    def _trails(self, org_name: str) -> str | None:
+        """Names of organization trails; returns tarmac's own trail, else the first, for cloudtrail.trail_name."""
         try:
             trails = self.session_mgr.get_client("cloudtrail", region_name=self.region).describe_trails(
                 includeShadowTrails=False
@@ -208,15 +208,35 @@ class ImportService:
         except _READ_ERRORS as exc:
             logger.debug("Could not list trails: %s", exc)
             return None
-        names = [str(t["Name"]) for t in trails if t.get("IsOrganizationTrail")]
+        org_trails = [t for t in trails if t.get("IsOrganizationTrail")]
+        names = [str(t["Name"]) for t in org_trails]
         self.report.existing_trails = names
-        if names:
+        own = self._tarmac_trail_ids(org_name)
+        ours = [str(t["Name"]) for t in org_trails if {t.get("Name"), t.get("TrailARN")} & own]
+        foreign = [n for n in names if n not in ours]
+        if foreign:
             self.report.todos.append(
-                f"Organization trail(s) already exist: {', '.join(names)}. Tarmac creates its own trail and log "
+                f"Organization trail(s) already exist: {', '.join(foreign)}. Tarmac creates its own trail and log "
                 "bucket in phase 3, which AWS rejects while another organization trail exists. Delete or "
                 "replace the old trail first, or disable CloudTrail management for this deployment."
             )
-        return names[0] if names else None
+        candidates = ours or names
+        return candidates[0] if candidates else None
+
+    def _tarmac_trail_ids(self, org_name: str) -> set[str]:
+        """Physical IDs of the trail in tarmac's own CloudTrail stack, if that stack exists."""
+        try:
+            resources = self.session_mgr.get_client(
+                "cloudformation", region_name=self.region
+            ).describe_stack_resources(StackName=Stack.CLOUDTRAIL.for_org(org_name))
+        except _READ_ERRORS as exc:
+            logger.debug("No CloudTrail stack for %s: %s", org_name, exc)
+            return set()
+        return {
+            str(r["PhysicalResourceId"])
+            for r in resources.get("StackResources", [])
+            if r.get("ResourceType") == "AWS::CloudTrail::Trail" and r.get("PhysicalResourceId")
+        }
 
     def _stack_prefix(self) -> str | None:
         """organization.name implied by Tarmac stacks that already exist, if any."""
@@ -484,7 +504,7 @@ class ImportService:
 
         accounts = self._accounts(mgmt_id, ou_names, root_id)
         scps = self._scps(root_id, ou_names, config_dir)
-        trail_name = self._trails()
+        trail_name = self._trails(org_name)
         contacts = self._contacts(mgmt_email)
         trusted = self._trusted_services()
 
