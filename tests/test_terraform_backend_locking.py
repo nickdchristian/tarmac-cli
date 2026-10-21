@@ -19,7 +19,9 @@ def _cfn(enable_dynamodb: str | None) -> MagicMock:
         )
     else:
         cfn.describe_stacks.return_value = {
-            "Stacks": [{"Parameters": [{"ParameterKey": "EnableDynamoDB", "ParameterValue": enable_dynamodb}]}]
+            "Stacks": [
+                {"Parameters": [{"ParameterKey": "EnableDynamoDB", "ParameterValue": enable_dynamodb}]}
+            ]
         }
     return cfn
 
@@ -48,7 +50,8 @@ def test_removing_an_existing_table_is_allowed_but_warned_about():
     wanted, warning = lock_table_wanted(_cfn("true"), STACK, False)
 
     assert wanted is False
-    assert warning is not None and "use_lockfile" in warning
+    assert warning is not None
+    assert "use_lockfile" in warning
 
 
 def test_the_s3_only_flag_removes_an_existing_table_with_a_warning():
