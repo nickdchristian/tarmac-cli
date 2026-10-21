@@ -22,7 +22,7 @@ from ..core.models import (
     AccountProvisionResult,
     AccountSuspensionResult,
 )
-from ..core.org_accounts import iter_accounts
+from ..core.org_accounts import account_state, is_active, is_closed, iter_accounts
 from ..core.placeholders import is_placeholder_email
 
 logger = logging.getLogger(__name__)
@@ -71,11 +71,7 @@ class AccountService:
         accounts: dict[str, dict[str, Any]] = {}
         for acct in all_accts:
             name = acct["Name"]
-            if (
-                name in accounts
-                and accounts[name].get("Status") == "ACTIVE"
-                and acct.get("Status") != "ACTIVE"
-            ):
+            if name in accounts and is_active(accounts[name]) and not is_active(acct):
                 continue
             accounts[name] = acct
         return accounts
@@ -143,10 +139,9 @@ class AccountService:
             if acct_id == mgmt_id:
                 continue
 
-            status = acct.get("Status", "ACTIVE")
             current_parent = self.get_account_parent_id(acct_id)
 
-            is_aws_suspended = status == "SUSPENDED"
+            is_aws_suspended = is_closed(acct)
             is_in_suspended_ou = bool(suspended_ou_id and current_parent == suspended_ou_id)
 
             action: Literal["CREATE", "MOVE", "NOOP", "SUSPEND", "SUSPENDED"]
@@ -194,9 +189,7 @@ class AccountService:
             action: Literal["CREATE", "MOVE", "NOOP", "SUSPEND", "SUSPENDED"]
             if current_acct:
                 acct_id = current_acct["Id"]
-                acct_status = current_acct.get("Status", "ACTIVE")
-
-                if acct_status == "SUSPENDED":
+                if is_closed(current_acct):
                     action = "SUSPENDED"
                     reason = f"Account declared in accounts.yaml but is SUSPENDED (closed) in AWS Organizations ({acct_id})"
                 else:
@@ -515,7 +508,7 @@ class AccountService:
                 continue
             if existing_acct:
                 acct_id = str(existing_acct["Id"])
-                if existing_acct.get("Status") == "SUSPENDED":
+                if is_closed(existing_acct):
                     logger.warning("Account '%s' (%s) is SUSPENDED; skipping.", name, acct_id)
                     results[idx] = _make_result(
                         acct_def, acct_id, target_ou_id, "SUSPENDED_SKIPPED", "SKIPPED"
@@ -738,7 +731,7 @@ class AccountService:
             name = acct_def.name
             acct_data = self.find_existing_account(name, existing)
             acct_id = acct_data["Id"] if acct_data else None
-            status = acct_data["Status"] if acct_data else "NOT_PROVISIONED"
+            status = account_state(acct_data) if acct_data else "NOT_PROVISIONED"
             ou_id = ou_map.get(acct_def.ou, "")
 
             entry = {
@@ -763,7 +756,7 @@ class AccountService:
             if normalize_account_name(name) in declared_names:
                 continue
             acct_id = str(acct_data["Id"])
-            status = str(acct_data.get("Status", "UNKNOWN"))
+            status = account_state(acct_data)
             parent_id = self.get_account_parent_id(acct_id) or ""
             ou_name = next((k for k, v in ou_map.items() if v == parent_id), "Unknown")
             if parent_id == ou_map.get("Suspended"):

@@ -543,15 +543,22 @@ def destroy_pipeline(
         else:
             print_header("AWS Governance: Deleting Deployment Resources")
 
-    report = service.teardown_all(
-        bundle,
-        target_region=target_region,
-        dry_run=dry_run,
-        phases=phases,
-        preserve_backend=preserve_backend,
-        disable_security_services=disable_security_services,
-        inventory=inv,
-    )
+    try:
+        report = service.teardown_all(
+            bundle,
+            target_region=target_region,
+            dry_run=dry_run,
+            phases=phases,
+            preserve_backend=preserve_backend,
+            disable_security_services=disable_security_services,
+            inventory=inv,
+        )
+    except GovernanceError as e:
+        if json_output:
+            print(json.dumps({"status": "FAILED", "error": str(e)}, indent=2))
+            raise typer.Exit(code=1) from e
+        error_console.print(Panel(str(e), title="[bold red]Teardown Failed[/bold red]", border_style="red"))
+        raise typer.Exit(code=1) from e
 
     if not json_output:
         console.print()

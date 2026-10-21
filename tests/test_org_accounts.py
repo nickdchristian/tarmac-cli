@@ -1,8 +1,17 @@
 from unittest.mock import MagicMock
 
+import pytest
 from botocore.exceptions import ClientError
 
-from tarmac.core.org_accounts import active_account_ids, get_active_account_id_map, iter_accounts
+from tarmac.core.exceptions import GovernanceError
+from tarmac.core.org_accounts import (
+    account_state,
+    active_account_ids,
+    get_active_account_id_map,
+    is_active,
+    is_closed,
+    iter_accounts,
+)
 
 
 def _org_client(*pages: list[dict]) -> MagicMock:
@@ -17,20 +26,47 @@ def test_iter_accounts_reads_every_page():
     client.get_paginator.assert_called_once_with("list_accounts")
 
 
-def test_active_account_ids_skips_suspended_and_pending_closure():
+def test_state_is_preferred_and_the_retired_status_is_a_fallback():
+    assert account_state({"State": "CLOSED", "Status": "SUSPENDED"}) == "CLOSED"
+    assert account_state({"Status": "ACTIVE"}) == "ACTIVE"
+
+
+def test_an_account_without_state_or_status_is_an_error_not_assumed_active():
+    with pytest.raises(GovernanceError, match="did not report the state"):
+        is_active({"Id": "111111111111", "Name": "prod"})
+
+
+@pytest.mark.parametrize(
+    ("state", "active", "closed"),
+    [
+        ("ACTIVE", True, False),
+        ("PENDING_ACTIVATION", False, False),
+        ("SUSPENDED", False, True),
+        ("PENDING_CLOSURE", False, True),
+        ("CLOSED", False, True),
+    ],
+)
+def test_every_state_is_classified(state, active, closed):
+    assert is_active({"State": state}) is active
+    assert is_closed({"State": state}) is closed
+
+
+def test_active_account_ids_skips_closed_and_closing_accounts():
     client = _org_client(
         [
-            {"Id": "111111111111", "Name": "prod", "Status": "ACTIVE"},
-            {"Id": "222222222222", "Name": "old", "Status": "SUSPENDED"},
-            {"Id": "333333333333", "Name": "closing", "Status": "PENDING_CLOSURE"},
+            {"Id": "111111111111", "Name": "prod", "State": "ACTIVE"},
+            {"Id": "222222222222", "Name": "old", "State": "CLOSED"},
+            {"Id": "333333333333", "Name": "closing", "State": "PENDING_CLOSURE"},
+            {"Id": "444444444444", "Name": "legacy", "Status": "SUSPENDED"},
         ]
     )
     assert active_account_ids(client) == {"prod": "111111111111"}
 
 
-def test_get_active_account_id_map_returns_empty_on_aws_error():
+def test_get_active_account_id_map_raises_when_the_organization_cannot_be_read():
     session_mgr = MagicMock()
     session_mgr.get_client.return_value.get_paginator.side_effect = ClientError(
         {"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, "ListAccounts"
     )
-    assert get_active_account_id_map(session_mgr) == {}
+    with pytest.raises(GovernanceError, match="Could not list the organization's accounts"):
+        get_active_account_id_map(session_mgr)

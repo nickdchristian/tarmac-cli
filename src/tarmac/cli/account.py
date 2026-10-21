@@ -10,6 +10,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import AccountDef
 from ..core.models import BaselineReport
+from ..core.org_accounts import CLOSED_STATES, account_state, is_closed
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.ou import OUService
@@ -277,11 +278,11 @@ def list_accounts_cmd(
         acct_rows = []
         for acct in service.list_all_accounts():
             acct_id = str(acct["Id"])
-            status = str(acct.get("Status", "ACTIVE"))
+            status = account_state(acct)
             parent_id = service.get_account_parent_id(acct_id) or ""
             parent_name = ou_id_to_name.get(parent_id, parent_id or "Unknown")
 
-            is_suspended = status == "SUSPENDED" or parent_name == "Suspended"
+            is_suspended = is_closed(acct) or parent_name == "Suspended"
             if (suspended and not is_suspended) or (active and is_suspended):
                 continue
 
@@ -321,7 +322,7 @@ def list_accounts_cmd(
 
         console.print(table)
         suspended_count = sum(
-            1 for r in acct_rows if r["status"] == "SUSPENDED" or r["parent_ou"] == "Suspended"
+            1 for r in acct_rows if r["status"] in CLOSED_STATES or r["parent_ou"] == "Suspended"
         )
         if not suspended and suspended_count > 0:
             print_info(f"Total accounts: {len(acct_rows)} ({suspended_count} suspended / quarantined)")

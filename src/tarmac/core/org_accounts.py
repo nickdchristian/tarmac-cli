@@ -1,12 +1,15 @@
-"""Listing the member accounts of an AWS Organization."""
+"""Listing the member accounts of an AWS Organization and reading their state."""
 
-import logging
 from collections.abc import Iterator
 from typing import Any
 
-from .exceptions import AWS_ERRORS
+from botocore.exceptions import BotoCoreError, ClientError
 
-logger = logging.getLogger(__name__)
+from .exceptions import GovernanceError
+
+# AWS replaced the account `Status` field with `State` and retired `Status` on 9 September 2026.
+# `State` is one of PENDING_ACTIVATION, ACTIVE, SUSPENDED, PENDING_CLOSURE or CLOSED.
+CLOSED_STATES = frozenset({"SUSPENDED", "PENDING_CLOSURE", "CLOSED"})
 
 
 def iter_accounts(org_client: Any) -> Iterator[dict[str, Any]]:
@@ -17,9 +20,25 @@ def iter_accounts(org_client: Any) -> Iterator[dict[str, Any]]:
                 yield account
 
 
+def account_state(account: dict[str, Any]) -> str:
+    """The account's lifecycle state, read from `State` (or the retired `Status` that older SDKs still parse)."""
+    state = account.get("State") or account.get("Status")
+    if not state:
+        raise GovernanceError(
+            f"AWS Organizations did not report the state of account '{account.get('Name', account.get('Id', '?'))}'.",
+            details="Upgrade boto3 and botocore: releases before the account State field cannot read it.",
+        )
+    return str(state)
+
+
 def is_active(account: dict[str, Any]) -> bool:
-    """Whether an account is ACTIVE; suspended and pending-closure accounts cannot be assumed into."""
-    return account.get("Status", "ACTIVE") == "ACTIVE"
+    """Whether the account is ACTIVE and so can be assumed into and configured."""
+    return account_state(account) == "ACTIVE"
+
+
+def is_closed(account: dict[str, Any]) -> bool:
+    """Whether the account is suspended, closing or closed; its email cannot be reused."""
+    return account_state(account) in CLOSED_STATES
 
 
 def active_account_ids(org_client: Any) -> dict[str, str]:
@@ -28,9 +47,12 @@ def active_account_ids(org_client: Any) -> dict[str, str]:
 
 
 def get_active_account_id_map(session_mgr: Any) -> dict[str, str]:
-    """{AccountName: AccountId} for every ACTIVE account, or {} when Organizations cannot be read."""
+    """{AccountName: AccountId} for every ACTIVE account in the organization.
+
+    Raises GovernanceError when the organization cannot be read: an unreadable organization must not look
+    like an empty one, or callers skip every account-scoped step and report success.
+    """
     try:
         return active_account_ids(session_mgr.get_client("organizations"))
-    except AWS_ERRORS as exc:
-        logger.warning("Could not list organization accounts; account names will not resolve: %s", exc)
-        return {}
+    except (ClientError, BotoCoreError) as exc:
+        raise GovernanceError("Could not list the organization's accounts.", details=str(exc)) from exc

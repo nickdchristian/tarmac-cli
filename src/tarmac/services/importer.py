@@ -19,7 +19,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
-from ..core.org_accounts import is_active, iter_accounts
+from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
 from ..core.stack_names import TARMAC_STACK_SUFFIXES
 from ..core.tagging import validate_tags
@@ -121,7 +121,7 @@ class ImportService:
             if acct["Id"] == mgmt_id:
                 continue
             if not is_active(acct):
-                self.report.skipped_accounts.append(f"{acct['Name']} ({acct.get('Status', 'unknown')})")
+                self.report.skipped_accounts.append(f"{acct['Name']} ({account_state(acct)})")
                 continue
             parents = self.org.list_parents(ChildId=acct["Id"]).get("Parents", [])
             parent_id = parents[0]["Id"] if parents else root_id

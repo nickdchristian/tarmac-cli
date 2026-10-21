@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, IdentityCenterError
+from ..core.org_accounts import is_active, is_closed
 from ..core.stack_names import Stack
 from .accounts import AccountService
 from .identity import IdentityService
@@ -61,8 +62,8 @@ class StatusService:
         ou_service = OUService(self.session_mgr)
         live_ous_map = ou_service.list_all_ous(root_id) if root_id else {}
         live_accts = AccountService(self.session_mgr).list_all_accounts()
-        active_accts = [a for a in live_accts if a.get("Status") == "ACTIVE"]
-        suspended_accts = [a for a in live_accts if a.get("Status") == "SUSPENDED"]
+        active_accts = [a for a in live_accts if is_active(a)]
+        suspended_accts = [a for a in live_accts if is_closed(a)]
 
         cfn_client = self.session_mgr.get_client("cloudformation", region_name=target_region)
         ct_stack = Stack.CLOUDTRAIL.for_org(bundle.org.organization.name)
