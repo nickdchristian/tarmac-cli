@@ -230,7 +230,7 @@ def deploy_command(
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
     phases = [phase] if phase is not None else ALL_PHASES
-    _refuse_root_identity(session_mgr, allow_root=set(phases) <= {1, 6})
+    _refuse_root_identity(session_mgr, allow_root=phase in (1, 6))
 
     try:
         if dry_run:

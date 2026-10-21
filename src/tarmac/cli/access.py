@@ -125,9 +125,6 @@ def access_bootstrap(
 @app.command("profile")
 def access_profile(
     profile: Annotated[str, typer.Option("--profile-name", help="AWS CLI profile to write")] = "tarmac",
-    permission_set: Annotated[
-        str, typer.Option("--permission-set", help="Permission set to sign in to the management account with")
-    ] = "AdministratorAccess",
     aws_config: Annotated[
         Path, typer.Option("--aws-config", help="AWS config file to add the profile to")
     ] = Path("~/.aws/config"),
@@ -135,7 +132,7 @@ def access_profile(
     """Write an IAM Identity Center profile for the management account, in place of 'aws configure sso'."""
     try:
         session_mgr = AwsSessionManager()
-        account_id = session_mgr.get_caller_identity().get("Account", "")
+        account_id = session_mgr.get_caller_identity()["Account"]
         _, store_id, sso_region = IdentityService.discover_instance(session_mgr)
     except GovernanceError as e:
         error_console.print(f"[red]Could not write the profile:[/red] {e}")
@@ -157,7 +154,7 @@ def access_profile(
         {
             "sso_session": profile,
             "sso_account_id": account_id,
-            "sso_role_name": permission_set,
+            "sso_role_name": "AdministratorAccess",
             "region": session_mgr.default_region,
         },
     )
