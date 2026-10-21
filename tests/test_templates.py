@@ -348,3 +348,33 @@ def test_example_region_scp_is_valid_and_keeps_tarmac_working():
     assert (
         "OrganizationAccountAccessRole" in exempt
     )  # default-VPC cleanup in blocked regions assumes this role
+
+
+def test_example_security_services_scp_blocks_disabling_but_not_configuring():
+    """It denies only the actions that turn GuardDuty or Security Hub off, and exempts the roles tarmac uses."""
+    import json
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "examples"
+        / "policies"
+        / "scp"
+        / "protect-security-services.json"
+    )
+    text = path.read_text(encoding="utf-8")
+    doc = json.loads(text)
+
+    assert len(text.encode()) < 5120
+    (stmt,) = doc["Statement"]
+    assert stmt["Effect"] == "Deny"
+    assert "NotAction" not in stmt
+    actions = set(stmt["Action"])
+    assert {"guardduty:DeleteDetector", "securityhub:DisableSecurityHub"} <= actions
+    assert all(a.split(":")[0] in {"guardduty", "securityhub"} for a in actions)
+    # Configuring and reading must stay possible for everyone, otherwise tarmac itself is blocked.
+    assert not any(
+        a.split(":")[1].startswith(("Update", "Create", "Enable", "Get", "List", "Describe")) for a in actions
+    )
+    exempt = " ".join(stmt["Condition"]["ArnNotLike"]["aws:PrincipalARN"])
+    assert "OrganizationAccountAccessRole" in exempt  # tarmac works in member accounts through this role
+    assert "TarmacDeploymentRole" in exempt
