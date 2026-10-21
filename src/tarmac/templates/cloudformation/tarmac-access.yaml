@@ -113,6 +113,28 @@ Resources:
               - cloudformation:GetTemplate
               - cloudformation:GetTemplateSummary
             Resource: '*'
+          - Sid: CloudFormationStackSets
+            Effect: Allow
+            Action:
+              - cloudformation:ActivateOrganizationsAccess
+              - cloudformation:CreateStackSet
+              - cloudformation:UpdateStackSet
+              - cloudformation:DeleteStackSet
+              - cloudformation:CreateStackInstances
+              - cloudformation:DeleteStackInstances
+            Resource: '*'
+          - Sid: ConfigRecorders
+            Effect: Allow
+            Action:
+              - config:PutConfigurationRecorder
+              - config:DeleteConfigurationRecorder
+              - config:StartConfigurationRecorder
+              - config:StopConfigurationRecorder
+              - config:PutDeliveryChannel
+              - config:DeleteDeliveryChannel
+              - config:TagResource
+              - config:UntagResource
+            Resource: '*'
           - Sid: OrganizationTrail
             Effect: Allow
             Action:
@@ -199,6 +221,7 @@ Resources:
                   - securityhub.amazonaws.com
                   - config.amazonaws.com
                   - ram.amazonaws.com
+                  - stacksets.cloudformation.amazonaws.com
           - Sid: NeverModifyOwnAccess
             Effect: Deny
             Action:

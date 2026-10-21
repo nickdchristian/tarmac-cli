@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from tarmac.cli.common import log_archive_parameters, warn_if_object_lock_unset
-from tarmac.core.config_schema import CloudTrailConfig
+from tarmac.core.config_schema import CloudTrailConfig, SecurityServicesConfig
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -32,7 +32,9 @@ CfnLoader.add_multi_constructor(
 def _bundle(**cloudtrail) -> SimpleNamespace:
     return SimpleNamespace(
         org=SimpleNamespace(
-            organization=SimpleNamespace(name="acme"), cloudtrail=CloudTrailConfig(**cloudtrail)
+            organization=SimpleNamespace(name="acme"),
+            security_services=SecurityServicesConfig(),
+            cloudtrail=CloudTrailConfig(**cloudtrail),
         )
     )
 
@@ -99,6 +101,7 @@ def test_dry_run_plan_shows_object_lock_state(monkeypatch):
         bundle = SimpleNamespace(
             org=SimpleNamespace(
                 organization=SimpleNamespace(name="acme"),
+                security_services=SecurityServicesConfig(),
                 cloudtrail=CloudTrailConfig(**cloudtrail),
             ),
             get_log_archive_account_name=lambda: "log-archive",

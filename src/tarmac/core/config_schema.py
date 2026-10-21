@@ -110,7 +110,8 @@ class CloudTrailConfig(BaseModel):
         ge=1,
         le=36500,
         description=(
-            "Delete CloudTrail log files this many days after they are written, to cap storage cost. "
+            "Delete CloudTrail log files (and AWS Config history, when enabled) this many days after they are "
+            "written, to cap storage cost. "
             "Leave unset to keep them indefinitely. Logs cannot be recovered once purged, so choose a value "
             "that meets your audit and compliance requirements."
         ),
@@ -229,6 +230,39 @@ class SecurityHubConfig(BaseModel):
     standards: list[str] = Field(default_factory=lambda: ["aws-foundational-security-best-practices"])
 
 
+class ConfigRecorderConfig(BaseModel):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Record resource configuration with AWS Config in every account, in the primary and additional "
+            "regions, delivering to a bucket in the log archive account. Off by default because AWS Config "
+            "bills per configuration item, so cost grows with accounts x regions x resource changes. Security "
+            "Hub CSPM standards need a recorder to evaluate most of their controls."
+        ),
+    )
+    include_global_resources: bool = Field(
+        default=True,
+        description="Record global resource types (IAM and similar) in the primary region only.",
+    )
+    record_resource_compliance: bool = Field(
+        default=False,
+        description=(
+            "Also record AWS::Config::ResourceCompliance items. Security Hub CSPM updates them on every compliance "
+            "change and does not need them, so AWS recommends leaving them out when the recorder serves only "
+            "Security Hub. Set true if you use the compliance history, or if recorder creation fails in a Region "
+            "where global IAM types are not supported."
+        ),
+    )
+    recording_frequency: Literal["CONTINUOUS", "DAILY"] = Field(
+        default="CONTINUOUS",
+        description=(
+            "CONTINUOUS records every change at $0.003 per item. DAILY records at most one item per resource per "
+            "day at $0.012 per item, so it only saves money for resources that change more than four times a day; "
+            "for most accounts CONTINUOUS is cheaper. AWS Firewall Manager needs CONTINUOUS."
+        ),
+    )
+
+
 def _validate_webhook_url(v: str | None) -> str | None:
     if v is not None and not v.startswith("https://"):
         raise ValueError("Incident response webhook URL must start with 'https://'.")
@@ -249,6 +283,7 @@ class SecurityServicesConfig(BaseModel):
     delegated_account: str = "audit"
     guardduty: GuardDutyConfig = Field(default_factory=GuardDutyConfig)
     securityhub: SecurityHubConfig = Field(default_factory=SecurityHubConfig)
+    config_recorder: ConfigRecorderConfig = Field(default_factory=ConfigRecorderConfig)
     incident_response_webhook_url: str | None = Field(
         default=None,
         description=(
@@ -256,6 +291,11 @@ class SecurityServicesConfig(BaseModel):
             "subscribing directly to the Audit account security alerts SNS topic."
         ),
     )
+
+    @field_validator("config_recorder", mode="before")
+    def null_means_decided_against(cls, v: Any) -> Any:
+        """`config_recorder: null` records "no AWS Config", the same way `object_lock: null` does for Object Lock."""
+        return {"enabled": False} if v is None else v
 
     @field_validator("incident_response_webhook_url")
     def validate_webhook_url(cls, v: str | None) -> str | None:

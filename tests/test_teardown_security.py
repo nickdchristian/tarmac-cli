@@ -257,7 +257,7 @@ def test_deregistration_happens_before_detector_deletion(bundle):
 def test_teardown_all_runs_security_teardown_only_when_requested(bundle):
     svc = _security_service({})
     svc.teardown_security_services = MagicMock(return_value=[])  # type: ignore[method-assign]
-    for name in ("teardown_backend", "teardown_audit"):
+    for name in ("teardown_backend", "teardown_audit", "teardown_config_recorder", "teardown_log_archive"):
         setattr(svc, name, MagicMock(return_value=[]))
     svc._get_active_accounts = MagicMock(return_value={})  # type: ignore[method-assign]
 
