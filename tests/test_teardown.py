@@ -279,6 +279,7 @@ def test_teardown_all_orchestration(test_bundle):
     service.teardown_backend = MagicMock(
         return_value=[TeardownItemReport("CloudFormation Stack", "tf", "Deploy", "444", "DELETED")]
     )
+    service.teardown_root_alert = MagicMock(return_value=[])
     service.teardown_audit = MagicMock(
         return_value=[TeardownItemReport("CloudFormation Stack", "aud", "Audit", "555", "DELETED")]
     )
@@ -456,6 +457,7 @@ def test_teardown_service_callbacks(test_bundle):
     service.teardown_log_archive = MagicMock(side_effect=fake_teardown_log_archive)
     service.teardown_budgets = MagicMock(return_value=[])
     service.teardown_backend = MagicMock(return_value=[])
+    service.teardown_root_alert = MagicMock(return_value=[])
     service.teardown_audit = MagicMock(return_value=[])
     service.teardown_identity = MagicMock(return_value=[])
     service.teardown_scps = MagicMock(return_value=[])

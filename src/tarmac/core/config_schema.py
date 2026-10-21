@@ -304,8 +304,27 @@ def _validate_max_subscribers(v: list[EmailStr], service_name: str) -> list[Emai
     return v
 
 
+class RootAlertConfig(BaseModel):
+    """Email alert when the root user is used in the management account.
+
+    The deny-root SCP cannot apply to the management account, so root use there is detected rather than blocked.
+    EventBridge ingests AWS management events for free, so the cost is a handful of SNS emails.
+    """
+
+    enabled: bool = True
+    all_regions: bool = Field(
+        default=False,
+        description=(
+            "Also watch every declared Region for root API calls. Off: us-east-1 (where AWS records root sign-in "
+            "events) and the primary Region, which is what most root use looks like. Each Region adds one SNS "
+            "topic whose email subscription must be confirmed."
+        ),
+    )
+
+
 class SecurityServicesConfig(BaseModel):
     delegated_account: str = "audit"
+    root_alert: RootAlertConfig = Field(default_factory=RootAlertConfig)
     guardduty: GuardDutyConfig = Field(default_factory=GuardDutyConfig)
     securityhub: SecurityHubConfig = Field(default_factory=SecurityHubConfig)
     config_recorder: ConfigRecorderConfig = Field(default_factory=ConfigRecorderConfig)

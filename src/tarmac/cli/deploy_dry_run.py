@@ -432,6 +432,15 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
             "AWS Config recorders", "-", "Delivers to the central log bucket", "[dim]DISABLED[/dim]"
         )
 
+    root_alert = sec_services.root_alert
+    table.add_row(
+        f"{bundle.org.organization.name}-management-root-alert",
+        "Management",
+        f"Root activity alert to {alert_email}, in us-east-1 and the primary Region"
+        + (" and every declared Region" if root_alert.all_regions else ""),
+        "DEPLOY CFN STACK" if root_alert.enabled else "[dim]DISABLED[/dim]",
+    )
+
     console.print(table)
     warn_if_config_recorder_missing(bundle)
 

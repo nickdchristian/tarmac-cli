@@ -394,6 +394,45 @@ class LoggingTeardown(TeardownBase):
             )
         ]
 
+    def teardown_root_alert(
+        self, bundle: ConfigBundle, target_region: str, dry_run: bool = False
+    ) -> list[TeardownItemReport]:
+        """Delete the management account root activity alert stack in every Region it may have been deployed to."""
+        results: list[TeardownItemReport] = []
+        mgmt_id = self._get_management_account_id()
+        stack_name = f"{bundle.org.organization.name}-management-root-alert"
+        regions = list(
+            dict.fromkeys(["us-east-1", target_region, *bundle.org.organization.additional_regions])
+        )
+        for region in regions:
+            try:
+                cfn_client = self.session_mgr.get_client("cloudformation", region_name=region)
+                status = self.cfn_service._get_stack_status(cfn_client, stack_name)
+                if not status or status == "DELETE_COMPLETE":
+                    continue
+                if dry_run:
+                    action, message = (
+                        "SIMULATED",
+                        f"Would delete root alert stack in {region} (status: {status})",
+                    )
+                else:
+                    self._notify_progress(f"Deleting CloudFormation stack '{stack_name}' in {region}...")
+                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    action, message = "DELETED", f"Deleted root alert stack in {region}"
+            except AWS_ERRORS as e:
+                action, message = "FAILED", f"{region}: {e}"
+            results.append(
+                TeardownItemReport(
+                    resource_type="CloudFormation Stack",
+                    resource_name=stack_name,
+                    account_name="Management",
+                    account_id=mgmt_id,
+                    action=action,
+                    message=message,
+                )
+            )
+        return results
+
     def teardown_audit(
         self,
         bundle: ConfigBundle,

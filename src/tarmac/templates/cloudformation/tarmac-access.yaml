@@ -115,6 +115,29 @@ Resources:
               - cloudformation:GetTemplate
               - cloudformation:GetTemplateSummary
             Resource: '*'
+          - Sid: RootActivityAlert
+            Effect: Allow
+            Action:
+              - events:PutRule
+              - events:DeleteRule
+              - events:DescribeRule
+              - events:PutTargets
+              - events:RemoveTargets
+              - events:ListTargetsByRule
+              - events:TagResource
+              - events:UntagResource
+              - sns:CreateTopic
+              - sns:DeleteTopic
+              - sns:GetTopicAttributes
+              - sns:SetTopicAttributes
+              - sns:Subscribe
+              - sns:Unsubscribe
+              - sns:GetSubscriptionAttributes
+              - sns:SetSubscriptionAttributes
+              - sns:TagResource
+              - sns:UntagResource
+              - sns:ListTagsForResource
+            Resource: '*'
           - Sid: CloudFormationStackSets
             Effect: Allow
             Action:
