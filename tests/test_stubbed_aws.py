@@ -67,6 +67,11 @@ def test_empty_s3_bucket_validates_requests_against_service_model():
         stub.assert_no_pending_responses()
 
 
+_DENIED = {"Errors": [{"Key": "a", "VersionId": "v1", "Code": "AccessDenied", "Message": "locked"}]}
+_DELETE = {"Bucket": "b", "Delete": {"Objects": [{"Key": "a", "VersionId": "v1"}], "Quiet": True}}
+_BYPASS = {**_DELETE, "BypassGovernanceRetention": True}
+
+
 def test_empty_s3_bucket_raises_when_s3_reports_per_object_errors():
     s3 = _client("s3")
     with Stubber(s3) as stub:
@@ -76,14 +81,38 @@ def test_empty_s3_bucket_raises_when_s3_reports_per_object_errors():
         )
         stub.add_response(
             "delete_objects",
-            {"Errors": [{"Key": "a", "VersionId": "v1", "Code": "AccessDenied", "Message": "locked"}]},
-            {
-                "Bucket": "b",
-                "Delete": {"Objects": [{"Key": "a", "VersionId": "v1"}], "Quiet": True},
-            },
+            {"Errors": [{"Key": "a", "VersionId": "v1", "Code": "InternalError", "Message": "try again"}]},
+            _DELETE,
         )
         with pytest.raises(GovernanceError, match="Failed to delete 1 object"):
             empty_s3_bucket(s3, "b")
+
+
+def test_empty_s3_bucket_bypasses_governance_retention_when_allowed():
+    s3 = _client("s3")
+    with Stubber(s3) as stub:
+        stub.add_response("head_bucket", {}, {"Bucket": "b"})
+        stub.add_response(
+            "list_object_versions", {"Versions": [{"Key": "a", "VersionId": "v1"}]}, {"Bucket": "b"}
+        )
+        stub.add_response("delete_objects", _DENIED, _DELETE)
+        stub.add_response("delete_objects", {}, _BYPASS)
+        stub.add_response("list_objects_v2", {"Contents": []}, {"Bucket": "b"})
+        assert empty_s3_bucket(s3, "b") == 1
+
+
+def test_empty_s3_bucket_explains_a_lock_it_cannot_bypass():
+    s3 = _client("s3")
+    with Stubber(s3) as stub:
+        stub.add_response("head_bucket", {}, {"Bucket": "b"})
+        stub.add_response(
+            "list_object_versions", {"Versions": [{"Key": "a", "VersionId": "v1"}]}, {"Bucket": "b"}
+        )
+        stub.add_response("delete_objects", _DENIED, _DELETE)
+        stub.add_response("delete_objects", _DENIED, _BYPASS)
+        with pytest.raises(GovernanceError) as exc:
+            empty_s3_bucket(s3, "b")
+    assert "COMPLIANCE" in str(exc.value)
 
 
 def test_delete_retained_bucket_issues_valid_delete_bucket_call():

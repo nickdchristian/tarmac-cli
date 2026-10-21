@@ -1,5 +1,6 @@
 """Bootstrap access: root detection, preflight, deploy guard, and the `tarmac access` commands."""
 
+import ast
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -204,6 +205,7 @@ def test_bootstrap_dry_run_and_failure() -> None:
 
 # IAM prefix -> botocore service name (where they differ), plus actions whose IAM name is not an API operation.
 _PREFIX_TO_SERVICE = {"sso": "sso-admin", "servicequotas": "service-quotas"}
+_PREFIX_TO_SERVICE_INVERSE = {v: k for k, v in _PREFIX_TO_SERVICE.items()}
 _NON_OPERATION_ACTIONS = {"s3:ListBucket", "sso-directory:DescribeDirectory", "sso-directory:SearchUsers"}
 _NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups"}
 
@@ -263,33 +265,116 @@ def test_policy_actions_exist_in_aws_service_models() -> None:
         assert name in cast(list[str], model.operation_names), f"{action} is not a real API operation"
 
 
-def test_policy_covers_every_management_account_api_call() -> None:
-    """Every organizations/cloudformation/cloudtrail/sso/identitystore/guardduty/securityhub call in the source is allowed."""
-    import re
+# IAM action names that differ from the API operation name.
+_IAM_ACTION_FOR_OPERATION = {
+    "s3:HeadBucket": "s3:ListBucket",
+    "s3:ListObjectVersions": "s3:ListBucketVersions",
+    "s3:DeleteObjects": "s3:DeleteObject",
+}
 
+# Services whose member-account client resolves to the management account's own session when the target is the
+# management account (``get_member_client``), so the role needs the permission too. Default-VPC cleanup runs
+# against the management account.
+_MEMBER_CLIENT_SERVICES_ON_MANAGEMENT = {"ec2"}
+
+# Calls tarmac makes that the role is deliberately NOT granted, with the reason.
+_DELIBERATELY_NOT_GRANTED = {
+    # Removing the bootstrap IAM user is an administrator action; teardown reports AccessDenied as SKIPPED.
+    "iam:GetUser",
+    "iam:ListUserTags",
+    "iam:ListAccessKeys",
+    "iam:DeleteAccessKey",
+    "iam:ListMFADevices",
+    "iam:DeactivateMFADevice",
+    "iam:DeleteVirtualMFADevice",
+    "iam:ListUserPolicies",
+    "iam:DeleteUserPolicy",
+    "iam:ListAttachedUserPolicies",
+    "iam:DetachUserPolicy",
+    "iam:DeleteUser",
+}
+
+
+def _client_of(call: ast.Call) -> tuple[str, str] | None:
+    func = call.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if name == "get_client" and call.args and isinstance(call.args[0], ast.Constant):
+        return "mgmt", str(call.args[0].value)
+    if name == "get_member_client" and len(call.args) > 1 and isinstance(call.args[1], ast.Constant):
+        return "member", str(call.args[1].value)
+    return None
+
+
+def _name_of(node: ast.expr) -> str | None:
+    return node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+
+
+def _client_variables(tree: ast.AST) -> dict[str, set[tuple[str, str]]]:
+    """Map each variable or attribute assigned a session-manager client to the clients it may hold."""
+    variables: dict[str, set[tuple[str, str]]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign | ast.AnnAssign) and isinstance(node.value, ast.Call):
+            client = _client_of(node.value)
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if client and (name := _name_of(target)):
+                    variables.setdefault(name, set()).add(client)
+    return variables
+
+
+def _client_calls() -> dict[tuple[str, str, str], set[str]]:
+    """Statically find ``(kind, service, operation)`` calls made on clients obtained from the session manager.
+
+    ``kind`` is ``mgmt`` for ``get_client("svc")`` and ``member`` for ``get_member_client(acct, "svc")``. A call
+    is attributed to a client by the variable or attribute it was assigned to, so operations that merely share a
+    name with another service's (``get_user``, ``delete_bucket``) are not confused.
+    """
     from botocore import xform_name
     from botocore.session import get_session
 
-    src_dir = Path(__file__).resolve().parent.parent / "src" / "tarmac"
-    source = "\n".join(p.read_text(encoding="utf-8") for p in src_dir.rglob("*.py"))
-    used = set(re.findall(r"\.([a-z_]+)\(", source)) | set(
-        re.findall(r'get_paginator\(\s*"([a-z_]+)"', source)
-    )
     session = get_session()
+    models: dict[str, dict[str, str]] = {}
+    calls: dict[tuple[str, str, str], set[str]] = {}
+    src_dir = Path(__file__).resolve().parent.parent / "src" / "tarmac"
+    for path in src_dir.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        variables = _client_variables(tree)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            receiver = node.func.value
+            inline = _client_of(receiver) if isinstance(receiver, ast.Call) else None
+            owners = {inline} if inline else variables.get(_name_of(receiver) or "", set())
+            op = node.func.attr
+            if op == "get_paginator" and node.args and isinstance(node.args[0], ast.Constant):
+                op = str(node.args[0].value)
+            for kind, service in owners:
+                if service not in models:
+                    names = cast(list[str], session.get_service_model(service).operation_names)
+                    models[service] = {xform_name(o): o for o in names}
+                if op in models[service]:
+                    calls.setdefault((kind, service, models[service][op]), set()).add(path.name)
+    return calls
+
+
+def test_policy_covers_every_management_account_api_call() -> None:
+    """Every API call made with a management-account client is allowed by the role's policy."""
     missing: list[str] = []
-    for service, prefix in {
-        "organizations": "organizations",
-        "cloudformation": "cloudformation",
-        "cloudtrail": "cloudtrail",
-        "sso-admin": "sso",
-        "identitystore": "identitystore",
-        "guardduty": "guardduty",
-        "securityhub": "securityhub",
-    }.items():
-        for op in cast(list[str], session.get_service_model(service).operation_names):
-            if xform_name(op) in used and not _is_allowed(f"{prefix}:{op}"):
-                missing.append(f"{prefix}:{op}")
-    assert not missing, f"Policy does not allow API calls tarmac makes: {sorted(missing)}"
+    for (kind, service, operation), files in _client_calls().items():
+        if kind == "member" and service not in _MEMBER_CLIENT_SERVICES_ON_MANAGEMENT:
+            continue
+        action = f"{_PREFIX_TO_SERVICE_INVERSE.get(service, service)}:{operation}"
+        action = _IAM_ACTION_FOR_OPERATION.get(action, action)
+        if action not in _DELIBERATELY_NOT_GRANTED and not _is_allowed(action):
+            missing.append(f"{action} ({', '.join(sorted(files))})")
+    assert not missing, f"The role's policy does not allow API calls tarmac makes: {sorted(missing)}"
+
+
+def test_deliberately_not_granted_calls_are_still_made() -> None:
+    """Keep the exclusion list honest: drop an entry once the code stops making that call."""
+    made = {f"iam:{op}" for kind, service, op in _client_calls() if service == "iam" and kind == "mgmt"}
+    assert not (_DELIBERATELY_NOT_GRANTED - made), _DELIBERATELY_NOT_GRANTED - made
+    assert not any(_is_allowed(a) for a in _DELIBERATELY_NOT_GRANTED), "granted after all: drop the exclusion"
 
 
 def test_aws_error_helpers_tolerate_missing_fields() -> None:

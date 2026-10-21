@@ -124,7 +124,9 @@ def test_baseline_command_passes_retention(retention, expected):
     bundle = SimpleNamespace(
         org=SimpleNamespace(
             organization=SimpleNamespace(name="acme"),
-            cloudtrail=SimpleNamespace(enable_kms=True, retention_days=retention),
+            cloudtrail=SimpleNamespace(
+                enable_kms=True, retention_days=retention, object_lock=None, model_fields_set={"object_lock"}
+            ),
         ),
         config_dir=ROOT / "examples" / "config",
         get_log_archive_account_name=lambda: "log-archive",
@@ -147,7 +149,11 @@ def test_dry_run_plan_says_what_will_happen_to_old_logs(monkeypatch, retention, 
         org=SimpleNamespace(
             organization=SimpleNamespace(name="acme"),
             cloudtrail=SimpleNamespace(
-                enable_kms=False, retention_days=retention, trail_name="trail", bucket_prefix="p"
+                enable_kms=False,
+                retention_days=retention,
+                trail_name="trail",
+                bucket_prefix="p",
+                object_lock=None,
             ),
         ),
         get_log_archive_account_name=lambda: "log-archive",
