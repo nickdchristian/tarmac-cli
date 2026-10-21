@@ -1,6 +1,7 @@
 """`tarmac import`: describe an existing AWS Organization as Tarmac configuration."""
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -12,20 +13,28 @@ from .ui import console, error_console, print_header, print_info, print_success,
 
 
 def import_command(
-    config_dir: Path = typer.Option(
-        Path("config"),
-        "--config-dir",
-        "-c",
-        help="Directory to write organization.yaml, accounts.yaml, identity.yaml",
-    ),
-    region: str | None = typer.Option(None, "--region", "-r", help="Primary region [default: AWS_REGION]"),
-    name: str | None = typer.Option(
-        None,
-        "--name",
-        help="organization.name. Defaults to the name of existing Tarmac stacks, else the management email domain.",
-    ),
-    no_identity: bool = typer.Option(False, "--no-identity", help="Do not read IAM Identity Center"),
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing configuration files"),
+    config_dir: Annotated[
+        Path,
+        typer.Option(
+            "--config-dir", "-c", help="Directory to write organization.yaml, accounts.yaml, identity.yaml"
+        ),
+    ] = Path("config"),
+    region: Annotated[
+        str | None, typer.Option("--region", "-r", help="Primary region [default: AWS_REGION]")
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            help="organization.name. Defaults to the name of existing Tarmac stacks, else the management email domain.",
+        ),
+    ] = None,
+    no_identity: Annotated[
+        bool, typer.Option("--no-identity", help="Do not read IAM Identity Center")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Overwrite existing configuration files")
+    ] = False,
 ) -> None:
     """Read the live organization (read-only) and write matching Tarmac configuration.
 

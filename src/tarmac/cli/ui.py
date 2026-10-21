@@ -1,3 +1,5 @@
+"""Rich console helpers shared by the CLI commands."""
+
 from typing import Any
 
 from rich import box
@@ -42,6 +44,38 @@ def print_info(message: str) -> None:
 
 def print_warning(message: str) -> None:
     console.print(f"[bold yellow]⚠[/bold yellow] {message}")
+
+
+def print_action_panel(
+    rows: list[tuple[str, str, str]],
+    *,
+    has_failures: bool,
+    titles: tuple[str, str],
+    item_header: str,
+    item_width: int,
+    action_header: str,
+) -> None:
+    """Render (badge, item, action) rows in a red panel when anything failed, else a yellow one.
+
+    ``titles`` is (title when failing, title otherwise).
+    """
+    color = "red" if has_failures else "yellow"
+    title = titles[0] if has_failures else titles[1]
+    table = Table(box=box.SIMPLE, header_style=f"bold {color}", expand=True, show_header=True)
+    table.add_column("Status", justify="center", width=8, min_width=8, no_wrap=True)
+    table.add_column(item_header, style="bold white", width=item_width, no_wrap=True)
+    table.add_column(action_header, style="white")
+    for row in rows:
+        table.add_row(*row)
+    console.print(
+        Panel(
+            table,
+            title=f"[bold {color}]{title}[/bold {color}]",
+            border_style=color,
+            padding=(0, 1),
+            expand=True,
+        )
+    )
 
 
 def print_step(phase: str, step_name: str) -> None:

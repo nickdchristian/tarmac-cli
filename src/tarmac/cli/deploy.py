@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
 from rich.markup import escape
@@ -30,6 +30,13 @@ from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
 from ..services.teardown import TeardownItemReport, TeardownService
 from .common import (
+    AdoptExistingOption,
+    ConfigDirOption,
+    JsonOption,
+    RegionOption,
+    TagsOption,
+    YesOption,
+    confirm_or_exit,
     get_active_account_id_map,
     load_configs_or_exit,
     parse_tags_or_exit,
@@ -131,7 +138,6 @@ __all__ = [
     "_run_phase_5_hardening",
     "_run_phase_6_identity",
     "app",
-    "destroy_pipeline",
     "get_active_account_id_map",
     "load_configs_or_exit",
     "parse_tags_or_exit",
@@ -171,18 +177,6 @@ def _validate_phase(phase: int | None, allowed: range) -> None:
             f"[red]✗ Invalid phase: {phase}. Must be between {allowed.start} and {allowed.stop - 1}.[/red]"
         )
         raise typer.Exit(code=2)
-
-
-def _confirm_deployment(dry_run: bool, yes: bool) -> None:
-    """Prompt user for confirmation unless bypassed."""
-    if dry_run or yes:
-        return
-    confirmed = typer.confirm(
-        "Are you sure you want to run the live multi-account deployment?", default=False
-    )
-    if not confirmed:
-        print_info("Deployment cancelled by user.")
-        raise typer.Exit(code=0)
 
 
 def _refuse_root_identity(session_mgr: AwsSessionManager, dry_run: bool = False) -> None:
@@ -230,27 +224,30 @@ def _resolve_management_account_id(session_mgr: AwsSessionManager, *, dry_run: b
 
 @app.command("run")
 def run_pipeline(
-    phase: int | None = typer.Option(None, "--phase", "-p", help="Specific phase to run (0-6)"),
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate pipeline without executing changes"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt for automated deployment"),
-    skip_preflight: bool = typer.Option(False, "--skip-preflight", help="Bypass pre-flight readiness checks"),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
-    adopt_existing: bool = typer.Option(
-        False,
-        "--adopt-existing",
-        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
-    ),
+    phase: Annotated[int | None, typer.Option("--phase", "-p", help="Specific phase to run (0-6)")] = None,
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Simulate pipeline without executing changes")
+    ] = False,
+    yes: YesOption = False,
+    skip_preflight: Annotated[
+        bool, typer.Option("--skip-preflight", help="Bypass pre-flight readiness checks")
+    ] = False,
+    json_output: JsonOption = False,
+    tags: TagsOption = None,
+    adopt_existing: AdoptExistingOption = False,
 ) -> None:
     """Run end-to-end deployment or a specific phase in deterministic order."""
     set_adopt_existing(adopt_existing)
     _validate_phase(phase, range(0, 7))
     _require_yes_for_json(dry_run, yes, json_output)
-    _confirm_deployment(dry_run=dry_run, yes=yes)
+    confirm_or_exit(
+        "Are you sure you want to run the live multi-account deployment?",
+        yes=yes,
+        dry_run=dry_run,
+        cancelled="Deployment cancelled by user.",
+    )
 
     bundle = load_configs_or_exit(config_dir)
     custom_tags = parse_tags_or_exit(tags)
@@ -528,19 +525,53 @@ def _confirm_teardown(
         raise typer.Exit(code=0)
 
 
-def _execute_teardown(
-    phase: int | None,
-    config_dir: Path | None,
-    region: str | None,
-    dry_run: bool,
-    yes: bool,
-    json_output: bool,
-    force: bool = False,
-    preserve_backend: bool = False,
-    disable_security_services: bool = False,
-    everything: bool = False,
-    inventory_from_log: Path | None = None,
+@app.command("teardown")
+@app.command("destroy", help="Alias for 'tarmac deploy teardown': delete all deployment resources.")
+def teardown_pipeline(
+    phase: Annotated[
+        int | None, typer.Option("--phase", "-p", help="Specific phase to tear down (2-6)")
+    ] = None,
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Simulate teardown without deleting resources")
+    ] = False,
+    yes: YesOption = False,
+    force: Annotated[bool, typer.Option("--force", help="Bypass production environment safety lock")] = False,
+    preserve_backend: Annotated[
+        bool,
+        typer.Option("--preserve-backend", help="Preserve Terraform backend state bucket and lock table"),
+    ] = False,
+    disable_security_services: Annotated[
+        bool,
+        typer.Option(
+            "--disable-security-services",
+            help=(
+                "Also disable GuardDuty/Security Hub/Config delegation tarmac set up (runs with Phase 5). "
+                "Deletes finding history."
+            ),
+        ),
+    ] = False,
+    everything: Annotated[
+        bool,
+        typer.Option(
+            "--everything",
+            help=(
+                "Full teardown: also remove OUs, Identity Center users/groups, organization settings and the "
+                "access role that tarmac created (never member accounts)"
+            ),
+        ),
+    ] = False,
+    inventory_from_log: Annotated[
+        Path | None,
+        typer.Option(
+            "--inventory-from-log",
+            help="With --everything: rebuild the record of what tarmac created from a run log (TARMAC_LOG_FILE)",
+        ),
+    ] = None,
+    json_output: JsonOption = False,
 ) -> None:
+    """Tear down and delete deployed resources across phases."""
     _validate_phase(phase, range(2, 7))
     _require_yes_for_json(dry_run, yes, json_output)
     if everything and phase is not None:
@@ -636,113 +667,14 @@ def _execute_teardown(
             print_info("Add --everything to also remove OUs, users, groups, settings and the access role.")
 
 
-@app.command("teardown")
-def teardown_pipeline(
-    phase: int | None = typer.Option(None, "--phase", "-p", help="Specific phase to tear down (2-6)"),
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate teardown without deleting resources"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
-    force: bool = typer.Option(False, "--force", help="Bypass production environment safety lock"),
-    preserve_backend: bool = typer.Option(
-        False, "--preserve-backend", help="Preserve Terraform backend state bucket and lock table"
-    ),
-    disable_security_services: bool = typer.Option(
-        False,
-        "--disable-security-services",
-        help=(
-            "Also disable GuardDuty/Security Hub/Config delegation tarmac set up (runs with Phase 5). "
-            "Deletes finding history."
-        ),
-    ),
-    everything: bool = typer.Option(
-        False,
-        "--everything",
-        help=(
-            "Full teardown: also remove OUs, Identity Center users/groups, organization settings and the "
-            "access role that tarmac created (never member accounts)"
-        ),
-    ),
-    inventory_from_log: Path | None = typer.Option(
-        None,
-        "--inventory-from-log",
-        help="With --everything: rebuild the record of what tarmac created from a run log (TARMAC_LOG_FILE)",
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
-) -> None:
-    """Tear down and delete deployed resources across phases."""
-    _execute_teardown(
-        phase,
-        config_dir,
-        region,
-        dry_run,
-        yes,
-        json_output,
-        force,
-        preserve_backend,
-        disable_security_services,
-        everything,
-        inventory_from_log,
-    )
-
-
-@app.command("destroy")
-def destroy_pipeline(
-    phase: int | None = typer.Option(None, "--phase", "-p", help="Specific phase to tear down (2-6)"),
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate teardown without deleting resources"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
-    force: bool = typer.Option(False, "--force", help="Bypass production environment safety lock"),
-    preserve_backend: bool = typer.Option(
-        False, "--preserve-backend", help="Preserve Terraform backend state bucket and lock table"
-    ),
-    disable_security_services: bool = typer.Option(
-        False,
-        "--disable-security-services",
-        help=(
-            "Also disable GuardDuty/Security Hub/Config delegation tarmac set up (runs with Phase 5). "
-            "Deletes finding history."
-        ),
-    ),
-    everything: bool = typer.Option(
-        False,
-        "--everything",
-        help=(
-            "Full teardown: also remove OUs, Identity Center users/groups, organization settings and the "
-            "access role that tarmac created (never member accounts)"
-        ),
-    ),
-    inventory_from_log: Path | None = typer.Option(
-        None,
-        "--inventory-from-log",
-        help="With --everything: rebuild the record of what tarmac created from a run log (TARMAC_LOG_FILE)",
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
-) -> None:
-    """Alias for 'tarmac deploy teardown': delete all deployment resources."""
-    _execute_teardown(
-        phase,
-        config_dir,
-        region,
-        dry_run,
-        yes,
-        json_output,
-        force,
-        preserve_backend,
-        disable_security_services,
-        everything,
-        inventory_from_log,
-    )
-
-
 @app.command("inventory")
 def show_inventory(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    from_log: Path | None = typer.Option(
-        None, "--from-log", help="Rebuild the inventory from a tarmac run log (TARMAC_LOG_FILE)"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output the inventory as JSON"),
+    config_dir: ConfigDirOption = None,
+    from_log: Annotated[
+        Path | None,
+        typer.Option("--from-log", help="Rebuild the inventory from a tarmac run log (TARMAC_LOG_FILE)"),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output the inventory as JSON")] = False,
 ) -> None:
     """Show what tarmac recorded as created by it (used by `destroy --everything`)."""
     inv = _load_inventory(config_dir, from_log)

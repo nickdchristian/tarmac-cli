@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
 from rich.markup import escape
@@ -121,23 +121,31 @@ def _render_records(records: list[Record], show_all: bool) -> None:
 
 
 def logs_command(
-    file: Path | None = typer.Argument(
-        None,
-        help="Log file written with --log-file [default: $TARMAC_LOG_FILE]",
-        show_default=False,
-    ),
-    run: str | None = typer.Option(
-        None, "--run", "-r", help="Show one run: 'latest', a run id or an id prefix"
-    ),
-    outcome: list[str] | None = typer.Option(
-        None, "--outcome", "-o", help="Only actions with this outcome (repeatable): succeeded, failed, ..."
-    ),
-    phase: str | None = typer.Option(None, "--phase", help="Only records from phases matching this text"),
-    account: str | None = typer.Option(
-        None, "--account", "-a", help="Only records for this account id or name"
-    ),
-    show_all: bool = typer.Option(False, "--all", help="Include every record (AWS calls, debug output)"),
-    json_output: bool = typer.Option(False, "--json", help="Emit JSON instead of tables"),
+    file: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Log file written with --log-file [default: $TARMAC_LOG_FILE]", show_default=False
+        ),
+    ] = None,
+    run: Annotated[
+        str | None, typer.Option("--run", "-r", help="Show one run: 'latest', a run id or an id prefix")
+    ] = None,
+    outcome: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--outcome", "-o", help="Only actions with this outcome (repeatable): succeeded, failed, ..."
+        ),
+    ] = None,
+    phase: Annotated[
+        str | None, typer.Option("--phase", help="Only records from phases matching this text")
+    ] = None,
+    account: Annotated[
+        str | None, typer.Option("--account", "-a", help="Only records for this account id or name")
+    ] = None,
+    show_all: Annotated[
+        bool, typer.Option("--all", help="Include every record (AWS calls, debug output)")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON instead of tables")] = False,
 ) -> None:
     """Summarize runs from a Tarmac log file and show what each one did."""
     source = file or (Path(os.environ["TARMAC_LOG_FILE"]) if os.environ.get("TARMAC_LOG_FILE") else None)

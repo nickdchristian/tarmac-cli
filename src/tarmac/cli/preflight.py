@@ -1,98 +1,66 @@
 """CLI commands for environment preflight and health diagnostics."""
 
 import json
-from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
-from rich import box
-from rich.panel import Panel
-from rich.table import Table
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import GovernanceError
-from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
+from ..core.models import PreflightCheckStatus, PreflightReport
 from ..services.preflight import PreflightService
-from .common import load_configs_or_exit
-from .ui import console, create_table, error_console, print_header, print_info, print_success
+from .common import ConfigDirOption, JsonOption, RegionOption, exit_on_error, load_configs_or_exit
+from .ui import (
+    console,
+    create_table,
+    error_console,
+    print_action_panel,
+    print_header,
+    print_info,
+    print_success,
+)
 
-app = typer.Typer(help="Pre-flight verification of manual steps and operational readiness.")
+_STATUS_BADGES = {
+    PreflightCheckStatus.PASS: "[bold green]PASS[/bold green]",
+    PreflightCheckStatus.WARN: "[bold yellow]WARN[/bold yellow]",
+    PreflightCheckStatus.FAIL: "[bold red]FAIL[/bold red]",
+}
+_STATUS_PRIORITY = {
+    PreflightCheckStatus.FAIL: 0,
+    PreflightCheckStatus.WARN: 1,
+    PreflightCheckStatus.INFO: 2,
+    PreflightCheckStatus.PASS: 3,
+}
 
 
 def _format_status_badge(status: PreflightCheckStatus) -> str:
-    if status == PreflightCheckStatus.PASS:
-        return "[bold green]PASS[/bold green]"
-    if status == PreflightCheckStatus.WARN:
-        return "[bold yellow]WARN[/bold yellow]"
-    if status == PreflightCheckStatus.FAIL:
-        return "[bold red]FAIL[/bold red]"
-    return "[bold cyan]INFO[/bold cyan]"
-
-
-def _render_actions_panel(actions: list[PreflightCheckResult]) -> None:
-    """Render a dedicated remediation table for checks requiring action."""
-    has_failures = any(c.status == PreflightCheckStatus.FAIL for c in actions)
-    panel_title = (
-        "[bold red]Action Required (Blocking Issues)[/bold red]"
-        if has_failures
-        else "[bold yellow]Action Items & Recommendations[/bold yellow]"
-    )
-    border_color = "red" if has_failures else "yellow"
-
-    action_table = Table(
-        box=box.SIMPLE,
-        header_style=f"bold {border_color}",
-        expand=True,
-        show_header=True,
-    )
-    action_table.add_column("Status", justify="center", width=8, min_width=8, no_wrap=True)
-    action_table.add_column("Check Item", style="bold white", width=32, no_wrap=True)
-    action_table.add_column("Action Required / Guidance", style="white")
-
-    priority = {
-        PreflightCheckStatus.FAIL: 0,
-        PreflightCheckStatus.WARN: 1,
-        PreflightCheckStatus.INFO: 2,
-        PreflightCheckStatus.PASS: 3,
-    }
-    sorted_actions = sorted(actions, key=lambda c: priority.get(c.status, 2))
-
-    for check in sorted_actions:
-        badge = _format_status_badge(check.status)
-        action_table.add_row(badge, check.name, check.action_required)
-
-    console.print(
-        Panel(
-            action_table,
-            title=panel_title,
-            border_style=border_color,
-            padding=(0, 1),
-            expand=True,
-        )
-    )
+    return _STATUS_BADGES.get(status, "[bold cyan]INFO[/bold cyan]")
 
 
 def _render_preflight_table(report: PreflightReport) -> None:
-    """Render Rich table of preflight check outcomes in a uniformly spaced layout."""
     table = create_table(title="Pre-Flight Readiness Inspection", expand=True)
     table.add_column("Check Item", style="bold white", no_wrap=True)
     table.add_column("Target Scope", style="cyan", no_wrap=True)
     table.add_column("Status", justify="center", width=8, min_width=8, no_wrap=True)
     table.add_column("Live State / Value", style="white", no_wrap=True)
-
     for check in report.checks:
-        badge = _format_status_badge(check.status)
-        table.add_row(check.name, check.target, badge, check.live_value)
-
+        table.add_row(check.name, check.target, _format_status_badge(check.status), check.live_value)
     console.print(table)
 
-    actions = [c for c in report.checks if c.action_required]
+    actions = sorted(
+        (c for c in report.checks if c.action_required), key=lambda c: _STATUS_PRIORITY.get(c.status, 2)
+    )
     if actions:
-        _render_actions_panel(actions)
+        print_action_panel(
+            [(_format_status_badge(c.status), c.name, c.action_required) for c in actions],
+            has_failures=any(c.status == PreflightCheckStatus.FAIL for c in actions),
+            titles=("Action Required (Blocking Issues)", "Action Items & Recommendations"),
+            item_header="Check Item",
+            item_width=32,
+            action_header="Action Required / Guidance",
+        )
 
 
 def _build_json_payload(report: PreflightReport) -> dict[str, Any]:
-    """Serialize report to a JSON-compatible dictionary."""
     return {
         "can_proceed": report.can_proceed,
         "summary": {
@@ -115,23 +83,8 @@ def _build_json_payload(report: PreflightReport) -> dict[str, Any]:
     }
 
 
-def _output_json_report(report: PreflightReport, strict: bool) -> None:
-    """Output JSON report and exit with error code if non-compliant."""
-    print(json.dumps(_build_json_payload(report), indent=2))
-    if report.failures > 0 or (strict and report.warnings > 0):
-        raise typer.Exit(code=1)
-
-
-def _print_followup_message(warnings_count: int) -> None:
-    """Print actionable guidance based on warning presence."""
-    if warnings_count > 0:
-        print_info("Ready to proceed with warnings. Review yellow items above before 'tarmac deploy run'.\n")
-    else:
-        print_success("All pre-flight checks passed! Environment is fully ready for deployment.\n")
-
-
 def _evaluate_cli_report(report: PreflightReport, strict: bool) -> None:
-    """Render table, format summary, and exit if failures or strict warnings exist."""
+    """Render the table and summary; exit 1 on failures, or on warnings in strict mode."""
     _render_preflight_table(report)
 
     summary_msg = (
@@ -156,18 +109,19 @@ def _evaluate_cli_report(report: PreflightReport, strict: bool) -> None:
         raise typer.Exit(code=1)
 
     print_success(f"\n{summary_msg}")
-    _print_followup_message(report.warnings)
+    if report.warnings > 0:
+        print_info("Ready to proceed with warnings. Review yellow items above before 'tarmac deploy run'.\n")
+    else:
+        print_success("All pre-flight checks passed! Environment is fully ready for deployment.\n")
 
 
 def run_preflight_checks(
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Path to configuration directory"
-    ),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override target primary AWS region"),
-    json_output: bool = typer.Option(False, "--json", help="Output results in machine-readable JSON"),
-    strict: bool = typer.Option(
-        False, "--strict", help="Fail with exit code 1 if any warnings or failures are detected"
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    json_output: JsonOption = False,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Fail with exit code 1 if any warnings or failures are detected")
+    ] = False,
 ) -> None:
     """Audit management account manual prerequisites and operational readiness."""
     bundle = load_configs_or_exit(config_dir)
@@ -177,17 +131,14 @@ def run_preflight_checks(
         print_header("Tarmac Pre-Flight Checklist")
         print_info(f"Scanning Management Account and region '{target_region}' prerequisites...")
 
-    try:
+    with exit_on_error("Pre-flight Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
-        service = PreflightService(session_mgr, bundle)
-        report = service.run_all_checks(region_override=region)
+        report = PreflightService(session_mgr, bundle).run_all_checks(region_override=region)
 
         if json_output:
-            _output_json_report(report, strict)
+            print(json.dumps(_build_json_payload(report), indent=2))
+            if report.failures > 0 or (strict and report.warnings > 0):
+                raise typer.Exit(code=1)
             return
 
         _evaluate_cli_report(report, strict)
-
-    except GovernanceError as e:
-        error_console.print(Panel(str(e), title="[bold red]Pre-flight Failed[/bold red]", border_style="red"))
-        raise typer.Exit(code=1)

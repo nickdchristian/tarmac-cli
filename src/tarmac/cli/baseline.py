@@ -1,20 +1,24 @@
 """CLI commands for foundational CloudFormation deployments."""
 
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
-from rich.panel import Panel
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import GovernanceError
 from ..core.models import StackDeployReport
 from ..core.templates import resolve_resource_path
 from ..services.baseline import BaselineService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from ..services.log_encryption import resolve_log_encryption
 from .common import (
+    ConfigDirOption,
+    RegionOption,
+    TagsOption,
+    audit_hardening_parameters,
+    backend_parameters,
+    cloudtrail_parameters,
+    exit_on_error,
     get_active_account_id_map,
     load_configs_or_exit,
     log_archive_parameters,
@@ -27,18 +31,21 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Foundational CloudFormation stack deployments.")
 
+DryRunOption = Annotated[bool, typer.Option("--dry-run", help="Simulate deployment")]
+
 
 @app.command("cloudtrail")
 def deploy_cloudtrail(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    sse_s3: bool = typer.Option(
-        False, "--sse-s3", help="Use SSE-S3 (AES256) encryption instead of KMS CMK to eliminate KMS charges"
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deployment"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    sse_s3: Annotated[
+        bool,
+        typer.Option(
+            "--sse-s3", help="Use SSE-S3 (AES256) encryption instead of KMS CMK to eliminate KMS charges"
+        ),
+    ] = False,
+    dry_run: DryRunOption = False,
+    tags: TagsOption = None,
 ):
     """Deploy organization-wide CloudTrail stack in the Management Account."""
     print_header("Deploy Organization CloudTrail")
@@ -46,15 +53,13 @@ def deploy_cloudtrail(
     custom_tags = parse_tags_or_exit(tags)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("CloudTrail Deployment Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = CloudFormationService(session_mgr)
 
         template_file = resolve_resource_path(
             "cloudformation/organization-cloudtrail.yaml", project_root=bundle.config_dir.parent
         )
-        stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
-
         accts = get_active_account_id_map(session_mgr)
         log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
         log_archive_id = bundle.resolve_account_id(log_archive_name, accts) or ""
@@ -65,43 +70,31 @@ def deploy_cloudtrail(
         else:
             enable_kms = resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
 
-        params = {
-            "OrgName": bundle.org.organization.name,
-            "LogArchiveAccountId": log_archive_id,
-            "TrailName": bundle.org.cloudtrail.trail_name,
-            "EnableKmsEncryption": "true" if enable_kms else "false",
-        }
-
-        cfn_client = session_mgr.get_client("cloudformation", region_name=target_region)
         report = service.deploy_stack(
-            cfn_client,
-            stack_name,
+            session_mgr.get_client("cloudformation", region_name=target_region),
+            f"{bundle.org.organization.name}-organization-cloudtrail",
             template_file,
-            params,
+            cloudtrail_parameters(bundle, log_archive_id, enable_kms),
             tags=custom_tags,
             org_tags=bundle.get_organization_tags(),
             termination_protection=True,
             dry_run=dry_run,
         )
         _print_stack_report(report)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]CloudTrail Deployment Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 @app.command("backend")
 def deploy_backend(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    s3_only: bool = typer.Option(
-        False, "--s3-only", help="Deploy S3-only backend without DynamoDB (Terraform 1.10+ native S3 locking)"
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deployment"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    s3_only: Annotated[
+        bool,
+        typer.Option(
+            "--s3-only", help="Deploy S3-only backend without DynamoDB (Terraform 1.10+ native S3 locking)"
+        ),
+    ] = False,
+    dry_run: DryRunOption = False,
+    tags: TagsOption = None,
 ):
     """Deploy Terraform state backend (S3 with optional DynamoDB) in the Deployment account."""
     print_header("Deploy Terraform Backend")
@@ -109,7 +102,7 @@ def deploy_backend(
     custom_tags = parse_tags_or_exit(tags)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Backend Deployment Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = CloudFormationService(session_mgr)
 
@@ -126,7 +119,6 @@ def deploy_backend(
             "cloudformation/terraform-backend.yaml", project_root=bundle.config_dir.parent
         )
         stack_name = f"{bundle.org.organization.name}-terraform-backend"
-
         cfn_client = session_mgr.get_member_client(
             deployment_acct_id, "cloudformation", region_name=target_region
         )
@@ -135,18 +127,12 @@ def deploy_backend(
         )
         if lock_warning:
             print_warning(lock_warning)
-        params = {
-            "OrgName": bundle.org.organization.name,
-            "BucketPrefix": bundle.org.terraform_backend.bucket_prefix,
-            "EnableDynamoDB": "true" if enable_dynamodb else "false",
-            "DynamoDBTableName": bundle.org.terraform_backend.dynamodb_table_name,
-        }
 
         report = service.deploy_stack(
             cfn_client,
             stack_name,
             template_file,
-            params,
+            backend_parameters(bundle, enable_dynamodb),
             tags=custom_tags,
             org_tags=bundle.get_organization_tags(),
             account_tags=bundle.get_account_tags(backend_name),
@@ -154,11 +140,6 @@ def deploy_backend(
             dry_run=dry_run,
         )
         _print_stack_report(report)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Backend Deployment Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 def _deploy_log_archive_stack(
@@ -174,22 +155,20 @@ def _deploy_log_archive_stack(
     warn_if_object_lock_unset(bundle)
     print_info(f"Deploying hardening to Log-Archive ({log_archive_id})...")
     cfn_client = session_mgr.get_member_client(log_archive_id, "cloudformation", region_name=target_region)
-    stack_name = f"{bundle.org.organization.name}-log-archive-hardening"
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=bundle.config_dir.parent
     )
     if not dry_run:
         resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
     params = log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", "")))
-    log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     report = service.deploy_stack(
         cfn_client,
-        stack_name,
+        f"{bundle.org.organization.name}-log-archive-hardening",
         template_file,
         params,
         tags=tags,
         org_tags=bundle.get_organization_tags(),
-        account_tags=bundle.get_account_tags(log_archive_name),
+        account_tags=bundle.get_account_tags(bundle.get_log_archive_account_name() or "log-archive"),
         termination_protection=True,
         dry_run=dry_run,
     )
@@ -215,26 +194,17 @@ def _deploy_audit_stack(
             logger.debug("Delegated admin registration for %s: %s", sp, e)
 
     cfn_client = session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region)
-    stack_name = f"{bundle.org.organization.name}-audit-account-hardening"
     template_file = resolve_resource_path(
         "cloudformation/audit-account-hardening.yaml", project_root=bundle.config_dir.parent
     )
-    params = {
-        "OrgName": bundle.org.organization.name,
-        "OrganizationId": org_id,
-        "AlertEmail": str(bundle.org.contacts.security.email) if bundle.org.contacts.security.email else "",
-    }
-    if bundle.org.security_services.incident_response_webhook_url:
-        params["IncidentResponseWebhookUrl"] = str(bundle.org.security_services.incident_response_webhook_url)
-    audit_name = bundle.get_audit_account_name() or "audit"
     report = service.deploy_stack(
         cfn_client,
-        stack_name,
+        f"{bundle.org.organization.name}-audit-account-hardening",
         template_file,
-        params,
+        audit_hardening_parameters(bundle, org_id),
         tags=tags,
         org_tags=bundle.get_organization_tags(),
-        account_tags=bundle.get_account_tags(audit_name),
+        account_tags=bundle.get_account_tags(bundle.get_audit_account_name() or "audit"),
         termination_protection=True,
         dry_run=dry_run,
     )
@@ -243,12 +213,10 @@ def _deploy_audit_stack(
 
 @app.command("security")
 def deploy_security_hardening(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deployment"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: DryRunOption = False,
+    tags: TagsOption = None,
 ):
     """Deploy Log-Archive and Audit account hardening CloudFormation stacks."""
     print_header("Deploy Security Hardening Stacks")
@@ -256,10 +224,9 @@ def deploy_security_hardening(
     custom_tags = parse_tags_or_exit(tags)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Security Hardening Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = CloudFormationService(session_mgr)
-
         org_client = session_mgr.get_client("organizations")
         org_id = str(org_client.describe_organization()["Organization"]["Id"])
         accts = get_active_account_id_map(session_mgr)
@@ -291,21 +258,15 @@ def deploy_security_hardening(
             )
         else:
             print_warning(f"Audit account '{audit_name}' not found. Skipping Audit hardening.")
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Security Hardening Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 @app.command("logs")
+@app.command("harden-logs", hidden=True)
 def deploy_log_archive(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deployment"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: DryRunOption = False,
+    tags: TagsOption = None,
 ):
     """Deploy Log-Archive account hardening CloudFormation stack."""
     print_header("Deploy Log-Archive Hardening Stack")
@@ -313,11 +274,10 @@ def deploy_log_archive(
     custom_tags = parse_tags_or_exit(tags)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Log-Archive Hardening Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = CloudFormationService(session_mgr)
-        org_client = session_mgr.get_client("organizations")
-        org_id = str(org_client.describe_organization()["Organization"]["Id"])
+        org_id = str(session_mgr.get_client("organizations").describe_organization()["Organization"]["Id"])
         accts = get_active_account_id_map(session_mgr)
 
         log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
@@ -329,21 +289,15 @@ def deploy_log_archive(
         _deploy_log_archive_stack(
             service, session_mgr, bundle, target_region, log_archive_id, org_id, dry_run, tags=custom_tags
         )
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Log-Archive Hardening Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 @app.command("audit")
+@app.command("harden-audit", hidden=True)
 def deploy_audit(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deployment"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: DryRunOption = False,
+    tags: TagsOption = None,
 ):
     """Deploy Audit account hardening CloudFormation stack."""
     print_header("Deploy Audit Hardening Stack")
@@ -351,7 +305,7 @@ def deploy_audit(
     custom_tags = parse_tags_or_exit(tags)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Audit Hardening Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = CloudFormationService(session_mgr)
         org_client = session_mgr.get_client("organizations")
@@ -375,41 +329,9 @@ def deploy_audit(
             dry_run,
             tags=custom_tags,
         )
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Audit Hardening Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
-
-
-@app.command("harden-audit", hidden=True)
-def deploy_audit_alias(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deployment"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
-):
-    """Deploy Audit account hardening CloudFormation stack (backward-compatible alias)."""
-    deploy_audit(config_dir=config_dir, region=region, dry_run=dry_run, tags=tags)
-
-
-@app.command("harden-logs", hidden=True)
-def deploy_logs_alias(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate deployment"),
-    tags: list[str] | None = typer.Option(
-        None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
-    ),
-):
-    """Deploy Log-Archive account hardening CloudFormation stack (backward-compatible alias)."""
-    deploy_log_archive(config_dir=config_dir, region=region, dry_run=dry_run, tags=tags)
 
 
 def _print_stack_report(report: StackDeployReport) -> None:
-    """Helper to render stack deployment outputs."""
     print_success(f"Stack [cyan]{report.stack_name}[/cyan]: [{report.action}] - {report.status}")
     if report.outputs:
         table = create_table(title=f"{report.stack_name} Outputs")
@@ -421,25 +343,20 @@ def _print_stack_report(report: StackDeployReport) -> None:
 
 
 @app.command("anomaly-status")
-def anomaly_status(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-):
+def anomaly_status(config_dir: ConfigDirOption = None, region: RegionOption = None):
     """List all Cost Anomaly Detection monitors and subscriptions in the Management Account."""
     print_header("Cost Anomaly Detection Status")
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Anomaly Status Check Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
-        baseliner = BaselineService(session_mgr)
-        monitors, subs = baseliner.get_anomaly_overview()
+        monitors, subs = BaselineService(session_mgr).get_anomaly_overview()
 
         table = create_table(title="Cost Anomaly Monitors")
         table.add_column("Monitor Name", style="cyan")
         table.add_column("Type", style="yellow")
         table.add_column("Scope / Linked Account", style="green")
-
         for m in monitors:
             spec = m.get("MonitorSpecification", {})
             dim_values = spec.get("Dimensions", {}).get("Values", ["All Linked Accounts / Dimensional"])
@@ -453,19 +370,11 @@ def anomaly_status(
         sub_table.add_column("Threshold", style="yellow")
         sub_table.add_column("Frequency", style="magenta")
         sub_table.add_column("Subscribers", style="green")
-
         for s in subs:
-            emails = [sub.get("Address", "") for sub in s.get("Subscribers", [])]
             sub_table.add_row(
                 s.get("SubscriptionName", "Unknown"),
                 f"${s.get('Threshold', 0):.2f}",
                 s.get("Frequency", "Unknown"),
-                ", ".join(emails),
+                ", ".join(sub.get("Address", "") for sub in s.get("Subscribers", [])),
             )
         console.print(sub_table)
-
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Anomaly Status Check Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)

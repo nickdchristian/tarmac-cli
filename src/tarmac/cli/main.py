@@ -6,17 +6,14 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
-from rich import box
 from rich.panel import Panel
-from rich.table import Table
 
 from .. import __version__
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
-from ..core.exceptions import GovernanceError
 from ..core.logging import setup_logging, start_run
 from ..core.placeholders import find_placeholder_values
 from ..services.drift import DriftService
@@ -25,11 +22,28 @@ from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
 from . import access, account, baseline, deploy, identity, org, ou
 from .account import apply_accounts
-from .common import load_configs_or_exit, warn_if_example_newer
+from .common import (
+    ConfigDirOption,
+    JsonOption,
+    RegionOption,
+    YesOption,
+    exit_on_error,
+    load_configs_or_exit,
+    warn_if_example_newer,
+)
 from .importer import import_command
 from .logs import logs_command
 from .preflight import run_preflight_checks
-from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
+from .ui import (
+    console,
+    create_table,
+    error_console,
+    print_action_panel,
+    print_header,
+    print_info,
+    print_success,
+    print_warning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,27 +86,29 @@ def version_callback(value: bool) -> None:
 @app.callback()
 def main_callback(
     ctx: typer.Context,
-    version: bool | None = typer.Option(
-        None,
-        "--version",
-        "-V",
-        help="Show tarmac version and exit",
-        callback=version_callback,
-        is_eager=True,
-    ),
-    profile: str | None = typer.Option(None, "--profile", "-p", help="AWS CLI profile name to use"),
-    debug: bool = typer.Option(
-        False, "--debug", "-d", help="Enable verbose debug logging and full tracebacks"
-    ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Print every recorded action (INFO) to the terminal"
-    ),
-    log_file: Path | None = typer.Option(
-        None,
-        "--log-file",
-        envvar="TARMAC_LOG_FILE",
-        help="Append a JSON-lines record of this run (actions, outcomes, errors) to this file",
-    ),
+    version: Annotated[
+        bool | None,
+        typer.Option(
+            "--version", "-V", help="Show tarmac version and exit", callback=version_callback, is_eager=True
+        ),
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", "-p", help="AWS CLI profile name to use")
+    ] = None,
+    debug: Annotated[
+        bool, typer.Option("--debug", "-d", help="Enable verbose debug logging and full tracebacks")
+    ] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Print every recorded action (INFO) to the terminal")
+    ] = False,
+    log_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--log-file",
+            envvar="TARMAC_LOG_FILE",
+            help="Append a JSON-lines record of this run (actions, outcomes, errors) to this file",
+        ),
+    ] = None,
 ) -> None:
     """Global CLI configuration callback."""
     if profile:
@@ -111,21 +127,26 @@ app.command("import")(import_command)
 
 @app.command("init")
 def init_project(
-    directory: Path | None = typer.Argument(
-        None,
-        help="Directory to scaffold configuration files [default: config]",
-        show_default=False,
-    ),
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Directory to scaffold configuration files"
-    ),
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing configuration files"),
-    with_templates: bool = typer.Option(
-        False,
-        "--with-templates",
-        "-t",
-        help="Also export default CloudFormation templates and SCP policies locally",
-    ),
+    directory: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Directory to scaffold configuration files [default: config]", show_default=False
+        ),
+    ] = None,
+    config_dir: Annotated[
+        Path | None, typer.Option("--config-dir", "-c", help="Directory to scaffold configuration files")
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Overwrite existing configuration files")
+    ] = False,
+    with_templates: Annotated[
+        bool,
+        typer.Option(
+            "--with-templates",
+            "-t",
+            help="Also export default CloudFormation templates and SCP policies locally",
+        ),
+    ] = False,
 ) -> None:
     """Scaffold starter YAML configuration files for a new Tarmac project."""
 
@@ -176,10 +197,8 @@ def _print_validation_table(bundle: Any) -> None:
 
 @app.command("validate")
 def validate_config(
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Path to configuration directory"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
+    config_dir: ConfigDirOption = None,
+    json_output: JsonOption = False,
 ) -> None:
     """Validate all YAML configuration files and logical cross-references."""
 
@@ -226,11 +245,15 @@ def validate_config(
 
 @app.command("apply")
 def apply_shortcut(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate provisioning without making changes"),
-    skip_baseline: bool = typer.Option(False, "--skip-baseline", help="Skip running post-creation baselines"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt for automated run"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Simulate provisioning without making changes")
+    ] = False,
+    skip_baseline: Annotated[
+        bool, typer.Option("--skip-baseline", help="Skip running post-creation baselines")
+    ] = False,
+    yes: YesOption = False,
 ) -> None:
     """Provision declared accounts (shortcut for 'tarmac account apply').
 
@@ -300,14 +323,17 @@ def _resolve_sso_region(default_region: str) -> str:
 
 @app.command("info")
 def show_info(
-    region: str | None = typer.Option(
-        None, "--region", "-r", help="AWS region (default: AWS_REGION / AWS_DEFAULT_REGION, else us-east-1)"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
+    region: Annotated[
+        str | None,
+        typer.Option(
+            "--region", "-r", help="AWS region (default: AWS_REGION / AWS_DEFAULT_REGION, else us-east-1)"
+        ),
+    ] = None,
+    json_output: JsonOption = False,
 ) -> None:
     """Show current AWS authentication details, caller identity, and Organization status."""
 
-    try:
+    with exit_on_error("Authentication Error"):
         session_mgr = AwsSessionManager(region_name=region)
         resolved_region = str(session_mgr.default_region)
         caller = session_mgr.get_caller_identity()
@@ -363,46 +389,6 @@ def show_info(
             )
 
         console.print(table)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Authentication Error[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
-
-
-def _render_status_actions_panel(actions: list[tuple[str, str, str]]) -> None:
-    """Render dedicated remediation table for pending landing zone components."""
-    has_failures = any(level == "FAIL" for level, _, _ in actions)
-    panel_title = (
-        "[bold red]Action Required (Missing Prerequisite)[/bold red]"
-        if has_failures
-        else "[bold yellow]Pending Actions & Remediation[/bold yellow]"
-    )
-    border_color = "red" if has_failures else "yellow"
-
-    action_table = Table(
-        box=box.SIMPLE,
-        header_style=f"bold {border_color}",
-        expand=True,
-        show_header=True,
-    )
-    action_table.add_column("Status", justify="center", width=8, min_width=8, no_wrap=True)
-    action_table.add_column("Component", style="bold white", width=26, no_wrap=True)
-    action_table.add_column("Action Required / Remediation", style="white")
-
-    for level, comp, action in actions:
-        badge = "[bold red]FAIL[/bold red]" if level == "FAIL" else "[bold yellow]WARN[/bold yellow]"
-        action_table.add_row(badge, comp, action)
-
-    console.print(
-        Panel(
-            action_table,
-            title=panel_title,
-            border_style=border_color,
-            padding=(0, 1),
-            expand=True,
-        )
-    )
 
 
 def _eval_org_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
@@ -521,7 +507,21 @@ def _render_status_table(bundle: Any, status: Any) -> None:
     console.print(table)
 
     if actions:
-        _render_status_actions_panel(actions)
+        print_action_panel(
+            [
+                (
+                    "[bold red]FAIL[/bold red]" if level == "FAIL" else "[bold yellow]WARN[/bold yellow]",
+                    name,
+                    action,
+                )
+                for level, name, action in actions
+            ],
+            has_failures=any(level == "FAIL" for level, _, _ in actions),
+            titles=("Action Required (Missing Prerequisite)", "Pending Actions & Remediation"),
+            item_header="Component",
+            item_width=26,
+            action_header="Action Required / Remediation",
+        )
         print_info(
             f"Reconciliation pending ({len(actions)} item(s)). Review actionable steps above or run 'tarmac deploy run'.\n"
         )
@@ -531,18 +531,16 @@ def _render_status_table(bundle: Any, status: Any) -> None:
 
 @app.command("status")
 def show_status(
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Path to configuration directory"
-    ),
-    region: str | None = typer.Option(None, "--region", "-r", help="Primary AWS region"),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    json_output: JsonOption = False,
 ) -> None:
     """Show reconciliation status between declared YAML and live AWS environment."""
 
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Status Inspection Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         status_service = StatusService(session_mgr)
         status = status_service.inspect(bundle, target_region)
@@ -552,11 +550,6 @@ def show_status(
             return
 
         _render_status_table(bundle, status)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Status Inspection Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 def _render_drift_table(report: Any) -> None:
@@ -605,38 +598,27 @@ def _render_drift_table(report: Any) -> None:
 
 @app.command("drift")
 def show_drift(
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Path to configuration directory"
-    ),
-    region: str | None = typer.Option(None, "--region", "-r", help="Primary AWS region"),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
-    strict: bool = typer.Option(False, "--strict", help="Exit with code 1 if drift is detected"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    json_output: JsonOption = False,
+    strict: Annotated[bool, typer.Option("--strict", help="Exit with code 1 if drift is detected")] = False,
 ) -> None:
     """Audit live AWS resources against declared YAML manifests across all governance pillars."""
 
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Drift Inspection Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         drift_service = DriftService(session_mgr)
         report = drift_service.inspect_drift(bundle, target_region)
 
         if json_output:
             print(json.dumps(dataclasses.asdict(report), indent=2))
-            if strict and report.has_drift:
-                raise typer.Exit(code=1)
-            return
-
-        _render_drift_table(report)
-
+        else:
+            _render_drift_table(report)
         if strict and report.has_drift:
             raise typer.Exit(code=1)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Drift Inspection Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

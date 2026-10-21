@@ -1,10 +1,10 @@
 """CLI commands for AWS Organizations and Management Account bootstrap."""
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from botocore.exceptions import ClientError
-from rich.panel import Panel
 
 from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
@@ -14,31 +14,30 @@ from ..services.baseline import BaselineService
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.scp import SCPService
-from .common import get_active_account_id_map, load_configs_or_exit
-from .ui import (
-    console,
-    create_table,
-    error_console,
-    print_header,
-    print_info,
-    print_success,
-    print_warning,
+from .common import (
+    AdoptExistingOption,
+    ConfigDirOption,
+    RegionOption,
+    exit_on_error,
+    get_active_account_id_map,
+    load_configs_or_exit,
 )
+from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
 
 app = typer.Typer(help="AWS Organizations and Management Account governance.")
 
 
 @app.command("bootstrap")
 def bootstrap(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
 ):
     """Bootstrap AWS Organizations with ALL features, alternate contacts, and trusted services."""
     print_header("AWS Organizations Bootstrap")
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Bootstrap Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = OrganizationService(session_mgr)
 
@@ -71,10 +70,6 @@ def bootstrap(
                 if failed:
                     raise GovernanceError(f"Default VPC cleanup failed in {len(failed)} region(s).")
 
-    except GovernanceError as e:
-        error_console.print(Panel(str(e), title="[bold red]Bootstrap Failed[/bold red]", border_style="red"))
-        raise typer.Exit(code=1)
-
 
 def _render_vpc_reports(reports: list[VpcCleanupReport], dry_run: bool) -> None:
     """Render VPC cleanup outcomes to console."""
@@ -98,16 +93,18 @@ def _render_vpc_reports(reports: list[VpcCleanupReport], dry_run: bool) -> None:
 
 @app.command("cleanup-vpc")
 def cleanup_management_vpc(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate cleanup without deleting resources"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Simulate cleanup without deleting resources")
+    ] = False,
 ):
     """Scan and purge default VPCs in the AWS Management Account across all enabled regions."""
     print_header("Management Account: Default VPC Cleanup")
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("VPC Cleanup Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         baseliner = BaselineService(session_mgr)
         caller = session_mgr.get_caller_identity()
@@ -121,44 +118,35 @@ def cleanup_management_vpc(
         reports = baseliner.cleanup_default_vpcs(mgmt_id, "management", regions=None, dry_run=dry_run)
         _render_vpc_reports(reports, dry_run)
 
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]VPC Cleanup Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
-
 
 @app.command("contacts")
 def set_contacts(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
 ):
     """Set alternate contacts (Billing, Operations, Security) on the Management Account."""
     print_header("Set Account Alternate Contacts")
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Contacts Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = OrganizationService(session_mgr)
         updated = service.set_account_contacts(bundle.org.contacts)
         print_success(f"Successfully configured contacts: {', '.join(updated)}")
-    except GovernanceError as e:
-        error_console.print(Panel(str(e), title="[bold red]Contacts Failed[/bold red]", border_style="red"))
-        raise typer.Exit(code=1)
 
 
 @app.command("root-access")
 def enable_root_access(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
 ):
     """Enable centralized root access management and privileged root sessions."""
     print_header("Enable Centralized Root Access Management")
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Root Access Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = OrganizationService(session_mgr)
         caller = session_mgr.get_caller_identity()
@@ -179,24 +167,19 @@ def enable_root_access(
                     print_warning(f"{feature_title}: {err_msg}")
                 else:
                     print_warning(f"{feature_title}: Skipped or disabled in configuration")
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Root Access Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 @app.command("activate-cost-tags")
 def activate_cost_tags_command(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
 ) -> None:
     """Activate user-defined and AWS-generated cost allocation tags in AWS Cost Explorer."""
     print_header("Cost Allocation Tags: Activation")
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Cost Allocation Tag Activation Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         service = OrganizationService(session_mgr)
         target_cost_tags = bundle.get_cost_allocation_tags()
@@ -211,13 +194,6 @@ def activate_cost_tags_command(
             )
         else:
             print_info("No inactive cost allocation tags matching target keys found to activate.")
-    except GovernanceError as e:
-        error_console.print(
-            Panel(
-                str(e), title="[bold red]Cost Allocation Tag Activation Failed[/bold red]", border_style="red"
-            )
-        )
-        raise typer.Exit(code=1)
 
 
 scp_app = typer.Typer(help="Manage Service Control Policies (SCPs).", no_args_is_help=True)
@@ -288,7 +264,7 @@ def _execute_scp_reconciliation(
         return
 
     target_region = region or bundle.org.organization.primary_region
-    try:
+    with exit_on_error("SCP Reconciliation Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         ou_service = OUService(session_mgr)
         scp_service = SCPService(session_mgr)
@@ -326,22 +302,13 @@ def _execute_scp_reconciliation(
             details = "; ".join(f"{name}: {', '.join(targets)}" for name, targets in unresolved.items())
             error_console.print(f"[red]✗[/red] SCP targets not found in the organization: {details}")
             raise typer.Exit(code=1)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]SCP Reconciliation Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 @scp_app.command("plan")
 def plan_scps(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    adopt_existing: bool = typer.Option(
-        False,
-        "--adopt-existing",
-        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    adopt_existing: AdoptExistingOption = False,
 ) -> None:
     """Preview Service Control Policy changes without applying them."""
     set_adopt_existing(adopt_existing)
@@ -351,14 +318,10 @@ def plan_scps(
 
 @scp_app.command("apply")
 def apply_scps(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
-    adopt_existing: bool = typer.Option(
-        False,
-        "--adopt-existing",
-        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
-    ),
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview changes without applying")] = False,
+    adopt_existing: AdoptExistingOption = False,
 ) -> None:
     """Reconcile and attach declared Service Control Policies."""
     set_adopt_existing(adopt_existing)

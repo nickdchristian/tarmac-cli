@@ -1,18 +1,58 @@
-"""Shared CLI helpers and configuration handlers."""
+"""Shared CLI helpers, options and configuration handlers."""
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
+from rich.panel import Panel
 
 from ..core import inventory
 from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_configs
-from ..core.exceptions import AWSAuthenticationError
+from ..core.exceptions import AWSAuthenticationError, GovernanceError
 from ..core.tagging import parse_cli_tags
-from .ui import error_console, print_warning
+from .ui import error_console, print_info, print_warning
 
 logger = logging.getLogger(__name__)
+
+ConfigDirOption = Annotated[
+    Path | None, typer.Option("--config-dir", "-c", help="Path to configuration directory")
+]
+RegionOption = Annotated[str | None, typer.Option("--region", "-r", help="Override primary AWS region")]
+JsonOption = Annotated[bool, typer.Option("--json", help="Output results in JSON format")]
+YesOption = Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")]
+TagsOption = Annotated[
+    list[str] | None,
+    typer.Option("--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"),
+]
+AdoptExistingOption = Annotated[
+    bool,
+    typer.Option(
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
+]
+
+
+@contextmanager
+def exit_on_error(title: str) -> Iterator[None]:
+    """Show a GovernanceError raised inside the block as a red panel and exit with code 1."""
+    try:
+        yield
+    except GovernanceError as e:
+        error_console.print(Panel(str(e), title=f"[bold red]{title}[/bold red]", border_style="red"))
+        raise typer.Exit(code=1) from e
+
+
+def confirm_or_exit(prompt: str, *, yes: bool, dry_run: bool, cancelled: str) -> None:
+    """Ask before a live change unless --yes or --dry-run was given; exit 0 with `cancelled` on no."""
+    if dry_run or yes:
+        return
+    if not typer.confirm(prompt, default=False):
+        print_info(cancelled)
+        raise typer.Exit(code=0)
 
 
 def warn_if_example_newer(config_dir: Path | None = None) -> None:
@@ -121,6 +161,41 @@ def log_archive_parameters(
     if cloudtrail.object_lock:
         params["ObjectLockMode"] = cloudtrail.object_lock.mode
         params["ObjectLockRetentionDays"] = str(cloudtrail.object_lock.retention_days)
+    return params
+
+
+def cloudtrail_parameters(bundle: ConfigBundle, log_archive_id: str, enable_kms: bool) -> dict[str, str]:
+    """CloudFormation parameters for the organization CloudTrail stack (shared by deploy and baseline)."""
+    return {
+        "OrgName": bundle.org.organization.name,
+        "LogArchiveAccountId": log_archive_id,
+        "TrailName": bundle.org.cloudtrail.trail_name,
+        "EnableKmsEncryption": "true" if enable_kms else "false",
+    }
+
+
+def backend_parameters(bundle: ConfigBundle, enable_dynamodb: bool) -> dict[str, str]:
+    """CloudFormation parameters for the Terraform backend stack (shared by deploy and baseline)."""
+    backend = bundle.org.terraform_backend
+    return {
+        "OrgName": bundle.org.organization.name,
+        "BucketPrefix": backend.bucket_prefix,
+        "EnableDynamoDB": "true" if enable_dynamodb else "false",
+        "DynamoDBTableName": backend.dynamodb_table_name,
+    }
+
+
+def audit_hardening_parameters(bundle: ConfigBundle, org_id: str) -> dict[str, str]:
+    """CloudFormation parameters for the audit account hardening stack (shared by deploy and baseline)."""
+    security_email = bundle.org.contacts.security.email
+    params = {
+        "OrgName": bundle.org.organization.name,
+        "OrganizationId": org_id,
+        "AlertEmail": str(security_email) if security_email else "",
+    }
+    webhook = bundle.org.security_services.incident_response_webhook_url
+    if webhook:
+        params["IncidentResponseWebhookUrl"] = str(webhook)
     return params
 
 

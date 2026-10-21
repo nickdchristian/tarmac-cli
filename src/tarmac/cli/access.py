@@ -2,6 +2,7 @@
 
 import shutil
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from botocore.exceptions import BotoCoreError, ClientError
@@ -42,21 +43,29 @@ def _write_role_profile(
 
 @app.command("bootstrap")
 def access_bootstrap(
-    stack_name: str = typer.Option("tarmac-access", "--stack-name", help="CloudFormation stack name"),
-    role_name: str = typer.Option("TarmacDeploymentRole", "--role-name", help="Name of the tarmac role"),
-    region: str = typer.Option("us-east-1", "--region", "-r", help="Region to deploy the stack in"),
-    with_bootstrap_user: bool = typer.Option(
-        False,
-        "--with-bootstrap-user",
-        help="Also create an assume-only IAM user (for use before IAM Identity Center exists)",
-    ),
-    profile: str = typer.Option(
-        "tarmac", "--profile-name", help="AWS CLI profile to write (with the bootstrap user)"
-    ),
-    aws_config: Path = typer.Option(
-        Path("~/.aws/config"), "--aws-config", help="AWS config file to add the role profile to"
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deployed"),
+    stack_name: Annotated[
+        str, typer.Option("--stack-name", help="CloudFormation stack name")
+    ] = "tarmac-access",
+    role_name: Annotated[
+        str, typer.Option("--role-name", help="Name of the tarmac role")
+    ] = "TarmacDeploymentRole",
+    region: Annotated[
+        str, typer.Option("--region", "-r", help="Region to deploy the stack in")
+    ] = "us-east-1",
+    with_bootstrap_user: Annotated[
+        bool,
+        typer.Option(
+            "--with-bootstrap-user",
+            help="Also create an assume-only IAM user (for use before IAM Identity Center exists)",
+        ),
+    ] = False,
+    profile: Annotated[
+        str, typer.Option("--profile-name", help="AWS CLI profile to write (with the bootstrap user)")
+    ] = "tarmac",
+    aws_config: Annotated[
+        Path, typer.Option("--aws-config", help="AWS config file to add the role profile to")
+    ] = Path("~/.aws/config"),
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be deployed")] = False,
 ) -> None:
     """Create the tarmac role (and optionally a bootstrap user) in the management account.
 
@@ -109,9 +118,9 @@ def access_bootstrap(
 
 @app.command("template")
 def access_template(
-    output: Path | None = typer.Option(
-        None, "--output", "-o", help="Write the template here instead of stdout"
-    ),
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write the template here instead of stdout")
+    ] = None,
 ) -> None:
     """Print (or save) the CloudFormation template that creates the tarmac role and bootstrap user."""
     source = resolve_resource_path(TEMPLATE_PATH)
