@@ -478,7 +478,7 @@ def test_securityhub_local_mode_registers_the_admin_in_every_region():
         "111122223333",
         "eu-west-1",
         ["eu-west-1", "us-east-1"],
-        SecurityHubConfig(enabled=True, central_configuration=False),
+        SecurityHubConfig.model_validate({"enabled": True, "central_configuration": False}),
     )
 
     assert report.status == "ENABLED"
