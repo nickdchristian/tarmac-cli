@@ -11,6 +11,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
+from ..core.org_accounts import active_account_ids, is_active, iter_accounts
 from ..core.placeholders import find_placeholder_values
 from ..core.templates import resolve_resource_path
 
@@ -561,13 +562,7 @@ class PreflightService:
         """Verify whether AWS Organizations account creation quota is sufficient for declared accounts."""
         try:
             org = self.session_mgr.get_client("organizations")
-            paginator = org.get_paginator("list_accounts")
-            active_accounts = 0
-            for page in paginator.paginate():
-                if isinstance(page, dict):
-                    for a in page.get("Accounts", []):
-                        if isinstance(a, dict) and a.get("Status") == "ACTIVE":
-                            active_accounts += 1
+            active_accounts = sum(1 for a in iter_accounts(org) if is_active(a))
             declared_count = len(self.bundle.accounts.accounts)
 
             sq = self.session_mgr.get_client("service-quotas", region_name="us-east-1")
@@ -673,16 +668,7 @@ class PreflightService:
 
             active_accts: dict[str, str] = {}
             try:
-                org = self.session_mgr.get_client("organizations")
-                paginator = org.get_paginator("list_accounts")
-                for page in paginator.paginate():
-                    if isinstance(page, dict):
-                        for acct in page.get("Accounts", []):
-                            if isinstance(acct, dict) and acct.get("Status") == "ACTIVE":
-                                name = str(acct.get("Name", ""))
-                                acct_id = str(acct.get("Id", ""))
-                                if name and acct_id:
-                                    active_accts[name] = acct_id
+                active_accts = active_account_ids(self.session_mgr.get_client("organizations"))
             except AWS_ERRORS as e:
                 logger.debug("Could not list accounts for S3 bucket collision check: %s", e)
 

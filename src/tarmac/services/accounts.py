@@ -13,7 +13,7 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import AccountBaselineConfig, AccountDef, AccountsCatalog
-from ..core.exceptions import AccountProvisioningError, GovernanceError, aws_error_message
+from ..core.exceptions import AWS_ERRORS, AccountProvisioningError, GovernanceError, aws_error_message
 from ..core.models import (
     STATUS_SUSPENDED,
     TAG_MANAGED_BY,
@@ -22,6 +22,7 @@ from ..core.models import (
     AccountProvisionResult,
     AccountSuspensionResult,
 )
+from ..core.org_accounts import iter_accounts
 from ..core.placeholders import is_placeholder_email
 
 logger = logging.getLogger(__name__)
@@ -56,23 +57,9 @@ class AccountService:
 
     def list_all_accounts(self) -> list[dict[str, Any]]:
         """Fetch all accounts across all pages from AWS Organizations."""
-        accounts: list[dict[str, Any]] = []
         try:
-            paginator = self.org_client.get_paginator("list_accounts")
-            for page in paginator.paginate():
-                acct_list = page.get("Accounts", [])
-                if isinstance(acct_list, list):
-                    accounts.extend([a for a in acct_list if isinstance(a, dict)])
-            if accounts:
-                return accounts
-        except (AttributeError, ClientError, KeyError):
-            pass
-        try:
-            resp = self.org_client.list_accounts()
-            if isinstance(resp, dict):
-                return [a for a in resp.get("Accounts", []) if isinstance(a, dict)]
-            return []
-        except Exception as e:
+            return list(iter_accounts(self.org_client))
+        except AWS_ERRORS as e:
             raise AccountProvisioningError("Failed to list existing AWS accounts", details=str(e)) from e
 
     def list_existing_accounts(self) -> dict[str, dict[str, Any]]:

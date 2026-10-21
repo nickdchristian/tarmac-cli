@@ -13,6 +13,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AccountProvisioningError, GovernanceError
 from ..core.models import BaselineReport, PreflightCheckStatus, PreflightReport, StackDeployReport
+from ..core.org_accounts import get_active_account_id_map
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
@@ -29,7 +30,6 @@ from .common import (
     audit_hardening_parameters,
     backend_parameters,
     cloudtrail_parameters,
-    get_active_account_id_map,
     log_archive_parameters,
     warn_if_object_lock_unset,
 )

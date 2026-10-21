@@ -15,6 +15,7 @@ from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GroupDef, IdentityCenterConfig, PermissionSetDef, UserDef
 from ..core.exceptions import DeploymentError, IdentityCenterError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, IdentitySyncReport
+from ..core.org_accounts import active_account_ids
 from ..core.templates import resolve_resource_path
 from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
 
@@ -893,13 +894,7 @@ class IdentityService:
 
     def _fetch_active_accounts(self) -> dict[str, str]:
         """Fetch all ACTIVE AWS accounts from Organizations as {Name: Id}."""
-        org_client: Any = self.session_mgr.get_client("organizations")
-        active_accts: dict[str, str] = {}
-        for page in org_client.get_paginator("list_accounts").paginate():
-            for a in page.get("Accounts", []):
-                if a.get("Status") == "ACTIVE":
-                    active_accts[a["Name"]] = str(a["Id"])
-        return active_accts
+        return active_account_ids(self.session_mgr.get_client("organizations"))
 
     def sync_identity(
         self,

@@ -19,6 +19,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
+from ..core.org_accounts import is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
 from ..core.tagging import validate_tags
 from .identity import IdentityService
@@ -117,32 +118,31 @@ class ImportService:
 
     def _accounts(self, mgmt_id: str, ou_names: dict[str, str], root_id: str) -> list[dict[str, Any]]:
         accounts: list[dict[str, Any]] = []
-        for page in self.org.get_paginator("list_accounts").paginate():
-            for acct in sorted(page.get("Accounts", []), key=lambda a: a["Name"]):
-                if acct["Id"] == mgmt_id:
-                    continue
-                if acct.get("Status") != "ACTIVE":
-                    self.report.skipped_accounts.append(f"{acct['Name']} ({acct.get('Status', 'unknown')})")
-                    continue
-                parents = self.org.list_parents(ChildId=acct["Id"]).get("Parents", [])
-                parent_id = parents[0]["Id"] if parents else root_id
-                ou_name = ou_names.get(parent_id)
-                if ou_name is None:
-                    self.report.skipped_accounts.append(f"{acct['Name']} (directly under the root)")
-                    self.report.todos.append(
-                        f"Account '{acct['Name']}' sits directly under the organization root. Tarmac accounts "
-                        "must belong to an OU: move it into one, then re-run the import."
-                    )
-                    continue
-                entry: dict[str, Any] = {"name": acct["Name"], "email": acct["Email"], "ou": ou_name}
-                tags = _clean_tags(self._tags(acct["Id"]), self.report.todos, f"account '{acct['Name']}'")
-                if tags:
-                    entry["tags"] = tags
-                # Brown-field accounts keep their existing network layout.
-                entry["baseline"] = {"delete_default_vpc": False}
-                accounts.append(entry)
-                self.report.accounts.append(acct["Name"])
-                self.imported_accounts[str(acct["Id"])] = str(acct["Name"])
+        for acct in sorted(iter_accounts(self.org), key=lambda a: a["Name"]):
+            if acct["Id"] == mgmt_id:
+                continue
+            if not is_active(acct):
+                self.report.skipped_accounts.append(f"{acct['Name']} ({acct.get('Status', 'unknown')})")
+                continue
+            parents = self.org.list_parents(ChildId=acct["Id"]).get("Parents", [])
+            parent_id = parents[0]["Id"] if parents else root_id
+            ou_name = ou_names.get(parent_id)
+            if ou_name is None:
+                self.report.skipped_accounts.append(f"{acct['Name']} (directly under the root)")
+                self.report.todos.append(
+                    f"Account '{acct['Name']}' sits directly under the organization root. Tarmac accounts "
+                    "must belong to an OU: move it into one, then re-run the import."
+                )
+                continue
+            entry: dict[str, Any] = {"name": acct["Name"], "email": acct["Email"], "ou": ou_name}
+            tags = _clean_tags(self._tags(acct["Id"]), self.report.todos, f"account '{acct['Name']}'")
+            if tags:
+                entry["tags"] = tags
+            # Brown-field accounts keep their existing network layout.
+            entry["baseline"] = {"delete_default_vpc": False}
+            accounts.append(entry)
+            self.report.accounts.append(acct["Name"])
+            self.imported_accounts[str(acct["Id"])] = str(acct["Name"])
         return accounts
 
     def _scps(self, root_id: str, ou_names: dict[str, str], config_dir: Path) -> list[dict[str, Any]]:

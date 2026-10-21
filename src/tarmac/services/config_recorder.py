@@ -18,6 +18,7 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
 from ..core.models import TAG_MANAGED_BY, StackDeployReport
+from ..core.org_accounts import is_active, iter_accounts
 from ..core.tagging import merge_tags, to_cfn_tags
 from .cloudformation import CloudFormationService
 
@@ -160,11 +161,9 @@ class ConfigRecorderService:
         """The organization root without the management account (StackSets cannot deploy there) and without
         suspended accounts (their roles cannot be assumed)."""
         excluded = {management_account_id}
-        paginator = self.session_mgr.get_client("organizations").get_paginator("list_accounts")
-        for page in paginator.paginate():
-            for account in page.get("Accounts", []):
-                if account.get("Status") not in (None, "ACTIVE"):
-                    excluded.add(str(account["Id"]))
+        for account in iter_accounts(self.session_mgr.get_client("organizations")):
+            if not is_active(account):
+                excluded.add(str(account["Id"]))
         return {
             "OrganizationalUnitIds": [root_id],
             "AccountFilterType": "DIFFERENCE",

@@ -1,6 +1,5 @@
 """Shared CLI helpers, options and configuration handlers."""
 
-import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,8 +13,6 @@ from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_
 from ..core.exceptions import AWSAuthenticationError, GovernanceError
 from ..core.tagging import parse_cli_tags
 from .ui import error_console, print_info, print_warning
-
-logger = logging.getLogger(__name__)
 
 ConfigDirOption = Annotated[
     Path | None, typer.Option("--config-dir", "-c", help="Path to configuration directory")
@@ -85,33 +82,6 @@ def load_configs_or_exit(config_dir: Path | None = None) -> ConfigBundle:
         raise typer.Exit(code=1)
     inventory.activate(config_dir or get_default_config_dir())
     return bundle
-
-
-def get_active_account_id_map(session_mgr: Any) -> dict[str, str]:
-    """Fetch all ACTIVE accounts in the organization as {AccountName: AccountId} with paginator."""
-    org_client = session_mgr.get_client("organizations")
-    accts: dict[str, str] = {}
-    try:
-        paginator = org_client.get_paginator("list_accounts")
-        for page in paginator.paginate():
-            acct_list = page.get("Accounts", [])
-            if isinstance(acct_list, list):
-                for a in acct_list:
-                    if isinstance(a, dict) and a.get("Status", "ACTIVE") in ("ACTIVE", None):
-                        accts[a["Name"]] = str(a["Id"])
-        if accts:
-            return accts
-    except Exception as exc:
-        logger.debug("Paginated list_accounts failed, falling back to a single call: %s", exc)
-    try:
-        resp = org_client.list_accounts()
-        if isinstance(resp, dict):
-            for a in resp.get("Accounts", []):
-                if isinstance(a, dict) and a.get("Status", "ACTIVE") in ("ACTIVE", None):
-                    accts[a["Name"]] = str(a["Id"])
-    except Exception as exc:
-        logger.warning("Could not list organization accounts; account names will not resolve: %s", exc)
-    return accts
 
 
 def parse_tags_or_exit(tags: list[str] | None) -> dict[str, str]:

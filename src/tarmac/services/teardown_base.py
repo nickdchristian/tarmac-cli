@@ -11,6 +11,7 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
+from ..core.org_accounts import get_active_account_id_map
 from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
@@ -133,17 +134,7 @@ class TeardownBase:
         """Fetch all ACTIVE accounts in the organization as {AccountName: AccountId}."""
         if not self._has_credentials():
             return {}
-        org_client = self.session_mgr.get_client("organizations")
-        accts: dict[str, str] = {}
-        try:
-            paginator = org_client.get_paginator("list_accounts")
-            for page in paginator.paginate():
-                for a in page.get("Accounts", []):
-                    if isinstance(a, dict) and a.get("Status") in ("ACTIVE", None):
-                        accts[a["Name"]] = str(a["Id"])
-        except AWS_ERRORS as e:
-            logger.debug("Could not query active accounts: %s", e)
-        return accts
+        return get_active_account_id_map(self.session_mgr)
 
     def _get_management_account_id(self) -> str:
         """Resolve current management account ID."""

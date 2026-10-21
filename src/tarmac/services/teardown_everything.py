@@ -16,6 +16,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
 from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
+from ..core.org_accounts import is_active, iter_accounts
 from .identity import IdentityService
 from .teardown_base import TeardownBase
 
@@ -429,22 +430,21 @@ class EverythingTeardown(TeardownBase):
             return results
         org: Any = self.session_mgr.get_client("organizations")
         try:
-            for page in org.get_paginator("list_accounts").paginate():
-                for acct in page.get("Accounts", []):
-                    if acct.get("Status") != "ACTIVE" or acct["Id"] == self._get_management_account_id():
-                        continue
-                    if not self._has_tag(org, acct["Id"]):
-                        continue
-                    results.append(
-                        _item(
-                            "Member Account",
-                            acct["Name"],
-                            "SKIPPED",
-                            f"Never closed automatically. To close: tarmac account suspend {shlex.quote(acct['Id'])} --close",
-                            account=acct["Name"],
-                            account_id=acct["Id"],
-                        )
+            for acct in iter_accounts(org):
+                if not is_active(acct) or acct["Id"] == self._get_management_account_id():
+                    continue
+                if not self._has_tag(org, acct["Id"]):
+                    continue
+                results.append(
+                    _item(
+                        "Member Account",
+                        acct["Name"],
+                        "SKIPPED",
+                        f"Never closed automatically. To close: tarmac account suspend {shlex.quote(acct['Id'])} --close",
+                        account=acct["Name"],
+                        account_id=acct["Id"],
                     )
+                )
         except AWS_ERRORS as exc:
             logger.debug("Could not list managed accounts: %s", exc)
         return results

@@ -20,6 +20,7 @@ from ..core.models import (
     TAG_STATUS,
     TAG_VERSION,
 )
+from ..core.org_accounts import active_account_ids
 
 logger = logging.getLogger(__name__)
 
@@ -256,13 +257,7 @@ class OrganizationService:
         if account_id_map is not None:
             return dict(account_id_map)
         try:
-            paginator = self.org_client.get_paginator("list_accounts")
-            return {
-                a["Name"]: a["Id"]
-                for page in paginator.paginate()
-                for a in page.get("Accounts", [])
-                if a.get("Status") == "ACTIVE"
-            }
+            return active_account_ids(self.org_client)
         except AWS_ERRORS as e:
             logger.warning("Could not query accounts for delegated admin: %s", e)
             return {}
