@@ -16,6 +16,29 @@ from ..core.models import SecurityServiceReport
 logger = logging.getLogger(__name__)
 
 
+_GUARDDUTY_FEATURE_FLAGS = {
+    "S3_DATA_EVENTS": "s3_data_events",
+    "EKS_AUDIT_LOGS": "eks_audit_logs",
+    "EBS_MALWARE_PROTECTION": "malware_protection",
+    "RDS_LOGIN_EVENTS": "rds_login_events",
+    "LAMBDA_NETWORK_LOGS": "lambda_network_logs",
+}
+_GUARDDUTY_FEATURE_NAMES = frozenset(_GUARDDUTY_FEATURE_FLAGS)
+
+
+def _guardduty_features(config: GuardDutyConfig) -> list[dict[str, str]]:
+    """Every optional feature tarmac manages, explicitly ENABLED or DISABLED.
+
+    The CreateDetector documentation: "When you don't specify any `features`, with an exception to
+    `RUNTIME_MONITORING`, all the optional features are enabled by default." Leaving the list out would switch on
+    every paid protection plan.
+    """
+    return [
+        {"Name": name, "Status": "ENABLED" if getattr(config.features, flag) else "DISABLED"}
+        for name, flag in _GUARDDUTY_FEATURE_FLAGS.items()
+    ]
+
+
 class SecurityServicesService:
     """Manages delegated administration, detector creation, and finding aggregation for security services."""
 
@@ -182,8 +205,11 @@ class SecurityServicesService:
         """Create detector and configure auto-enrollment in the Audit account for a single region."""
         gd_audit = self.session_mgr.get_member_client(audit_id, "guardduty", region_name=region)
         detectors = gd_audit.list_detectors().get("DetectorIds", [])
+        wanted = _guardduty_features(config)
         if not detectors:
-            create_resp = gd_audit.create_detector(Enable=True, FindingPublishingFrequency="FIFTEEN_MINUTES")
+            create_resp = gd_audit.create_detector(
+                Enable=True, FindingPublishingFrequency="FIFTEEN_MINUTES", Features=wanted
+            )
             detector_id = str(create_resp.get("DetectorId", ""))
             audit(
                 "create",
@@ -195,19 +221,66 @@ class SecurityServicesService:
             )
         else:
             detector_id = str(detectors[0])
+            self._reconcile_existing_detector(gd_audit, audit_id, region, detector_id, wanted)
 
         if config.auto_enable_members and detector_id:
+            org_features = [
+                {"Name": f["Name"], "AutoEnable": "ALL" if f["Status"] == "ENABLED" else "NONE"}
+                for f in wanted
+            ]
             try:
                 gd_audit.update_organization_configuration(
-                    DetectorId=detector_id, AutoEnableOrganizationMembers="ALL"
+                    DetectorId=detector_id, AutoEnableOrganizationMembers="ALL", Features=org_features
                 )
             except ClientError:
-                gd_audit.update_organization_configuration(DetectorId=detector_id, AutoEnable=True)
+                gd_audit.update_organization_configuration(
+                    DetectorId=detector_id, AutoEnable=True, Features=org_features
+                )
             audit(
                 "configure",
                 f"guardduty:{audit_id}:{region}",
                 Outcome.SUCCEEDED,
                 f"Turned on GuardDuty auto-enable for organization members in {region}",
+                region=region,
+            )
+
+    @staticmethod
+    def _reconcile_existing_detector(
+        gd_audit: Any, audit_id: str, region: str, detector_id: str, wanted: list[dict[str, str]]
+    ) -> None:
+        """Turn on requested features of a detector tarmac did not create; never turn existing ones off.
+
+        Switching a protection plan off on a detector someone else set up removes coverage they chose, so tarmac only
+        reports the optional features that are on but not requested.
+        """
+        response = gd_audit.get_detector(DetectorId=detector_id)
+        raw = response.get("Features", []) if isinstance(response, dict) else []
+        current = (
+            {f.get("Name"): f.get("Status") for f in raw if isinstance(f, dict)}
+            if isinstance(raw, list)
+            else {}
+        )
+        to_enable = [f for f in wanted if f["Status"] == "ENABLED" and current.get(f["Name"]) != "ENABLED"]
+        if to_enable:
+            gd_audit.update_detector(DetectorId=detector_id, Features=to_enable)
+            audit(
+                "configure",
+                f"guardduty-detector:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Enabled GuardDuty features {[f['Name'] for f in to_enable]} in {region}",
+                region=region,
+            )
+        requested = {f["Name"] for f in wanted if f["Status"] == "ENABLED"}
+        extra = sorted(
+            n for n, s in current.items() if s == "ENABLED" and n in _GUARDDUTY_FEATURE_NAMES - requested
+        )
+        if extra:
+            audit(
+                "configure",
+                f"guardduty-detector:{audit_id}:{region}",
+                Outcome.SKIPPED,
+                f"GuardDuty features {extra} are on in {region} but not requested; left as they are because they "
+                "are billed per use. Set them with the guardduty.features flags or turn them off in GuardDuty.",
                 region=region,
             )
 

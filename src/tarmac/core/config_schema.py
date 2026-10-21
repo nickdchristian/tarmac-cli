@@ -167,9 +167,25 @@ class ServiceControlPoliciesConfig(BaseModel):
 
 
 class GuardDutyFeaturesConfig(BaseModel):
-    s3_data_events: bool = False
-    eks_audit_logs: bool = False
-    malware_protection: bool = False
+    """Optional GuardDuty protection plans. All off: each is billed on top of the foundational data sources.
+
+    AWS enables every optional feature (except Runtime Monitoring) on a new detector unless told otherwise, so tarmac
+    sends this list explicitly. Runtime Monitoring is not managed by tarmac.
+    """
+
+    s3_data_events: bool = Field(
+        default=False, description="S3 Protection, billed per million S3 data events."
+    )
+    eks_audit_logs: bool = Field(
+        default=False, description="EKS Protection, billed per million audit-log events."
+    )
+    malware_protection: bool = Field(
+        default=False, description="Malware Protection for EC2 (EBS), billed per GB."
+    )
+    rds_login_events: bool = Field(default=False, description="RDS Protection, billed per vCPU per month.")
+    lambda_network_logs: bool = Field(
+        default=False, description="Lambda Protection, billed per GB of network logs."
+    )
 
 
 class GuardDutyConfig(BaseModel):

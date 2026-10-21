@@ -311,6 +311,26 @@ Deleted objects are purged for good seven days later and cannot be recovered, so
 
 `cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.
 
+### GuardDuty features (all off unless you ask)
+
+`security_services.guardduty` turns on GuardDuty's foundational detection only. The optional protection plans are billed on
+top of it, so they stay off until you set them:
+
+```yaml
+security_services:
+  guardduty:
+    enabled: true
+    features:
+      s3_data_events: true      # S3 Protection
+      # eks_audit_logs, malware_protection (EBS), rds_login_events, lambda_network_logs
+```
+
+AWS switches on every optional feature (except Runtime Monitoring) when a detector is created without a feature list
+([CreateDetector](https://docs.aws.amazon.com/guardduty/latest/APIReference/API_CreateDetector.html)), so tarmac sends the list
+explicitly, and sets the same choice for new member accounts. On a detector that already exists tarmac only turns requested
+features on; it never turns one off, and it reports any optional feature that is on but not requested. Runtime Monitoring is
+not managed by tarmac.
+
 ## Safe Teardown
 
 Tarmac includes built-in safeguards to prevent accidental infrastructure or state loss:

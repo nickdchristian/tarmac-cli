@@ -115,9 +115,9 @@ def test_guardduty_idempotent_when_already_registered():
     assert report.status == "ENABLED"
     mock_gd_mgmt.enable_organization_admin_account.assert_not_called()
     mock_gd_audit.create_detector.assert_not_called()
-    mock_gd_audit.update_organization_configuration.assert_called_once_with(
-        DetectorId="det-existing456", AutoEnableOrganizationMembers="ALL"
-    )
+    call = mock_gd_audit.update_organization_configuration.call_args
+    assert call.kwargs["DetectorId"] == "det-existing456"
+    assert call.kwargs["AutoEnableOrganizationMembers"] == "ALL"
 
 
 def test_securityhub_delegation_and_member_configuration():
@@ -486,3 +486,92 @@ def test_securityhub_local_mode_registers_the_admin_in_every_region():
         mgr.get_client(
             "securityhub", region_name=region
         ).enable_organization_admin_account.assert_called_once_with(AdminAccountId="111122223333")
+
+
+# -- optional GuardDuty features stay off unless asked for ---------------------------------------------------
+
+OPTIONAL = {
+    "S3_DATA_EVENTS",
+    "EKS_AUDIT_LOGS",
+    "EBS_MALWARE_PROTECTION",
+    "RDS_LOGIN_EVENTS",
+    "LAMBDA_NETWORK_LOGS",
+}
+
+
+def _gd_pair(existing_detector: str | None = None, current: list[dict] | None = None):
+    mgr = MagicMock()
+    mgmt = MagicMock()
+    audit_client = MagicMock()
+    mgmt.list_organization_admin_accounts.return_value = {
+        "AdminAccounts": [{"AdminAccountId": "111122223333", "AdminStatus": "ENABLED"}]
+    }
+    audit_client.list_detectors.return_value = {
+        "DetectorIds": [existing_detector] if existing_detector else []
+    }
+    audit_client.create_detector.return_value = {"DetectorId": "det-new"}
+    audit_client.get_detector.return_value = {"Features": current or []}
+    mgr.get_client.return_value = mgmt
+    mgr.get_member_client.return_value = audit_client
+    return SecurityServicesService(mgr), audit_client
+
+
+def _statuses(features: list[dict]) -> dict[str, str]:
+    return {f["Name"]: f["Status"] for f in features}
+
+
+def test_a_new_detector_is_created_with_every_optional_feature_disabled():
+    service, gd = _gd_pair()
+
+    service.configure_guardduty("111122223333", "eu-west-1", ["eu-west-1"], GuardDutyConfig(enabled=True))
+
+    features = gd.create_detector.call_args.kwargs["Features"]
+    assert _statuses(features) == {name: "DISABLED" for name in OPTIONAL}
+
+
+def test_a_requested_feature_is_enabled_and_the_rest_stay_disabled():
+    from tarmac.core.config_schema import GuardDutyFeaturesConfig
+
+    service, gd = _gd_pair()
+    cfg = GuardDutyConfig(enabled=True, features=GuardDutyFeaturesConfig(s3_data_events=True))
+
+    service.configure_guardduty("111122223333", "eu-west-1", ["eu-west-1"], cfg)
+
+    statuses = _statuses(gd.create_detector.call_args.kwargs["Features"])
+    assert statuses["S3_DATA_EVENTS"] == "ENABLED"
+    assert {k: v for k, v in statuses.items() if k != "S3_DATA_EVENTS"} == {
+        name: "DISABLED" for name in OPTIONAL - {"S3_DATA_EVENTS"}
+    }
+
+
+def test_new_member_accounts_inherit_the_same_feature_choice():
+    service, gd = _gd_pair()
+
+    service.configure_guardduty("111122223333", "eu-west-1", ["eu-west-1"], GuardDutyConfig(enabled=True))
+
+    org_features = gd.update_organization_configuration.call_args.kwargs["Features"]
+    assert {f["Name"]: f["AutoEnable"] for f in org_features} == {name: "NONE" for name in OPTIONAL}
+
+
+def test_an_existing_detector_keeps_features_it_already_has():
+    service, gd = _gd_pair(
+        existing_detector="det-old", current=[{"Name": "S3_DATA_EVENTS", "Status": "ENABLED"}]
+    )
+
+    service.configure_guardduty("111122223333", "eu-west-1", ["eu-west-1"], GuardDutyConfig(enabled=True))
+
+    gd.update_detector.assert_not_called()
+    gd.create_detector.assert_not_called()
+
+
+def test_an_existing_detector_gets_a_requested_feature_turned_on():
+    from tarmac.core.config_schema import GuardDutyFeaturesConfig
+
+    service, gd = _gd_pair(existing_detector="det-old", current=[])
+    cfg = GuardDutyConfig(enabled=True, features=GuardDutyFeaturesConfig(malware_protection=True))
+
+    service.configure_guardduty("111122223333", "eu-west-1", ["eu-west-1"], cfg)
+
+    gd.update_detector.assert_called_once_with(
+        DetectorId="det-old", Features=[{"Name": "EBS_MALWARE_PROTECTION", "Status": "ENABLED"}]
+    )
