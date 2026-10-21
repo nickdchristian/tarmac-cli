@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.10](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.9...v0.1.10) (2026-10-21)
+
+
+### Bug Fixes
+
+* **deploy:** restore teardown confirmation prompt and harden CFN templates ([#85](https://github.com/nickdchristian/tarmac-cli/issues/85)) ([6b08c44](https://github.com/nickdchristian/tarmac-cli/commit/6b08c44b38799b28bd7ae7a23a9937914f4bb863))
+* **drift:** reconcile account tag hierarchy and drift inspection checks ([#83](https://github.com/nickdchristian/tarmac-cli/issues/83)) ([2ac4513](https://github.com/nickdchristian/tarmac-cli/commit/2ac4513b62c2130dac84d04d833b7e1a1a97bcd9))
+* **governance:** resolve CFN import, logical ID collision, and SSO teardown bugs ([#84](https://github.com/nickdchristian/tarmac-cli/issues/84)) ([ab44883](https://github.com/nickdchristian/tarmac-cli/commit/ab448839105878aae136eaeb59c9c66c32f37f64))
+
 ## [0.1.9](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.8...v0.1.9) (2026-10-21)
 
 
