@@ -5,7 +5,6 @@ their exact template text, the parameters tarmac passes and their tags, so NO CH
 them alone. A read that fails marks its item UNKNOWN instead of stopping the plan.
 """
 
-import logging
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -14,12 +13,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from botocore.exceptions import ClientError
 
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.config_schema import OUDef, ServiceControlPoliciesConfig
-from ..core.exceptions import AWS_ERRORS
+from ..core.exceptions import AWS_ERRORS, aws_error_code
 from ..core.models import TAG_MANAGED_BY
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
@@ -46,8 +46,6 @@ from .stack_parameters import (
     root_alert_parameters,
     root_alert_regions,
 )
-
-logger = logging.getLogger(__name__)
 
 PHASE_TITLES = {
     1: "Organization",
@@ -207,12 +205,14 @@ class Planner:
 
     @cached_property
     def org_id(self) -> str:
+        """The organization ID, or "" when there is no organization yet. Other errors propagate."""
         try:
             return str(
                 self.session_mgr.get_client("organizations").describe_organization()["Organization"]["Id"]
             )
-        except AWS_ERRORS as e:
-            logger.debug("No organization yet: %s", e)
+        except ClientError as e:
+            if aws_error_code(e) != "AWSOrganizationsNotInUseException":
+                raise
             return ""
 
     @cached_property
@@ -303,9 +303,9 @@ class Planner:
         }
         enabled = org._enabled_root_features()
         missing = [name for name, on in wanted.items() if on and name not in enabled]
-        if self.org_id and not org.missing_trusted_services(["iam.amazonaws.com"]) and not missing:
-            return NO_CHANGE, ""
-        return "APPLY", "enable IAM trusted access" + (f" and {', '.join(missing)}" if missing else "")
+        if not self.org_id or org.missing_trusted_services(["iam.amazonaws.com"]):
+            missing.insert(0, "IAM trusted access")
+        return ("APPLY", "enable " + ", ".join(missing)) if missing else (NO_CHANGE, "")
 
     def _delegated(self, org: OrganizationService, principal: str, account_name: str) -> tuple[str, str]:
         account_id = self._account_id(account_name)
