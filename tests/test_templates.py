@@ -405,3 +405,25 @@ def test_example_security_services_scp_blocks_disabling_but_not_configuring():
     exempt = " ".join(stmt["Condition"]["ArnNotLike"]["aws:PrincipalARN"])
     assert "OrganizationAccountAccessRole" in exempt  # tarmac works in member accounts through this role
     assert "TarmacDeploymentRole" in exempt
+
+
+@pytest.mark.parametrize("base", ["cloudformation", "src/tarmac/templates/cloudformation"])
+def test_terraform_state_bucket_name_does_not_change(base: str):
+    """Renaming the bucket makes CloudFormation replace it, leaving Terraform pointed at an empty bucket."""
+
+    class _TagLoader(yaml.SafeLoader):
+        pass
+
+    def _tagged(loader, suffix, node):
+        if isinstance(node, yaml.ScalarNode):
+            return {suffix: loader.construct_scalar(node)}
+        if isinstance(node, yaml.SequenceNode):
+            return {suffix: loader.construct_sequence(node, deep=True)}
+        return {suffix: loader.construct_mapping(node, deep=True)}
+
+    _TagLoader.add_multi_constructor("!", _tagged)
+    root = Path(__file__).resolve().parent.parent
+    doc = yaml.load((root / base / "terraform-backend.yaml").read_text(), Loader=_TagLoader)
+    name = doc["Resources"]["TerraformStateBucket"]["Properties"]["BucketName"]
+    assert name["If"][0] == "HasOrgName"
+    assert name["If"][1] == {"Sub": "${OrgName}-terraform-state-${AWS::AccountId}"}

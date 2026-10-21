@@ -693,11 +693,11 @@ class PreflightService:
             deployment_id = self.bundle.resolve_account_id(backend_name, active_accts) or mgmt_id
 
             org_name = self.bundle.org.organization.name
-            tf_prefix = self.bundle.org.terraform_backend.bucket_prefix
+            # Same rule as terraform-backend.yaml: tarmac always passes OrgName, which wins over BucketPrefix.
             tf_bucket = (
-                f"{tf_prefix}-{deployment_id}"
-                if tf_prefix and tf_prefix != "terraform-state"
-                else f"{org_name}-terraform-state-{deployment_id}"
+                f"{org_name}-terraform-state-{deployment_id}"
+                if org_name
+                else f"{self.bundle.org.terraform_backend.bucket_prefix}-{deployment_id}"
             )
             prefixes_to_check = [
                 (
