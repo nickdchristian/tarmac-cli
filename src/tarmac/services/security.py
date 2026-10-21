@@ -123,6 +123,10 @@ class SecurityServicesService:
         for reg in all_regions:
             try:
                 with bind(region=reg):
+                    # The delegated administrator is Regional: the primary Region was done above, every other
+                    # Region needs its own registration before the audit account may configure members there.
+                    if reg != primary_region:
+                        self._ensure_guardduty_admin(audit_id, reg)
                     self._configure_guardduty_region(audit_id, reg, config)
                 configured_regions.append(reg)
             except ClientError as e:
@@ -153,9 +157,13 @@ class SecurityServicesService:
         details = "; ".join(f"{region}: {reason}" for region, reason in failed.items())
         return f"{prefix} configured in {len(configured)} region(s) but FAILED in {len(failed)}: {details}"
 
-    def _ensure_guardduty_admin(self, audit_id: str, primary_region: str) -> None:
-        """Enable GuardDuty organization admin in the Management Account if not already registered."""
-        gd_mgmt = self.session_mgr.get_client("guardduty", region_name=primary_region)
+    def _ensure_guardduty_admin(self, audit_id: str, region: str) -> None:
+        """Register the delegated GuardDuty administrator in one Region, if not already registered.
+
+        GuardDuty is Regional: "The delegated GuardDuty administrator accounts and their member accounts must be added
+        through AWS Organizations in each desired Region", and it must be the same account in every Region.
+        """
+        gd_mgmt = self.session_mgr.get_client("guardduty", region_name=region)
         admins = gd_mgmt.list_organization_admin_accounts().get("AdminAccounts", [])
         already_registered = any(
             a.get("AdminAccountId") == audit_id and a.get("AdminStatus") == "ENABLED" for a in admins
@@ -166,7 +174,8 @@ class SecurityServicesService:
                 "delegate",
                 f"guardduty:{audit_id}",
                 Outcome.SUCCEEDED,
-                f"Registered account {audit_id} as GuardDuty delegated administrator",
+                f"Registered account {audit_id} as GuardDuty delegated administrator in {region}",
+                region=region,
             )
 
     def _configure_guardduty_region(self, audit_id: str, region: str, config: GuardDutyConfig) -> None:
@@ -249,6 +258,10 @@ class SecurityServicesService:
         for reg in all_regions:
             try:
                 with bind(region=reg):
+                    # Local configuration: the delegated administrator is set per Region (central configuration sets
+                    # it in every linked Region itself).
+                    if reg != primary_region:
+                        self._ensure_securityhub_admin(audit_id, reg)
                     self._configure_securityhub_region(audit_id, reg, config)
                 configured_regions.append(reg)
             except (ClientError, GovernanceError) as e:
@@ -287,9 +300,13 @@ class SecurityServicesService:
             ),
         )
 
-    def _ensure_securityhub_admin(self, audit_id: str, primary_region: str) -> None:
-        """Enable Security Hub organization admin in the Management Account if not already registered."""
-        sh_mgmt = self.session_mgr.get_client("securityhub", region_name=primary_region)
+    def _ensure_securityhub_admin(self, audit_id: str, region: str) -> None:
+        """Register the delegated Security Hub administrator in one Region, if not already registered.
+
+        Security Hub CSPM "sets the delegated administrator in the current AWS Region only, and you must repeat the
+        action in other Regions"; with central configuration it designates the same account in every linked Region.
+        """
+        sh_mgmt = self.session_mgr.get_client("securityhub", region_name=region)
         admins = sh_mgmt.list_organization_admin_accounts().get("AdminAccounts", [])
         already_registered = any(
             a.get("AccountId") == audit_id and a.get("Status") == "ENABLED" for a in admins
@@ -300,7 +317,8 @@ class SecurityServicesService:
                 "delegate",
                 f"securityhub:{audit_id}",
                 Outcome.SUCCEEDED,
-                f"Registered account {audit_id} as Security Hub delegated administrator",
+                f"Registered account {audit_id} as Security Hub delegated administrator in {region}",
+                region=region,
             )
 
     def _configure_securityhub_region(self, audit_id: str, region: str, config: SecurityHubConfig) -> None:

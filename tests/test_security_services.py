@@ -393,3 +393,96 @@ def test_securityhub_finding_aggregator_failure_is_reported():
     assert report.status == "FAILED"
     assert "finding aggregator" in report.message
     assert "no aggregator perms" in report.message
+
+
+# -- the delegated administrator is Regional ------------------------------------------------------------------
+
+
+def _regional_session() -> MagicMock:
+    """A session whose management-account client is a distinct mock per (service, Region)."""
+    clients: dict[tuple[str, str], MagicMock] = {}
+
+    def get_client(service: str, region_name: str | None = None, **_kw):
+        key = (service, region_name or "")
+        if key not in clients:
+            client = MagicMock()
+            client.list_organization_admin_accounts.return_value = {"AdminAccounts": []}
+            clients[key] = client
+        return clients[key]
+
+    mgr = MagicMock()
+    mgr.get_client.side_effect = get_client
+    audit_client = MagicMock()
+    audit_client.list_detectors.return_value = {"DetectorIds": ["det-1"]}
+    audit_client.describe_hub.return_value = {}
+    audit_client.describe_standards.return_value = {
+        "Standards": [
+            {
+                "StandardsArn": "arn:aws:securityhub:::standards/aws-foundational-security-best-practices/v/1.0.0",
+                "Name": "AWS Foundational Security Best Practices v1.0.0",
+            }
+        ]
+    }
+    audit_client.get_enabled_standards.return_value = {"StandardsSubscriptions": []}
+    audit_client.list_finding_aggregators.return_value = {"FindingAggregators": [{}]}
+    mgr.get_member_client.return_value = audit_client
+    return mgr
+
+
+def test_guardduty_admin_is_registered_in_every_region_not_only_the_primary():
+    mgr = _regional_session()
+    service = SecurityServicesService(mgr)
+
+    report = service.configure_guardduty(
+        "111122223333",
+        "eu-west-1",
+        ["eu-west-1", "us-east-1", "ap-southeast-2"],
+        GuardDutyConfig(enabled=True),
+    )
+
+    assert report.status == "ENABLED"
+    registered = {
+        region
+        for call in mgr.get_client.call_args_list
+        for region in [call.kwargs.get("region_name")]
+        if call.args[0] == "guardduty"
+    }
+    assert registered == {"eu-west-1", "us-east-1", "ap-southeast-2"}
+    for region in ("eu-west-1", "us-east-1", "ap-southeast-2"):
+        client = mgr.get_client("guardduty", region_name=region)
+        client.enable_organization_admin_account.assert_called_once_with(AdminAccountId="111122223333")
+
+
+def test_guardduty_admin_failure_in_a_secondary_region_fails_that_region_only():
+    mgr = _regional_session()
+    mgr.get_client(
+        "guardduty", region_name="us-east-1"
+    ).enable_organization_admin_account.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "not allowed in us-east-1"}},
+        "EnableOrganizationAdminAccount",
+    )
+
+    report = SecurityServicesService(mgr).configure_guardduty(
+        "111122223333", "eu-west-1", ["eu-west-1", "us-east-1"], GuardDutyConfig(enabled=True)
+    )
+
+    assert report.status == "FAILED"
+    assert report.regions == ["eu-west-1"]
+    assert "us-east-1" in report.message
+
+
+def test_securityhub_local_mode_registers_the_admin_in_every_region():
+    mgr = _regional_session()
+
+    report = SecurityServicesService(mgr).configure_securityhub(
+        "111122223333",
+        "eu-west-1",
+        ["eu-west-1", "us-east-1"],
+        SecurityHubConfig(enabled=True, central_configuration=False),
+    )
+
+    assert report.status == "ENABLED"
+    for region in ("eu-west-1", "us-east-1"):
+        mgr.get_client(
+            "securityhub", region_name=region
+        ).enable_organization_admin_account.assert_called_once_with(AdminAccountId="111122223333")
