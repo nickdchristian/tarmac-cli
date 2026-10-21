@@ -235,11 +235,21 @@ class ConfigRecorderConfig(BaseModel):
         default=True,
         description="Record global resource types (IAM and similar) in the primary region only.",
     )
+    record_resource_compliance: bool = Field(
+        default=False,
+        description=(
+            "Also record AWS::Config::ResourceCompliance items. Security Hub CSPM updates them on every compliance "
+            "change and does not need them, so AWS recommends leaving them out when the recorder serves only "
+            "Security Hub. Set true if you use the compliance history, or if recorder creation fails in a Region "
+            "where global IAM types are not supported."
+        ),
+    )
     recording_frequency: Literal["CONTINUOUS", "DAILY"] = Field(
         default="CONTINUOUS",
         description=(
-            "CONTINUOUS records every change. DAILY records at most one configuration item per resource per "
-            "day, which costs less for resources that change often; AWS Firewall Manager needs CONTINUOUS."
+            "CONTINUOUS records every change at $0.003 per item. DAILY records at most one item per resource per "
+            "day at $0.012 per item, so it only saves money for resources that change more than four times a day; "
+            "for most accounts CONTINUOUS is cheaper. AWS Firewall Manager needs CONTINUOUS."
         ),
     )
 

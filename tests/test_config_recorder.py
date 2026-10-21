@@ -561,6 +561,7 @@ def test_deploy_passes_the_config_bucket_key_regions_and_frequency_to_the_servic
         "DeliveryKmsKeyArn": "arn:aws:kms:eu-west-1:2:key/k",
         "GlobalResourcesRegion": "eu-west-1",
         "IncludeGlobalResources": "false",
+        "RecordResourceCompliance": "false",
         "RecordingFrequency": "DAILY",
     }
 
@@ -634,8 +635,10 @@ def _load(path: Path) -> dict[str, Any]:
 def test_recorder_template_records_everything_and_global_types_in_one_region_only():
     doc = _load(TEMPLATE)
     recorder = doc["Resources"]["ConfigRecorder"]["Properties"]
-    assert recorder["RecordingGroup"]["AllSupported"] is True
-    assert recorder["RecordingGroup"]["IncludeGlobalResourceTypes"][0] == "RecordGlobalResources"
+    condition, all_supported, _exclusion = recorder["RecordingGroup"]
+    assert condition == "RecordCompliance"
+    assert all_supported["AllSupported"] is True
+    assert all_supported["IncludeGlobalResourceTypes"][0] == "RecordGlobalResources"
     # both must hold: global resources requested, and this is the designated Region
     assert doc["Conditions"]["RecordGlobalResources"] == [
         ["IncludeGlobalResources", "true"],
@@ -745,3 +748,53 @@ def test_destroy_empties_and_deletes_the_config_bucket_with_the_other_log_bucket
     assert "acme-org-config-logs-222222222222" in {
         i.resource_name for i in items if i.resource_type == "S3 Bucket"
     }
+
+
+# -- ResourceCompliance is left out unless asked for ---------------------------------------------------------
+
+IAM_TYPES = ["AWS::IAM::Group", "AWS::IAM::Policy", "AWS::IAM::Role", "AWS::IAM::User"]
+
+
+def _recording_groups() -> tuple[dict[str, Any], dict[str, Any]]:
+    doc = _load(TEMPLATE)
+    _condition, all_supported, exclusion = doc["Resources"]["ConfigRecorder"]["Properties"]["RecordingGroup"]
+    return all_supported, exclusion
+
+
+def test_resource_compliance_is_off_by_default_in_the_template_and_the_config():
+    assert _load(TEMPLATE)["Parameters"]["RecordResourceCompliance"]["Default"] == "false"
+    assert ConfigRecorderConfig().record_resource_compliance is False
+
+
+def test_without_resource_compliance_the_exclusion_strategy_is_used_as_the_docs_show():
+    _all, exclusion = _recording_groups()
+    # the combination the CloudFormation reference documents for EXCLUSION_BY_RESOURCE_TYPES
+    assert exclusion["AllSupported"] is False
+    assert exclusion["IncludeGlobalResourceTypes"] is False
+    assert exclusion["RecordingStrategy"] == {"UseOnly": "EXCLUSION_BY_RESOURCE_TYPES"}
+
+
+def test_the_global_region_excludes_only_resource_compliance():
+    _all, exclusion = _recording_groups()
+    condition, in_global_region, elsewhere = exclusion["ExclusionByResourceTypes"]["ResourceTypes"]
+    assert condition == "RecordGlobalResources"
+    assert in_global_region == ["AWS::Config::ResourceCompliance"]
+    # the exclusion strategy does not drop IAM types by itself, so every other Region must list them
+    assert elsewhere == ["AWS::Config::ResourceCompliance", *IAM_TYPES]
+
+
+def test_the_deploy_passes_the_resource_compliance_choice_through(monkeypatch):
+    service = MagicMock()
+    service.return_value.deploy.return_value = MagicMock(
+        failures=[], management_stacks=[], stack_set_action="CREATED"
+    )
+    monkeypatch.setattr("tarmac.cli.deploy_config_recorder.ConfigRecorderService", service)
+    cfn_service = MagicMock()
+    cfn_service._fetch_stack_outputs.return_value = {"ConfigBucketName": "b"}
+    bundle = _bundle(config={"enabled": True, "record_resource_compliance": True})
+
+    deploy_config_recorder(
+        _session(), cfn_service, bundle, "eu-west-1", ROOT, {"log-archive": "222222222222"}
+    )
+
+    assert service.return_value.deploy.call_args.kwargs["parameters"]["RecordResourceCompliance"] == "true"

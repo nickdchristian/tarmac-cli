@@ -86,6 +86,7 @@ def deploy_config_recorder(
             "DeliveryKmsKeyArn": kms_key_arn,
             "GlobalResourcesRegion": target_region,
             "IncludeGlobalResources": "true" if settings.include_global_resources else "false",
+            "RecordResourceCompliance": "true" if settings.record_resource_compliance else "false",
             "RecordingFrequency": settings.recording_frequency,
         },
         regions=regions,

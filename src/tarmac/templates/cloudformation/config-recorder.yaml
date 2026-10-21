@@ -6,6 +6,11 @@
 #
 # - Records all supported resource types. Global resource types (IAM and similar) are recorded only in
 #   GlobalResourcesRegion, because recording them in every Region repeats the same configuration items.
+# - Does not record AWS::Config::ResourceCompliance unless RecordResourceCompliance is 'true'. Security Hub CSPM
+#   updates that item on every compliance change, and AWS recommends turning it off when the recorder serves only
+#   Security Hub: "You don't need to record AWS::Config::ResourceCompliance for security checks to work".
+#   Turning it off needs the exclusion recording strategy, which does not leave out IAM types in other Regions on
+#   its own, so they are listed explicitly there.
 # - Delivers to the AWS Config bucket in the Log Archive account (not the CloudTrail bucket: AWS Config does not
 #   support delivery to a bucket with Object Lock default retention).
 # - Uses a role named per Region so that parallel Region deployments never create the same global IAM role.
@@ -43,8 +48,9 @@ Parameters:
       - CONTINUOUS
       - DAILY
     Description: >-
-      CONTINUOUS records every change. DAILY records at most one configuration item per resource per day, which
-      costs less on resources that change often but is not suitable if you use AWS Firewall Manager.
+      CONTINUOUS records every change ($0.003 per item). DAILY records at most one item per resource per day
+      ($0.012 per item), which only costs less for resources that change more than four times a day, and is not
+      suitable if you use AWS Firewall Manager.
 
   IncludeGlobalResources:
     Type: String
@@ -54,12 +60,23 @@ Parameters:
       - 'false'
     Description: Record global resource types (in GlobalResourcesRegion only)
 
+  RecordResourceCompliance:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      Also record AWS::Config::ResourceCompliance configuration items (billed like any other item). Not needed
+      for Security Hub CSPM controls. 'true' uses the plain all-supported recording group.
+
 Conditions:
   CreateRecorderRole: !Equals [!Ref RecorderRoleArn, '']
   RecordGlobalResources: !And
     - !Equals [!Ref IncludeGlobalResources, 'true']
     - !Equals [!Ref 'AWS::Region', !Ref GlobalResourcesRegion]
   HasKmsKey: !Not [!Equals [!Ref DeliveryKmsKeyArn, '']]
+  RecordCompliance: !Equals [!Ref RecordResourceCompliance, 'true']
 
 Resources:
   RecorderRole:
@@ -119,9 +136,23 @@ Resources:
       RoleARN: !If [CreateRecorderRole, !GetAtt RecorderRole.Arn, !Ref RecorderRoleArn]
       RecordingMode:
         RecordingFrequency: !Ref RecordingFrequency
-      RecordingGroup:
-        AllSupported: true
-        IncludeGlobalResourceTypes: !If [RecordGlobalResources, true, false]
+      RecordingGroup: !If
+        - RecordCompliance
+        - AllSupported: true
+          IncludeGlobalResourceTypes: !If [RecordGlobalResources, true, false]
+        - AllSupported: false
+          IncludeGlobalResourceTypes: false
+          RecordingStrategy:
+            UseOnly: EXCLUSION_BY_RESOURCE_TYPES
+          ExclusionByResourceTypes:
+            ResourceTypes: !If
+              - RecordGlobalResources
+              - - AWS::Config::ResourceCompliance
+              - - AWS::Config::ResourceCompliance
+                - AWS::IAM::Group
+                - AWS::IAM::Policy
+                - AWS::IAM::Role
+                - AWS::IAM::User
 
 Outputs:
   ConfigRoleArn:

@@ -408,7 +408,8 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
         table.add_row(
             "AWS Config recorders",
             "All accounts (StackSet) + management",
-            f"Regions: {', '.join(regions)}; {scope}; {config_cfg.recording_frequency.lower()} recording",
+            f"Regions: {', '.join(regions)}; {scope}; {config_cfg.recording_frequency.lower()} recording"
+            + ("" if config_cfg.record_resource_compliance else "; no ResourceCompliance items"),
             "DEPLOY STACKSET",
         )
     else:

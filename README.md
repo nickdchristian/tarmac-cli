@@ -341,11 +341,19 @@ security_services:
   config_recorder:
     enabled: true
     include_global_resources: true   # IAM and similar types, recorded in the primary region only
-    recording_frequency: CONTINUOUS  # DAILY costs less for resources that change often (not for Firewall Manager)
+    recording_frequency: CONTINUOUS  # DAILY is $0.012/item vs $0.003: cheaper only above 4 changes a day
   # config_recorder: null            # decided against it: hides the Security Hub warning below
 ```
 
 Recorders are created in `primary_region` plus `additional_regions`, the same Regions GuardDuty and Security Hub use.
+They record every supported type except `AWS::Config::ResourceCompliance`: Security Hub updates that item on every
+compliance change, AWS says its checks do not need it, and it recommends not recording it when the recorder serves
+only Security Hub. Set `record_resource_compliance: true` if you use that history, or if a Region where IAM global types
+are not supported rejects the recorder.
+
+`DAILY` is billed at $0.012 per configuration item against $0.003 for `CONTINUOUS`, and records an item only when a
+resource differs from its previous one. It therefore saves money only for resources that change more than four times a
+day; for most accounts `CONTINUOUS` is the cheaper choice. Firewall Manager needs `CONTINUOUS`.
 Member accounts get them from one service-managed StackSet (`<org>-config-recorder`) targeting the organization root, so
 accounts created later receive the recorder without re-running tarmac. StackSets cannot target the management account,
 so it gets the same template as an ordinary stack in each Region, using AWS Config's service-linked role (the
