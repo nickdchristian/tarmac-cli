@@ -1,14 +1,14 @@
 """CLI commands for AWS Organizations and Management Account bootstrap."""
 
-import contextlib
 from pathlib import Path
 
 import typer
+from botocore.exceptions import ClientError
 from rich.panel import Panel
 
 from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import GovernanceError
+from ..core.exceptions import GovernanceError, aws_error_message
 from ..core.models import SCPReconciliationResult, VpcCleanupReport
 from ..services.baseline import BaselineService
 from ..services.organization import OrganizationService
@@ -250,20 +250,29 @@ def _render_scp_results(results: list[SCPReconciliationResult]) -> None:
 
 
 def _has_active_scp_stack(session_mgr: AwsSessionManager, org_name: str) -> bool:
-    """Return True if the organization SCP CloudFormation stack is currently active."""
-    with contextlib.suppress(Exception):
-        cfn_client = session_mgr.get_client("cloudformation")
+    """Return True if the organization SCP CloudFormation stack exists in a usable state.
+
+    Only "stack does not exist" means False. Any other error is raised: falling back to changing stack-managed
+    policies directly is the drift this check exists to prevent.
+    """
+    cfn_client = session_mgr.get_client("cloudformation")
+    try:
         resp = cfn_client.describe_stacks(StackName=f"{org_name}-organization-scps")
-        stacks = resp.get("Stacks", [])
-        if stacks and isinstance(stacks, list):
-            status = stacks[0].get("StackStatus")
-            return status in (
-                "CREATE_COMPLETE",
-                "UPDATE_COMPLETE",
-                "IMPORT_COMPLETE",
-                "UPDATE_ROLLBACK_COMPLETE",
-            )
-    return False
+    except ClientError as e:
+        if "does not exist" in aws_error_message(e):
+            return False
+        raise GovernanceError(
+            f"Could not check whether the SCP stack '{org_name}-organization-scps' exists", details=str(e)
+        ) from e
+    stacks = resp.get("Stacks", [])
+    if not (stacks and isinstance(stacks, list)):
+        return False
+    return stacks[0].get("StackStatus") in (
+        "CREATE_COMPLETE",
+        "UPDATE_COMPLETE",
+        "IMPORT_COMPLETE",
+        "UPDATE_ROLLBACK_COMPLETE",
+    )
 
 
 def _execute_scp_reconciliation(
@@ -287,7 +296,13 @@ def _execute_scp_reconciliation(
         root_id = ou_service.get_root_id()
         ou_map = ou_service.list_all_ous(root_id)
 
-        if not dry_run and _has_active_scp_stack(session_mgr, bundle.org.organization.name):
+        stack_managed = _has_active_scp_stack(session_mgr, bundle.org.organization.name)
+        if stack_managed and dry_run:
+            print_info(
+                f"SCPs are managed by the '{bundle.org.organization.name}-organization-scps' stack; apply will "
+                "update them through CloudFormation. The plan below shows the differences it will resolve."
+            )
+        if stack_managed and not dry_run:
             results = scp_service.reconcile_via_cloudformation(
                 config=scp_config,
                 root_id=root_id,

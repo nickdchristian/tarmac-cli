@@ -218,3 +218,53 @@ def test_ou_list_and_failure(ou_service: MagicMock):
     bad = runner.invoke(ou_cli.app, ["list"])
     assert bad.exit_code == 1
     assert "List OUs Failed" in bad.output
+
+
+# -- which path `org scp apply` takes --------------------------------------------------------------------------
+
+
+def _session_with_stack(*, status: str | None = None, error: str | None = None):
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    cfn = MagicMock()
+    if error:
+        cfn.describe_stacks.side_effect = ClientError(
+            {"Error": {"Code": "ValidationError", "Message": error}}, "DescribeStacks"
+        )
+    else:
+        cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": status}]}
+    session = MagicMock()
+    session.get_client.return_value = cfn
+    return session
+
+
+def test_a_missing_scp_stack_means_policies_are_managed_directly():
+    from tarmac.cli.org import _has_active_scp_stack
+
+    assert (
+        _has_active_scp_stack(
+            _session_with_stack(error="Stack with id acme-organization-scps does not exist"), "acme"
+        )
+        is False
+    )
+
+
+def test_an_active_scp_stack_is_detected():
+    from tarmac.cli.org import _has_active_scp_stack
+
+    assert _has_active_scp_stack(_session_with_stack(status="UPDATE_COMPLETE"), "acme") is True
+
+
+def test_an_unreadable_scp_stack_stops_instead_of_changing_policies_directly():
+    """Treating an access error as 'no stack' would change stack-managed policies behind CloudFormation."""
+    import pytest
+
+    from tarmac.cli.org import _has_active_scp_stack
+    from tarmac.core.exceptions import GovernanceError
+
+    with pytest.raises(GovernanceError):
+        _has_active_scp_stack(
+            _session_with_stack(error="User is not authorized to perform DescribeStacks"), "acme"
+        )
