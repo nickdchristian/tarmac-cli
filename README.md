@@ -327,6 +327,26 @@ tarmac deploy destroy --dry-run
 tarmac deploy destroy --preserve-backend
 ```
 
+### Root user alerts
+
+SCPs do not apply to the management account, so the deny-root SCP cannot stop root being used there. Tarmac deploys a
+`<org>-management-root-alert` stack that emails `contacts.security.email` (and posts to
+`security_services.incident_response_webhook_url`, if set) when the root user signs in or makes an API call in the management
+account. It is on by default and costs next to nothing: EventBridge ingests AWS management events for free, and the only
+charge is a few SNS emails. AWS records root sign-in events in us-east-1, so the stack is deployed there and in your
+primary Region; each Region has its own SNS topic, so confirm the subscription email in each. Root use in member accounts is
+denied by the SCP, and the attempts are in the organization trail; the audit account also alerts on its own root activity.
+
+```yaml
+security_services:
+  root_alert:
+    enabled: true        # false turns the alert off
+    all_regions: false   # true also watches every declared Region for root API calls
+```
+
+Without a security contact email or webhook there is nobody to alert, so tarmac skips the stack and says so. The access role
+needs the `events:` and `sns:` actions this adds: re-run `tarmac access bootstrap` once.
+
 ### Starting over
 
 A full `tarmac deploy destroy` removes everything tarmac deployed (stacks, buckets, budgets, SCPs, permission

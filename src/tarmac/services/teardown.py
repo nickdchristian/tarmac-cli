@@ -67,6 +67,7 @@ class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown, Eve
                 items.extend(self.teardown_security_services(bundle, target_region, accts, dry_run=dry_run))
             items.extend(self.teardown_backend(bundle, target_region, dry_run=dry_run, account_id_map=accts))
             items.extend(self.teardown_audit(bundle, target_region, dry_run=dry_run, account_id_map=accts))
+            items.extend(self.teardown_root_alert(bundle, target_region, dry_run=dry_run))
             return items
         if phase == 6:
             self._notify_phase("Phase 6 | IAM Identity Center (SSO)")
@@ -126,6 +127,7 @@ class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown, Eve
                     )
                 )
             items.extend(self.teardown_audit(bundle, region, dry_run=dry_run, account_id_map=accts))
+            items.extend(self.teardown_root_alert(bundle, region, dry_run=dry_run))
 
         if 6 in phases_set:
             self._notify_phase("Phase 6 | IAM Identity Center Permission Sets")

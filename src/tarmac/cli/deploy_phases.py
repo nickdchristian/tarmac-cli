@@ -32,6 +32,7 @@ from .deploy_dry_run import (
     _render_phase_5_dry_run,
     _render_phase_6_dry_run,
 )
+from .deploy_root_alert import deploy_management_root_alert
 from .ui import (
     error_console,
     print_info,
@@ -637,6 +638,16 @@ def _run_phase_5_hardening(
         dry_run,
         custom_tags=custom_tags,
         skip_log_archive_hardening=skip_log_archive_hardening,
+    )
+
+    deploy_management_root_alert(
+        session_mgr,
+        cfn_service,
+        bundle,
+        target_region,
+        project_root,
+        dry_run,
+        custom_tags=custom_tags,
     )
 
     _delegate_security_services(session_mgr, bundle, target_region, accts, dry_run)

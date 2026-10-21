@@ -377,6 +377,15 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     sh_params = f"Delegated Admin: {audit_name}, AutoEnable: {sec_services.securityhub.auto_enable_members}"
     table.add_row("Security Hub Service", audit_name, sh_params, sh_action)
 
+    root_alert = sec_services.root_alert
+    table.add_row(
+        f"{bundle.org.organization.name}-management-root-alert",
+        "Management",
+        f"Root activity alert to {alert_email}, in us-east-1 and the primary Region"
+        + (" and every declared Region" if root_alert.all_regions else ""),
+        "DEPLOY CFN STACK" if root_alert.enabled else "[dim]DISABLED[/dim]",
+    )
+
     console.print(table)
 
 
