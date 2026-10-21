@@ -46,6 +46,9 @@ def _ou_pages(**kw: Any) -> list[dict[str, Any]]:
 class FakeSession:
     default_region = "us-east-1"
 
+    def get_caller_identity(self) -> dict[str, str]:
+        return {"Account": "111", "Arn": "arn:aws:sts::111:assumed-role/Reader/me"}
+
     def __init__(self, with_sso: bool = True):
         self.with_sso = with_sso
         org = MagicMock()
