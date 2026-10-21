@@ -273,6 +273,28 @@ point you can copy into your project's `policies/scp/` and reference from `organ
 
 SCPs do not apply to the management account. Test it on one OU before attaching it to the root.
 
+## Example: protecting GuardDuty and Security Hub
+
+Nothing stops an administrator of a member account from turning off GuardDuty or Security Hub there, so tarmac does not attach
+a protecting SCP by default (an SCP can lock you out; see above).
+[`examples/policies/scp/protect-security-services.json`](examples/policies/scp/protect-security-services.json) denies only the
+actions that switch them off or detach the account from the audit account: deleting the detector, disassociating from the
+administrator, stopping member monitoring, disabling Security Hub and its standards. Reading and configuring stay allowed. The
+action names are taken from the AWS Service Authorization Reference
+([GuardDuty](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonguardduty.html),
+[Security Hub](https://docs.aws.amazon.com/service-authorization/latest/reference/list_awssecurityhub.html)).
+
+The policy exempts `TarmacDeploymentRole` and `OrganizationAccountAccessRole`, which is how tarmac reaches member accounts, so
+`tarmac deploy destroy --disable-security-services` keeps working. Add the role your own administrators use (for example an
+`AWSReservedSSO_*` role) to the `aws:PrincipalARN` list, or they cannot turn the services off either; change `TarmacDeploymentRole`
+if you bootstrapped with `--role-name`. It is not run against a live organization; attach it to one test OU first.
+
+AWS Config is left out on purpose. AWS publishes an
+[example SCP for Config](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps_examples_config.html)
+(`config:DeleteConfigurationRecorder`, `StopConfigurationRecorder`, `DeleteDeliveryChannel`, `DeleteConfigRule`), but tarmac
+deploys recorders with StackSets, and I could not confirm which role name StackSets uses in member accounts, so a Config SCP could
+block its own updates.
+
 ## Logging and Audit Trail
 
 | Option | Effect |
