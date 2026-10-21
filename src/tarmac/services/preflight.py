@@ -1,5 +1,6 @@
 """Pre-Flight and Posture Verification Service for AWS Environment Readiness."""
 
+import json
 import logging
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 from ..core.placeholders import find_placeholder_values
+from ..core.templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,10 @@ TARMAC_STACK_SUFFIXES = (
     "audit-account-hardening",
     "sso-permission-sets",
 )
+# The stack 'tarmac access bootstrap' creates by default, and the region it defaults to.
+ACCESS_STACK = "tarmac-access"
+ACCESS_TEMPLATE = "cloudformation/tarmac-access.yaml"
+ACCESS_DEFAULT_REGION = "us-east-1"
 _LIVE_STACK_STATUSES = [
     "CREATE_COMPLETE",
     "UPDATE_COMPLETE",
@@ -31,6 +37,17 @@ _LIVE_STACK_STATUSES = [
     "IMPORT_ROLLBACK_COMPLETE",
     "REVIEW_IN_PROGRESS",
 ]
+
+
+def _normalise(template: object) -> str:
+    """Reduce a template to comparable text: CloudFormation may hand back parsed JSON or the original YAML."""
+    if isinstance(template, str):
+        text = template
+    elif isinstance(template, dict | list):
+        text = json.dumps(template, sort_keys=True)
+    else:
+        text = str(template)
+    return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").strip().split("\n"))
 
 
 def _count_statuses(checks: list[PreflightCheckResult]) -> tuple[int, int, int, int]:
@@ -762,12 +779,70 @@ class PreflightService:
             )
         return results
 
+    def check_access_policy_current(self, home_region: str) -> PreflightCheckResult:
+        """Warn when the deployed access role is older than this release's template.
+
+        New features add API calls to the template's policy; a role bootstrapped by an older release then fails
+        halfway through a deploy with AccessDenied. Comparing the two up front turns that into a one-line warning.
+        """
+        name, target = "Access Role Policy", f"Stack '{ACCESS_STACK}'"
+        try:
+            packaged = resolve_resource_path(ACCESS_TEMPLATE).read_text(encoding="utf-8")
+        except (OSError, ValueError) as e:  # not expected: the template ships with the package
+            logger.debug("Access policy check: %s", e)
+            return PreflightCheckResult(
+                name=name, target=target, status=PreflightCheckStatus.INFO, live_value="Unavailable"
+            )
+
+        for region in dict.fromkeys([ACCESS_DEFAULT_REGION, home_region]):
+            try:
+                cfn = self.session_mgr.get_client("cloudformation", region_name=region)
+                body = cfn.get_template(StackName=ACCESS_STACK, TemplateStage="Original").get("TemplateBody")
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                if code == "ValidationError":  # no such stack in this region
+                    continue
+                logger.debug("Access policy check in %s: %s", region, e)
+                return PreflightCheckResult(
+                    name=name, target=target, status=PreflightCheckStatus.INFO, live_value="Unavailable"
+                )
+            except BotoCoreError as e:
+                logger.debug("Access policy check in %s: %s", region, e)
+                return PreflightCheckResult(
+                    name=name, target=target, status=PreflightCheckStatus.INFO, live_value="Unavailable"
+                )
+            if _normalise(body) == _normalise(packaged):
+                return PreflightCheckResult(
+                    name=name,
+                    target=target,
+                    status=PreflightCheckStatus.PASS,
+                    live_value=f"Matches this release ({region})",
+                )
+            return PreflightCheckResult(
+                name=name,
+                target=target,
+                status=PreflightCheckStatus.WARN,
+                live_value=f"Differs from this release ({region})",
+                action_required=(
+                    "The deployed access role was created by a different tarmac release and may lack permissions "
+                    f"this release needs. Re-run 'tarmac access bootstrap --region {region}' (CloudShell, root) to "
+                    "update it; the role keeps its name and your profiles keep working."
+                ),
+            )
+        return PreflightCheckResult(
+            name=name,
+            target=target,
+            status=PreflightCheckStatus.INFO,
+            live_value="Not found (access set up another way)",
+        )
+
     def run_all_checks(self, region_override: str | None = None) -> PreflightReport:
         """Orchestrate all prerequisite and readiness checks and compile report."""
         home_region = region_override or self.bundle.org.organization.primary_region
 
         checks: list[PreflightCheckResult] = [
             self.check_not_root_identity(),
+            self.check_access_policy_current(home_region),
             self.check_organization_status(),
             self.check_root_mfa(),
             self.check_iam_user_hygiene(),

@@ -18,3 +18,18 @@ def make_config(tmp_path: Path, environment: str | None) -> Path:
         tags["Environment"] = environment
     org_file.write_text(yaml.safe_dump(data))
     return cfg
+
+
+class CfnLoader(yaml.SafeLoader):
+    """YAML loader that reads CloudFormation templates, treating ``!Ref``-style tags as plain values."""
+
+
+def _construct(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_mapping(node, deep=True)  # type: ignore[arg-type]
+
+
+CfnLoader.add_multi_constructor("!", _construct)

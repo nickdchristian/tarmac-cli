@@ -7,11 +7,11 @@
       "Action": "*",
       "Resource": "*",
       "Condition": {
-        "StringLike": {
+        "ArnLike": {
           "aws:PrincipalArn": "arn:aws:iam::*:root"
         },
         "Null": {
-          "aws:PrincipalTag/RootSessionArn": "true"
+          "aws:AssumedRoot": "true"
         }
       }
     }

@@ -1,0 +1,160 @@
+# =============================================================================
+# AWS Config recorder (one per account and Region)
+# =============================================================================
+# Deployed by tarmac as a service-managed StackSet to every member account (and Region) and as an ordinary
+# stack in the management account, which StackSets cannot target.
+#
+# - Records all supported resource types. Global resource types (IAM and similar) are recorded only in
+#   GlobalResourcesRegion, because recording them in every Region repeats the same configuration items.
+# - Does not record AWS::Config::ResourceCompliance unless RecordResourceCompliance is 'true'. Security Hub CSPM
+#   updates that item on every compliance change, and AWS recommends turning it off when the recorder serves only
+#   Security Hub: "You don't need to record AWS::Config::ResourceCompliance for security checks to work".
+#   Turning it off needs the exclusion recording strategy, which does not leave out IAM types in other Regions on
+#   its own, so they are listed explicitly there.
+# - Delivers to the AWS Config bucket in the Log Archive account (not the CloudTrail bucket: AWS Config does not
+#   support delivery to a bucket with Object Lock default retention).
+# - Uses a role named per Region so that parallel Region deployments never create the same global IAM role.
+#   The management account passes RecorderRoleArn (its service-linked role) instead of creating one.
+# =============================================================================
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Config recorder and delivery channel delivering to the central log archive bucket
+
+Parameters:
+  DeliveryBucketName:
+    Type: String
+    Description: Central log archive bucket that receives AWS Config history and snapshots
+    MinLength: 3
+
+  DeliveryKmsKeyArn:
+    Type: String
+    Default: ''
+    Description: KMS key of the log archive bucket. Leave empty when the bucket uses SSE-S3.
+
+  GlobalResourcesRegion:
+    Type: String
+    Description: The only Region that records global resource types such as IAM
+
+  RecorderRoleArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Existing role for AWS Config to use (the service-linked role in the management account, whose deployment
+      role is not allowed to create IAM roles). Leave empty to create a role per Region.
+
+  RecordingFrequency:
+    Type: String
+    Default: CONTINUOUS
+    AllowedValues:
+      - CONTINUOUS
+      - DAILY
+    Description: >-
+      CONTINUOUS records every change ($0.003 per item). DAILY records at most one item per resource per day
+      ($0.012 per item), which only costs less for resources that change more than four times a day, and is not
+      suitable if you use AWS Firewall Manager.
+
+  IncludeGlobalResources:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Record global resource types (in GlobalResourcesRegion only)
+
+  RecordResourceCompliance:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      Also record AWS::Config::ResourceCompliance configuration items (billed like any other item). Not needed
+      for Security Hub CSPM controls. 'true' uses the plain all-supported recording group.
+
+Conditions:
+  CreateRecorderRole: !Equals [!Ref RecorderRoleArn, '']
+  RecordGlobalResources: !And
+    - !Equals [!Ref IncludeGlobalResources, 'true']
+    - !Equals [!Ref 'AWS::Region', !Ref GlobalResourcesRegion]
+  HasKmsKey: !Not [!Equals [!Ref DeliveryKmsKeyArn, '']]
+  RecordCompliance: !Equals [!Ref RecordResourceCompliance, 'true']
+
+Resources:
+  RecorderRole:
+    Type: AWS::IAM::Role
+    Condition: CreateRecorderRole
+    Properties:
+      RoleName: !Sub 'tarmac-config-recorder-${AWS::Region}'
+      Description: Lets AWS Config record resource configuration and deliver it to the log archive bucket
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWS_ConfigRole'
+      Policies:
+        - PolicyName: DeliverToLogArchive
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketAcl
+                  - s3:ListBucket
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${DeliveryBucketName}'
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${DeliveryBucketName}/AWSLogs/${AWS::AccountId}/Config/*'
+              - !If
+                - HasKmsKey
+                - Effect: Allow
+                  Action:
+                    - kms:GenerateDataKey
+                    - kms:Decrypt
+                    - kms:DescribeKey
+                  Resource: !Ref DeliveryKmsKeyArn
+                - !Ref 'AWS::NoValue'
+
+  DeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    # PutDeliveryChannel needs a recorder to exist (NoAvailableConfigurationRecorderException otherwise).
+    DependsOn: ConfigRecorder
+    Properties:
+      Name: tarmac-delivery
+      S3BucketName: !Ref DeliveryBucketName
+      S3KmsKeyArn: !If [HasKmsKey, !Ref DeliveryKmsKeyArn, !Ref 'AWS::NoValue']
+
+  ConfigRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    Properties:
+      Name: tarmac-recorder
+      RoleARN: !If [CreateRecorderRole, !GetAtt RecorderRole.Arn, !Ref RecorderRoleArn]
+      RecordingMode:
+        RecordingFrequency: !Ref RecordingFrequency
+      RecordingGroup: !If
+        - RecordCompliance
+        - AllSupported: true
+          IncludeGlobalResourceTypes: !If [RecordGlobalResources, true, false]
+        - AllSupported: false
+          IncludeGlobalResourceTypes: false
+          RecordingStrategy:
+            UseOnly: EXCLUSION_BY_RESOURCE_TYPES
+          ExclusionByResourceTypes:
+            ResourceTypes: !If
+              - RecordGlobalResources
+              - - AWS::Config::ResourceCompliance
+              - - AWS::Config::ResourceCompliance
+                - AWS::IAM::Group
+                - AWS::IAM::Policy
+                - AWS::IAM::Role
+                - AWS::IAM::User
+
+Outputs:
+  ConfigRoleArn:
+    Description: Role assumed by AWS Config in this Region
+    Value: !If [CreateRecorderRole, !GetAtt RecorderRole.Arn, !Ref RecorderRoleArn]
