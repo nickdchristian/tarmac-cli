@@ -211,3 +211,22 @@ def test_broken_stack_deletion_releases_termination_protection_when_needed():
         StackName="s1", EnableTerminationProtection=False
     )
     assert cfn.delete_stack.call_count == 2
+
+
+def test_production_lock_is_not_hidden_by_a_higher_precedence_tag():
+    """accounts.yaml tags override organization.yaml tags, but a 'prod' anywhere must still block destroy."""
+    from types import SimpleNamespace
+    from typing import Any
+
+    import typer
+
+    from tarmac.cli.deploy import _enforce_production_lock
+
+    bundle: Any = SimpleNamespace(
+        org=SimpleNamespace(tags={"Environment": "prod"}, organization=SimpleNamespace(tags={})),
+        accounts=SimpleNamespace(tags={"Environment": "dev"}),
+        get_organization_tags=lambda: {"Environment": "dev"},
+    )
+    with pytest.raises(typer.Exit):
+        _enforce_production_lock(bundle, dry_run=False, force=False)
+    _enforce_production_lock(bundle, dry_run=False, force=True)

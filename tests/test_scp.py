@@ -720,3 +720,76 @@ def test_import_into_the_stack_checks_adoption_first(tmp_path):
 
     with pytest.raises(GovernanceError, match="was not created by tarmac"):
         service._require_declared_policies_adoptable(config, _EXISTING, tmp_path)  # type: ignore[arg-type]
+
+
+def test_scp_synthesize_template_disambiguates_colliding_logical_ids(tmp_path: Path):
+    """Colliding sanitized SCP names and symbol-only names receive distinct alphanumeric logical IDs."""
+    policy_file = tmp_path / "policies" / "scp" / "deny.json"
+    policy_file.parent.mkdir(parents=True, exist_ok=True)
+    policy_file.write_text('{"Version":"2012-10-17","Statement":[]}', encoding="utf-8")
+
+    config = ServiceControlPoliciesConfig(
+        enabled=True,
+        policies=[
+            SCPDef(name="Deny-Root", policy_file="policies/scp/deny.json", targets=["root"]),
+            SCPDef(name="Deny_Root", policy_file="policies/scp/deny.json", targets=["root"]),
+            SCPDef(name="---", policy_file="policies/scp/deny.json", targets=["root"]),
+        ],
+    )
+    service = SCPService(MagicMock())
+    tmpl = service.synthesize_template(config, "r-root1", {}, tmp_path)
+    resources = tmpl["Resources"]
+    assert len(resources) == 3
+    for logical_id in resources:
+        assert logical_id.isalnum()
+        assert logical_id != "Scp"
+
+
+def test_scp_reconcile_via_cfn_imports_only_preexisting_when_mixed_with_new(tmp_path: Path):
+    """When only a subset of declared SCPs exist in AWS, the IMPORT change set only includes those SCPs."""
+    import yaml
+
+    policy_file = tmp_path / "policies" / "scp" / "deny.json"
+    policy_file.parent.mkdir(parents=True, exist_ok=True)
+    policy_file.write_text('{"Version":"2012-10-17","Statement":[]}', encoding="utf-8")
+
+    mock_session = MagicMock()
+    mock_org = MagicMock()
+    mock_cfn = MagicMock()
+    mock_session.get_client.side_effect = lambda s, **_: mock_org if s == "organizations" else mock_cfn
+    mock_org.list_roots.return_value = {
+        "Roots": [{"Id": "r-root1", "PolicyTypes": [{"Type": "SERVICE_CONTROL_POLICY", "Status": "ENABLED"}]}]
+    }
+    mock_org.get_paginator.return_value.paginate.return_value = [
+        {"Policies": [{"Id": "p-existing", "Name": "ExistingGuard"}]}
+    ]
+    mock_org.describe_policy.return_value = {"Policy": {"Content": '{"Version":"2012-10-17","Statement":[]}'}}
+    mock_cfn.describe_stacks.return_value = {
+        "Stacks": [{"StackName": "myorg-organization-scps", "StackStatus": "ROLLBACK_COMPLETE"}]
+    }
+
+    config = ServiceControlPoliciesConfig(
+        enabled=True,
+        policies=[
+            SCPDef(name="ExistingGuard", policy_file="policies/scp/deny.json", targets=["root"]),
+            SCPDef(name="BrandNewGuard", policy_file="policies/scp/deny.json", targets=["root"]),
+        ],
+    )
+    service = SCPService(mock_session)
+    service.reconcile_via_cloudformation(
+        config=config,
+        root_id="r-root1",
+        ou_map={},
+        project_root=tmp_path,
+        org_name="myorg",
+        dry_run=False,
+    )
+
+    import_kwargs = mock_cfn.create_change_set.call_args.kwargs
+    import_doc = yaml.safe_load(import_kwargs["TemplateBody"])
+    assert list(import_doc["Resources"].keys()) == ["ScpExistingGuard"]
+    assert [r["LogicalResourceId"] for r in import_kwargs["ResourcesToImport"]] == ["ScpExistingGuard"]
+
+    final_kwargs = (mock_cfn.create_stack.call_args or mock_cfn.update_stack.call_args).kwargs
+    final_doc = yaml.safe_load(final_kwargs["TemplateBody"])
+    assert set(final_doc["Resources"].keys()) == {"ScpExistingGuard", "ScpBrandNewGuard"}

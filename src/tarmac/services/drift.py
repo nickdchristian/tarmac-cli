@@ -112,7 +112,7 @@ class DriftService:
                     declared="Present",
                     live=f"Present ({live_ous[ou_name]})" if in_sync else "Missing",
                     status="IN_SYNC" if in_sync else "MISSING",
-                    remediation="" if in_sync else "tarmac ou apply",
+                    remediation="" if in_sync else "tarmac ou sync",
                 )
             )
 
@@ -176,13 +176,14 @@ class DriftService:
         report: DriftReport,
     ) -> None:
         """Check if account tags in AWS Organizations match declared/inherited tags."""
+        org_tags = bundle.get_organization_tags()
         for acct in bundle.accounts.accounts:
             live_data = acct_service.find_existing_account(acct.name, live_accts)
             if not live_data:
                 continue
 
             acct_id = str(live_data["Id"])
-            expected_tags = bundle.get_resolved_tags(account_name=acct.name)
+            expected_tags = {**org_tags, **bundle.get_account_tags(acct.name)}
             if not expected_tags:
                 continue
 
@@ -221,6 +222,7 @@ class DriftService:
             return
 
         live_policies = scp_service.list_existing_scps()
+        live_ous_lower = {k.lower(): v for k, v in live_ous.items()}
 
         for policy_def in scp_config.policies:
             pol_data = live_policies.get(policy_def.name)
@@ -232,7 +234,7 @@ class DriftService:
                         declared="Attached",
                         live="Missing in AWS",
                         status="MISSING",
-                        remediation="tarmac org scp sync",
+                        remediation="tarmac org scp apply",
                     )
                 )
                 continue
@@ -255,7 +257,7 @@ class DriftService:
                             declared="File content",
                             live="Policy drifted",
                             status="DRIFTED",
-                            remediation="tarmac org scp sync",
+                            remediation="tarmac org scp apply",
                         )
                     )
                     continue
@@ -266,7 +268,12 @@ class DriftService:
             missing_targets: list[str] = []
 
             for tgt in policy_def.targets:
-                target_id = root_id if tgt.lower() == "root" else live_ous.get(tgt)
+                tgt_lower = tgt.strip().lower()
+                target_id = (
+                    root_id
+                    if tgt_lower in ("root", "organization_root")
+                    else live_ous.get(tgt) or live_ous_lower.get(tgt_lower)
+                )
                 if target_id and target_id not in attached_targets:
                     missing_targets.append(tgt)
 
@@ -278,7 +285,7 @@ class DriftService:
                         declared=f"Attached to {policy_def.targets}",
                         live=f"Unattached to {missing_targets}",
                         status="DRIFTED",
-                        remediation="tarmac org scp sync",
+                        remediation="tarmac org scp apply",
                     )
                 )
             else:
@@ -333,8 +340,20 @@ class DriftService:
         ct_status = self._get_stack_status(mgmt_cfn, ct_stack)
         self._record_stack_drift("CloudTrail", ct_status, report)
 
+        sso_region = (
+            bundle.identity.identity_center.region
+            if (
+                bundle.identity and bundle.identity.identity_center and bundle.identity.identity_center.region
+            )
+            else target_region
+        )
+        sso_cfn = (
+            mgmt_cfn
+            if sso_region == target_region
+            else self.session_mgr.get_client("cloudformation", region_name=sso_region)
+        )
         sso_stack = f"{prefix}-sso-permission-sets"
-        sso_status = self._get_stack_status(mgmt_cfn, sso_stack)
+        sso_status = self._get_stack_status(sso_cfn, sso_stack)
         self._record_stack_drift("SSOPermissionSets", sso_status, report)
 
         stacks_to_check = [
@@ -386,7 +405,8 @@ class DriftService:
         if not (bundle.identity and bundle.identity.identity_center):
             return
         try:
-            sso_client = self.session_mgr.get_client("sso-admin", region_name=target_region)
+            sso_region = bundle.identity.identity_center.region or target_region
+            sso_client = self.session_mgr.get_client("sso-admin", region_name=sso_region)
             instances = sso_client.list_instances().get("Instances", [])
             if not instances:
                 return
@@ -432,7 +452,7 @@ class DriftService:
         report: DriftReport,
     ) -> None:
         """Helper to classify CloudFormation stack status as IN_SYNC, DRIFTED, or MISSING."""
-        if status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
+        if status in ("CREATE_COMPLETE", "UPDATE_COMPLETE", "IMPORT_COMPLETE"):
             item_status, remediation = "IN_SYNC", ""
             declared = "CREATE_COMPLETE"
         elif status in ["NOT_FOUND", "ACCOUNT_MISSING"]:

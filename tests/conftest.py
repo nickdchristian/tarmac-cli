@@ -22,6 +22,18 @@ def isolate_aws_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def neutral_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make help and table output the same on a laptop and in CI.
+
+    GitHub Actions sets GITHUB_ACTIONS (and runners may set FORCE_COLOR), which makes Typer and Rich colour their output
+    and split words such as option names with escape codes. Tests should not depend on which side they run on.
+    """
+    for var in ("GITHUB_ACTIONS", "FORCE_COLOR", "CLICOLOR_FORCE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
+@pytest.fixture(autouse=True)
 def isolate_inventory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Keep the created-by-tarmac inventory out of the repository's example config."""
     from tarmac.core import inventory
