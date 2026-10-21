@@ -92,7 +92,7 @@ cloudtrail:
   # object_lock:
   #   mode: GOVERNANCE     # GOVERNANCE (bypassable) or COMPLIANCE (cannot be undone before it expires)
   #   retention_days: 365
-  enable_kms: false # false = SSE-S3 (AES256) on the trail and the log bucket; no KMS key or request charges
+  # enable_kms: true # Unset = SSE-S3 (AES256) for a new deployment; true adds a KMS key (about $1/month), which CIS and Security Hub CloudTrail.2 ask for
 
 # Security services (all off unless enabled)
 # security_services:
