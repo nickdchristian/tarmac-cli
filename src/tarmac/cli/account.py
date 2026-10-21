@@ -8,6 +8,7 @@ import typer
 from rich.panel import Panel
 from rich.table import Table
 
+from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import AccountDef
@@ -172,8 +173,14 @@ def apply_accounts(
     dry_run: bool = typer.Option(False, "--dry-run", help="Simulate provisioning without making changes"),
     skip_baseline: bool = typer.Option(False, "--skip-baseline", help="Skip running post-creation baselines"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt for automated run"),
+    adopt_existing: bool = typer.Option(
+        False,
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
 ):
     """Provision declared accounts and place them into target OUs."""
+    set_adopt_existing(adopt_existing)
     if not _confirm_action("Are you sure you want to provision/move accounts in AWS?", yes, dry_run):
         print_info("Account provisioning cancelled by user.")
         raise typer.Exit(code=0)
@@ -303,8 +310,14 @@ def baseline_accounts(
     region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Simulate baselining without making changes"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt for automated run"),
+    adopt_existing: bool = typer.Option(
+        False,
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
 ) -> None:
     """Run security and operational baselines (default VPC purge, budgets, anomaly alerts)."""
+    set_adopt_existing(adopt_existing)
     msg = "Are you sure you want to baseline accounts (delete default VPCs & setup budgets)?"
     if not _confirm_action(msg, yes, dry_run):
         print_info("Account baselining cancelled by user.")

@@ -173,7 +173,9 @@ def test_guardduty_and_securityhub_changes_are_audited(caplog):
         "111122223333",
         "eu-west-1",
         ["eu-west-1"],
-        SecurityHubConfig(enabled=True, standards=["aws-foundational-security-best-practices"]),
+        SecurityHubConfig(
+            enabled=True, central_configuration=False, standards=["aws-foundational-security-best-practices"]
+        ),
     )
 
     resources = [e["resource"] for e in _events(caplog)]
