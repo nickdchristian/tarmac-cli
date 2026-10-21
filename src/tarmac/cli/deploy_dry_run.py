@@ -10,13 +10,15 @@ from rich.panel import Panel
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
-from ..core.config_schema import OUDef
+from ..core.config_schema import AccountBaselineConfig, Contact, OUDef
 from ..services.accounts import AccountService
 from ..services.ou import OUService
 from .deploy_config_recorder import warn_if_config_recorder_missing
 from .ui import console, create_table, print_info, print_warning
 
 logger = logging.getLogger(__name__)
+
+_PLAN_ACTION_STYLES = {"CREATE": "green", "MOVE": "yellow", "SUSPEND": "red", "SUSPENDED": "red"}
 
 
 def _records_plan(phase: int) -> Callable[[Callable[..., None]], Callable[..., None]]:
@@ -46,6 +48,42 @@ def _locking_label(backend_cfg: Any) -> str:
     if backend_cfg.enable_dynamodb:
         return f"DynamoDB table {backend_cfg.dynamodb_table_name}"
     return "S3-only (use_lockfile)"
+
+
+def _contacts(bundle: ConfigBundle) -> list[tuple[str, Contact]]:
+    contacts = bundle.org.contacts
+    return [
+        ("security", contacts.security),
+        ("operations", contacts.operations),
+        ("billing", contacts.billing),
+    ]
+
+
+def _budget_label(baseline: AccountBaselineConfig) -> str:
+    return f"${baseline.budget.monthly_limit_usd:,.0f} USD" if baseline.budget else "None"
+
+
+def _baseline_controls(baseline: AccountBaselineConfig) -> str:
+    enabled = (
+        (baseline.delete_default_vpc, "Purge VPC"),
+        (baseline.anomaly_detection, "Anomaly Alert"),
+        (baseline.budget, "Budget Alert"),
+    )
+    return ", ".join(label for on, label in enabled if on) or "Default"
+
+
+def _account_plan_entry(
+    name: str, ou: str, email: str, action: str, baseline: AccountBaselineConfig
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "ou": ou,
+        "email": email,
+        "action": action,
+        "monthly_budget_usd": baseline.budget.monthly_limit_usd if baseline.budget else None,
+        "delete_default_vpc": baseline.delete_default_vpc,
+        "anomaly_detection": bool(baseline.anomaly_detection),
+    }
 
 
 def _collect_ou_tree(ous: list[OUDef], parent: str = "Root") -> list[tuple[str, str, str]]:
@@ -129,21 +167,10 @@ def _render_phase_1_dry_run(bundle: ConfigBundle) -> None:
         f"Name: {bundle.org.organization.name} | FeatureSet: ALL | Primary Region: {bundle.org.organization.primary_region}",
         "ENSURE / VERIFY",
     )
-    table.add_row(
-        "Security Contact",
-        f"{bundle.org.contacts.security.name} <{bundle.org.contacts.security.email}> ({bundle.org.contacts.security.phone})",
-        "SET CONTACT",
-    )
-    table.add_row(
-        "Operations Contact",
-        f"{bundle.org.contacts.operations.name} <{bundle.org.contacts.operations.email}> ({bundle.org.contacts.operations.phone})",
-        "SET CONTACT",
-    )
-    table.add_row(
-        "Billing Contact",
-        f"{bundle.org.contacts.billing.name} <{bundle.org.contacts.billing.email}> ({bundle.org.contacts.billing.phone})",
-        "SET CONTACT",
-    )
+    for label, contact in _contacts(bundle):
+        table.add_row(
+            f"{label.title()} Contact", f"{contact.name} <{contact.email}> ({contact.phone})", "SET CONTACT"
+        )
     root_mgmt = bundle.org.root_access_management
     root_desc = (
         f"Delegated Admin: {root_mgmt.delegated_admin_account}"
@@ -284,74 +311,37 @@ def _render_phase_4_dry_run(session_mgr: AwsSessionManager, bundle: ConfigBundle
     table.add_column("Baseline Security Controls", style="dim")
 
     plan_items = _fetch_live_account_plan(session_mgr, bundle)
-
-    if plan_items:
-        for item in plan_items:
-            action_style = (
-                "green"
-                if item.action == "CREATE"
-                else (
-                    "yellow"
-                    if item.action == "MOVE"
-                    else ("red" if item.action in ("SUSPEND", "SUSPENDED") else "dim")
-                )
-            )
-            budget_str = (
-                f"${item.baseline.budget.monthly_limit_usd:,.0f} USD"
-                if (item.baseline and item.baseline.budget)
-                else "None"
-            )
-            controls: list[str] = []
-            if item.baseline:
-                if item.baseline.delete_default_vpc:
-                    controls.append("Purge VPC")
-                if item.baseline.anomaly_detection:
-                    controls.append("Anomaly Alert")
-                if item.baseline.budget:
-                    controls.append("Budget Alert")
-            controls_str = ", ".join(controls) or "Default"
-
-            table.add_row(
-                item.name,
-                item.ou,
-                item.email,
-                f"[{action_style}]{item.action}[/{action_style}]",
-                budget_str,
-                controls_str,
-            )
-            audit(
-                "plan",
-                f"account:{item.name}",
-                Outcome.SIMULATED,
-                f"[DRY-RUN] Account '{item.name}' would be {item.action} (target OU {item.ou})",
-                dry_run=True,
-                planned_action=item.action,
-            )
-    else:
+    for item in plan_items:
+        style = _PLAN_ACTION_STYLES.get(item.action, "dim")
+        table.add_row(
+            item.name,
+            item.ou,
+            item.email,
+            f"[{style}]{item.action}[/{style}]",
+            _budget_label(item.baseline),
+            _baseline_controls(item.baseline),
+        )
+        audit(
+            "plan",
+            f"account:{item.name}",
+            Outcome.SIMULATED,
+            f"[DRY-RUN] Account '{item.name}' would be {item.action} (target OU {item.ou})",
+            dry_run=True,
+            planned_action=item.action,
+        )
+    if not plan_items:
         for acct in bundle.accounts.accounts:
-            budget_str = (
-                f"${acct.baseline.budget.monthly_limit_usd:,.0f} USD" if acct.baseline.budget else "None"
-            )
-            controls = []
-            if acct.baseline.delete_default_vpc:
-                controls.append("Purge VPC")
-            if acct.baseline.anomaly_detection:
-                controls.append("Anomaly Alert")
-            if acct.baseline.budget:
-                controls.append("Budget Alert")
-            controls_str = ", ".join(controls) or "Default"
-
             table.add_row(
                 acct.name,
                 acct.ou,
                 acct.email,
                 "WOULD PROVISION",
-                budget_str,
-                controls_str,
+                _budget_label(acct.baseline),
+                _baseline_controls(acct.baseline),
             )
 
     console.print(table)
-    quarantined = [i.name for i in plan_items if i.action == "SUSPEND"] if plan_items else []
+    quarantined = [i.name for i in plan_items if i.action == "SUSPEND"]
     if quarantined:
         print_warning(
             f"{len(quarantined)} account(s) are tagged as managed by Tarmac but are missing from accounts.yaml "
@@ -590,21 +580,8 @@ def _build_dry_run_plan_dict(
             "primary_region": bundle.org.organization.primary_region,
             "additional_regions": bundle.org.organization.additional_regions,
             "contacts": {
-                "security": {
-                    "name": bundle.org.contacts.security.name,
-                    "email": str(bundle.org.contacts.security.email),
-                    "phone": bundle.org.contacts.security.phone,
-                },
-                "operations": {
-                    "name": bundle.org.contacts.operations.name,
-                    "email": str(bundle.org.contacts.operations.email),
-                    "phone": bundle.org.contacts.operations.phone,
-                },
-                "billing": {
-                    "name": bundle.org.contacts.billing.name,
-                    "email": str(bundle.org.contacts.billing.email),
-                    "phone": bundle.org.contacts.billing.phone,
-                },
+                label: {"name": c.name, "email": str(c.email), "phone": c.phone}
+                for label, c in _contacts(bundle)
             },
             "root_access_management": {
                 "enabled": bundle.org.root_access_management.enabled,
@@ -616,17 +593,11 @@ def _build_dry_run_plan_dict(
 
     if 2 in phases_to_run:
         ou_items = _collect_ou_tree(bundle.org.ou_structure)
-        scp_items: list[dict[str, Any]] = []
-        if bundle.org.service_control_policies and bundle.org.service_control_policies.enabled:
-            for p in bundle.org.service_control_policies.policies:
-                scp_items.append(
-                    {
-                        "name": p.name,
-                        "targets": p.targets,
-                        "policy_file": p.policy_file,
-                        "description": p.description,
-                    }
-                )
+        scp_cfg = bundle.org.service_control_policies
+        scp_items = [
+            {"name": p.name, "targets": p.targets, "policy_file": p.policy_file, "description": p.description}
+            for p in (scp_cfg.policies if scp_cfg and scp_cfg.enabled else [])
+        ]
         phases_data["2_ou"] = {
             "ous": [{"name": name, "parent": parent, "description": desc} for name, parent, desc in ou_items],
             "service_control_policies": scp_items,
@@ -644,42 +615,14 @@ def _build_dry_run_plan_dict(
         }
 
     if 4 in phases_to_run:
-        accounts_plan: list[dict[str, Any]] = []
         plan_items = _fetch_live_account_plan(session_mgr, bundle)
-
-        if plan_items:
-            for item in plan_items:
-                accounts_plan.append(
-                    {
-                        "name": item.name,
-                        "ou": item.ou,
-                        "email": item.email,
-                        "action": item.action,
-                        "monthly_budget_usd": (
-                            item.baseline.budget.monthly_limit_usd
-                            if (item.baseline and item.baseline.budget)
-                            else None
-                        ),
-                        "delete_default_vpc": (item.baseline.delete_default_vpc if item.baseline else True),
-                        "anomaly_detection": bool(item.baseline and item.baseline.anomaly_detection),
-                        "reason": item.reason,
-                    }
-                )
-        else:
-            for acct in bundle.accounts.accounts:
-                accounts_plan.append(
-                    {
-                        "name": acct.name,
-                        "ou": acct.ou,
-                        "email": acct.email,
-                        "action": "WOULD PROVISION",
-                        "monthly_budget_usd": (
-                            acct.baseline.budget.monthly_limit_usd if acct.baseline.budget else None
-                        ),
-                        "delete_default_vpc": acct.baseline.delete_default_vpc,
-                        "anomaly_detection": bool(acct.baseline.anomaly_detection),
-                    }
-                )
+        accounts_plan = [
+            {**_account_plan_entry(i.name, i.ou, i.email, i.action, i.baseline), "reason": i.reason}
+            for i in plan_items
+        ] or [
+            _account_plan_entry(a.name, a.ou, a.email, "WOULD PROVISION", a.baseline)
+            for a in bundle.accounts.accounts
+        ]
         phases_data["4_accounts"] = accounts_plan
 
     if 5 in phases_to_run:
