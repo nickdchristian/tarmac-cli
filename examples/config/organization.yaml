@@ -94,7 +94,7 @@ terraform_backend:
   account: "deployment"
   bucket_prefix: "myorg-terraform-state"
   dynamodb_table_name: "terraform-state-lock"
-  enable_dynamodb: false # Set to false for native S3-only locking (Terraform 1.10+ use_lockfile)
+  # enable_dynamodb: true # Unset = S3-only locking (Terraform 1.10+ use_lockfile). DynamoDB locking is deprecated in Terraform.
 
 # Cost Allocation Tags in AWS Cost Explorer & Billing
 cost_allocation_tags:

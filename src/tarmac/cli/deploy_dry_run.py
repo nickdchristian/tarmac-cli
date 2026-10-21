@@ -38,6 +38,15 @@ def _records_plan(phase: int) -> Callable[[Callable[..., None]], Callable[..., N
     return decorator
 
 
+def _locking_label(backend_cfg: Any) -> str:
+    """How the Terraform backend will lock state, for the plan output."""
+    if backend_cfg.enable_dynamodb is None:
+        return "S3-only (use_lockfile) for a new backend; an existing DynamoDB table is kept"
+    if backend_cfg.enable_dynamodb:
+        return f"DynamoDB table {backend_cfg.dynamodb_table_name}"
+    return "S3-only (use_lockfile)"
+
+
 def _collect_ou_tree(ous: list[OUDef], parent: str = "Root") -> list[tuple[str, str, str]]:
     """Flatten declared OU hierarchy into a list of (name, parent, description) tuples."""
     items: list[tuple[str, str, str]] = []
@@ -339,10 +348,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
 
     backend_name = bundle.get_backend_account_name() or "deployment"
     backend_cfg = bundle.org.terraform_backend
-    backend_params = (
-        f"BucketPrefix: {backend_cfg.bucket_prefix}, "
-        f"DynamoDB: {backend_cfg.dynamodb_table_name} (enabled={backend_cfg.enable_dynamodb})"
-    )
+    backend_params = f"BucketPrefix: {backend_cfg.bucket_prefix}, Locking: {_locking_label(backend_cfg)}"
     table.add_row(
         f"{bundle.org.organization.name}-terraform-backend",
         backend_name,
@@ -619,6 +625,7 @@ def _build_dry_run_plan_dict(
                 "bucket_prefix": bundle.org.terraform_backend.bucket_prefix,
                 "dynamodb_table_name": bundle.org.terraform_backend.dynamodb_table_name,
                 "enable_dynamodb": bundle.org.terraform_backend.enable_dynamodb,
+                "locking": _locking_label(bundle.org.terraform_backend),
             },
             "log_archive_hardening": {
                 "stack_name": f"{bundle.org.organization.name}-log-archive-hardening",

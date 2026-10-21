@@ -12,7 +12,7 @@ from ..core.exceptions import GovernanceError
 from ..core.models import StackDeployReport
 from ..core.templates import resolve_resource_path
 from ..services.baseline import BaselineService
-from ..services.cloudformation import CloudFormationService
+from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from .common import get_active_account_id_map, load_configs_or_exit, parse_tags_or_exit
 from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
 
@@ -114,7 +114,14 @@ def deploy_backend(
         )
         stack_name = f"{bundle.org.organization.name}-terraform-backend"
 
-        enable_dynamodb = False if s3_only else bundle.org.terraform_backend.enable_dynamodb
+        cfn_client = session_mgr.get_member_client(
+            deployment_acct_id, "cloudformation", region_name=target_region
+        )
+        enable_dynamodb, lock_warning = lock_table_wanted(
+            cfn_client, stack_name, bundle.org.terraform_backend.enable_dynamodb, s3_only
+        )
+        if lock_warning:
+            print_warning(lock_warning)
         params = {
             "OrgName": bundle.org.organization.name,
             "BucketPrefix": bundle.org.terraform_backend.bucket_prefix,
@@ -122,9 +129,6 @@ def deploy_backend(
             "DynamoDBTableName": bundle.org.terraform_backend.dynamodb_table_name,
         }
 
-        cfn_client = session_mgr.get_member_client(
-            deployment_acct_id, "cloudformation", region_name=target_region
-        )
         report = service.deploy_stack(
             cfn_client,
             stack_name,

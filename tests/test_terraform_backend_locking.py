@@ -1,0 +1,64 @@
+"""Terraform state locking: S3-only for new backends, and an existing lock table is never dropped by accident."""
+
+from unittest.mock import MagicMock
+
+from botocore.exceptions import ClientError
+
+from tarmac.core.config_schema import TerraformBackendConfig
+from tarmac.services.cloudformation import lock_table_wanted
+
+STACK = "acme-terraform-backend"
+
+
+def _cfn(enable_dynamodb: str | None) -> MagicMock:
+    cfn = MagicMock()
+    if enable_dynamodb is None:
+        cfn.describe_stacks.side_effect = ClientError(
+            {"Error": {"Code": "ValidationError", "Message": f"Stack with id {STACK} does not exist"}},
+            "DescribeStacks",
+        )
+    else:
+        cfn.describe_stacks.return_value = {
+            "Stacks": [{"Parameters": [{"ParameterKey": "EnableDynamoDB", "ParameterValue": enable_dynamodb}]}]
+        }
+    return cfn
+
+
+def test_the_default_is_no_explicit_setting():
+    assert TerraformBackendConfig().enable_dynamodb is None
+
+
+def test_a_new_backend_is_s3_only_by_default():
+    assert lock_table_wanted(_cfn(None), STACK, None) == (False, None)
+
+
+def test_an_existing_lock_table_is_kept_when_nothing_is_configured():
+    assert lock_table_wanted(_cfn("true"), STACK, None) == (True, None)
+
+
+def test_an_existing_s3_only_backend_stays_s3_only():
+    assert lock_table_wanted(_cfn("false"), STACK, None) == (False, None)
+
+
+def test_asking_for_the_table_creates_it():
+    assert lock_table_wanted(_cfn(None), STACK, True) == (True, None)
+
+
+def test_removing_an_existing_table_is_allowed_but_warned_about():
+    wanted, warning = lock_table_wanted(_cfn("true"), STACK, False)
+
+    assert wanted is False
+    assert warning is not None and "use_lockfile" in warning
+
+
+def test_the_s3_only_flag_removes_an_existing_table_with_a_warning():
+    wanted, warning = lock_table_wanted(_cfn("true"), STACK, True, s3_only=True)
+
+    assert wanted is False
+    assert warning is not None
+
+
+def test_an_unreadable_stack_counts_as_new():
+    cfn = MagicMock()
+    cfn.describe_stacks.return_value = MagicMock()
+    assert lock_table_wanted(cfn, STACK, None) == (False, None)
