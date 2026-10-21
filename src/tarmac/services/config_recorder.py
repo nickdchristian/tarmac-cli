@@ -80,22 +80,10 @@ class ConfigRecorderService:
         management_account_id: str,
         tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> ConfigRecorderReport:
         """Create or update the StackSet, its instances, and the management account stacks."""
         name = Stack.CONFIG_RECORDER.for_org(org_name)
         report = ConfigRecorderReport(regions=list(regions))
-        if dry_run:
-            audit(
-                "create",
-                f"stackset:{name}",
-                Outcome.SUCCEEDED,
-                f"Would deploy AWS Config recorders to {len(regions)} Region(s) of every member account "
-                f"through StackSet '{name}' and to the management account",
-                dry_run=True,
-                regions=regions,
-            )
-            return report
 
         template_body = template_file.read_text(encoding="utf-8")
         cfn_tags = merge_tags(org_tags, tags, {TAG_MANAGED_BY: "tarmac"})

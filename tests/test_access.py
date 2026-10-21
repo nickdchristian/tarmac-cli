@@ -209,8 +209,11 @@ def test_bootstrap_dry_run_and_failure() -> None:
         patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
         patch("tarmac.cli.access.CloudFormationService") as svc,
     ):
-        svc.return_value.deploy_stack.return_value = MagicMock(action="SIMULATED", outputs={})
-        assert runner.invoke(app, ["access", "bootstrap", "--dry-run"]).exit_code == 0
+        svc.return_value.preview_stack.return_value = ("UPDATE", "RoleName: old -> TarmacDeploymentRole")
+        dry = runner.invoke(app, ["access", "bootstrap", "--dry-run"])
+        assert dry.exit_code == 0
+        assert "UPDATE" in dry.output
+        svc.return_value.deploy_stack.assert_not_called()
         svc.return_value.deploy_stack.side_effect = DeploymentError("boom")
         assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1
 

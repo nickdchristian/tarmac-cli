@@ -52,7 +52,6 @@ class SecurityServicesService:
         primary_region: str,
         all_regions: list[str],
         account_id_map: dict[str, str],
-        dry_run: bool = False,
     ) -> list[SecurityServiceReport]:
         """Configure all enabled security services (GuardDuty, Security Hub)."""
         reports: list[SecurityServiceReport] = []
@@ -76,17 +75,11 @@ class SecurityServicesService:
             return reports
 
         if config.guardduty.enabled:
-            reports.append(
-                self.configure_guardduty(
-                    audit_id, primary_region, all_regions, config.guardduty, dry_run=dry_run
-                )
-            )
+            reports.append(self.configure_guardduty(audit_id, primary_region, all_regions, config.guardduty))
 
         if config.securityhub.enabled:
             reports.append(
-                self.configure_securityhub(
-                    audit_id, primary_region, all_regions, config.securityhub, dry_run=dry_run
-                )
+                self.configure_securityhub(audit_id, primary_region, all_regions, config.securityhub)
             )
 
         return reports
@@ -106,26 +99,8 @@ class SecurityServicesService:
         primary_region: str,
         all_regions: list[str],
         config: GuardDutyConfig,
-        dry_run: bool = False,
     ) -> SecurityServiceReport:
         """Delegate and configure GuardDuty across all designated regions."""
-        if dry_run:
-            audit(
-                "delegate",
-                f"guardduty:{audit_id}",
-                Outcome.SUCCEEDED,
-                f"Would delegate GuardDuty administration to account {audit_id} across {len(all_regions)} region(s)",
-                dry_run=True,
-                regions=all_regions,
-            )
-            return SecurityServiceReport(
-                service_name="GuardDuty",
-                delegated_account=audit_id,
-                status="SIMULATED",
-                regions=all_regions,
-                message=f"[DRY-RUN] Would delegate GuardDuty to {audit_id} across {len(all_regions)} region(s)",
-            )
-
         try:
             self._ensure_guardduty_admin(audit_id, primary_region)
         except ClientError as e:
@@ -291,26 +266,8 @@ class SecurityServicesService:
         primary_region: str,
         all_regions: list[str],
         config: SecurityHubConfig,
-        dry_run: bool = False,
     ) -> SecurityServiceReport:
         """Delegate and configure Security Hub, standards, and finding aggregator."""
-        if dry_run:
-            audit(
-                "delegate",
-                f"securityhub:{audit_id}",
-                Outcome.SUCCEEDED,
-                f"Would delegate Security Hub administration to account {audit_id} across {len(all_regions)} region(s)",
-                dry_run=True,
-                regions=all_regions,
-            )
-            return SecurityServiceReport(
-                service_name="SecurityHub",
-                delegated_account=audit_id,
-                status="SIMULATED",
-                regions=all_regions,
-                message=f"[DRY-RUN] Would delegate Security Hub to {audit_id} across {len(all_regions)} region(s)",
-            )
-
         try:
             self._ensure_securityhub_admin(audit_id, primary_region)
         except ClientError as e:

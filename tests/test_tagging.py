@@ -216,7 +216,6 @@ def test_cloudformation_service_merges_tags_in_deploy_stack(tmp_path: Path):
         org_tags={"Environment": "Prod", "CostCenter": "100"},
         account_tags={"CostCenter": "200", "Tier": "App"},
         tags={"CustomTag": "Val"},
-        dry_run=False,
     )
 
     assert report.status == "SUCCEEDED"

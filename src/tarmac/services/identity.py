@@ -354,7 +354,6 @@ class IdentityService:
         permission_sets: list[PermissionSetDef],
         project_root: Path | None = None,
         org_name: str = "organization",
-        dry_run: bool = False,
         org_tags: dict[str, str] | None = None,
         tags: dict[str, str] | None = None,
     ) -> dict[str, str]:
@@ -363,20 +362,6 @@ class IdentityService:
             return {}
 
         instance_arn, _ = self.get_instance_details()
-        if dry_run:
-            for ps_def in permission_sets:
-                audit(
-                    "deploy",
-                    f"permission-set:{ps_def.name}",
-                    Outcome.SUCCEEDED,
-                    f"Would deploy permission set '{ps_def.name}' via CloudFormation",
-                    dry_run=True,
-                )
-            return {
-                ps_def.name: f"arn:aws:sso:::permissionSet/simulated/{ps_def.name}"
-                for ps_def in permission_sets
-            }
-
         logical_ids = self._logical_ids_for_permission_sets(permission_sets)
         template_dict = self.synthesize_permission_sets_template(
             instance_arn, permission_sets, project_root=project_root
@@ -440,7 +425,6 @@ class IdentityService:
                         resources_to_import=resources_to_import,
                         tags=tags,
                         org_tags=org_tags,
-                        dry_run=dry_run,
                     )
                     # Now that the sets are stack-managed, apply the full template (adds ownership tags and any new sets).
                     cfn_service.deploy_stack(
@@ -448,7 +432,6 @@ class IdentityService:
                         stack_name=stack_name,
                         parameters={},
                         tags=tags,
-                        dry_run=dry_run,
                         template_body=template_body,
                         org_tags=org_tags,
                     )
@@ -471,14 +454,13 @@ class IdentityService:
             stack_name=stack_name,
             parameters={},
             tags=tags,
-            dry_run=dry_run,
             template_body=template_body,
             org_tags=org_tags,
         )
 
         return self.list_permission_sets(instance_arn)
 
-    def get_or_create_user(self, user_def: UserDef, dry_run: bool = False) -> str | None:
+    def get_or_create_user(self, user_def: UserDef) -> str | None:
         """Fetch or create a user in Identity Store. Returns UserId."""
         _, store_id = self.get_instance_details()
 
@@ -495,21 +477,10 @@ class IdentityService:
                     f"identity-user:{user_def.username}",
                     Outcome.UNCHANGED,
                     f"Identity Center user '{user_def.username}' already exists",
-                    dry_run=dry_run,
                 )
                 return users[0]["UserId"]
         except ClientError as e:
             logger.warning("Error checking user '%s': %s", user_def.username, e)
-
-        if dry_run:
-            audit(
-                "create",
-                f"identity-user:{user_def.username}",
-                Outcome.SUCCEEDED,
-                f"Would create Identity Center user '{user_def.username}' ({user_def.email})",
-                dry_run=True,
-            )
-            return f"dry-run-user-{user_def.username}"
 
         try:
             resp = self.identitystore_client.create_user(
@@ -537,7 +508,7 @@ class IdentityService:
             )
             raise IdentityCenterError(f"Failed to create user '{user_def.username}'", details=str(e)) from e
 
-    def get_or_create_group(self, group_def: GroupDef, dry_run: bool = False) -> str | None:
+    def get_or_create_group(self, group_def: GroupDef) -> str | None:
         """Fetch or create a group in Identity Store. Returns GroupId."""
         _, store_id = self.get_instance_details()
 
@@ -554,21 +525,10 @@ class IdentityService:
                     f"identity-group:{group_def.name}",
                     Outcome.UNCHANGED,
                     f"Identity Center group '{group_def.name}' already exists",
-                    dry_run=dry_run,
                 )
                 return groups[0]["GroupId"]
         except ClientError as e:
             logger.warning("Error checking group '%s': %s", group_def.name, e)
-
-        if dry_run:
-            audit(
-                "create",
-                f"identity-group:{group_def.name}",
-                Outcome.SUCCEEDED,
-                f"Would create Identity Center group '{group_def.name}'",
-                dry_run=True,
-            )
-            return f"dry-run-group-{group_def.name}"
 
         try:
             resp = self.identitystore_client.create_group(
@@ -637,22 +597,11 @@ class IdentityService:
         user_id: str,
         group_name: str = "",
         username: str = "",
-        dry_run: bool = False,
     ) -> bool:
         """Add a user to a group in Identity Store. Returns True if newly added, False if already a member."""
         _, store_id = self.get_instance_details()
         u_label = username or user_id
         g_label = group_name or group_id
-
-        if dry_run:
-            audit(
-                "add-member",
-                f"identity-group:{g_label}",
-                Outcome.SUCCEEDED,
-                f"Would add user '{u_label}' to group '{g_label}'",
-                dry_run=True,
-            )
-            return True
 
         try:
             self.identitystore_client.create_group_membership(
@@ -747,25 +696,12 @@ class IdentityService:
         group_name: str,
         permission_set_arn: str,
         account_ids: list[str],
-        dry_run: bool = False,
     ) -> int:
         """Assign a group to specific accounts with a given permission set. Returns count of assignments."""
         instance_arn, _ = self.get_instance_details()
         count = 0
 
         for acct_id in account_ids:
-            if dry_run:
-                audit(
-                    "assign",
-                    f"sso-assignment:{acct_id}:{group_name}",
-                    Outcome.SUCCEEDED,
-                    f"Would assign group '{group_name}' to account {acct_id}",
-                    dry_run=True,
-                    permission_set_arn=permission_set_arn,
-                )
-                count += 1
-                continue
-
             if self._assignment_exists(instance_arn, acct_id, permission_set_arn, group_id):
                 audit(
                     "assign",
@@ -849,7 +785,6 @@ class IdentityService:
         groups: list[GroupDef],
         ps_map: dict[str, str],
         active_accts: dict[str, str],
-        dry_run: bool = False,
     ) -> tuple[int, dict[str, str], list[str]]:
         """Synchronize declared groups and their multi-account permission set assignments."""
         all_acct_ids = list(active_accts.values())
@@ -858,7 +793,7 @@ class IdentityService:
         synced_groups: list[str] = []
 
         for grp_def in groups:
-            group_id = self.get_or_create_group(grp_def, dry_run=dry_run)
+            group_id = self.get_or_create_group(grp_def)
             if not group_id:
                 continue
             group_map[grp_def.name] = group_id
@@ -874,7 +809,6 @@ class IdentityService:
                     group_name=grp_def.name,
                     permission_set_arn=ps_arn,
                     account_ids=target_ids,
-                    dry_run=dry_run,
                 )
 
         return total_assignments, group_map, synced_groups
@@ -884,7 +818,6 @@ class IdentityService:
         groups: list[GroupDef],
         user_map: dict[str, str],
         group_map: dict[str, str],
-        dry_run: bool = False,
     ) -> int:
         """Synchronize declared user memberships into groups."""
         added_count = 0
@@ -908,7 +841,6 @@ class IdentityService:
                     user_id=user_id,
                     group_name=grp_def.name,
                     username=member_name,
-                    dry_run=dry_run,
                 ):
                     added_count += 1
 
@@ -924,7 +856,6 @@ class IdentityService:
         project_root: Path | None = None,
         active_accounts: dict[str, str] | None = None,
         org_name: str = "organization",
-        dry_run: bool = False,
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
     ) -> IdentitySyncReport:
@@ -935,7 +866,6 @@ class IdentityService:
             id_cfg.permission_sets,
             project_root=project_root,
             org_name=org_name,
-            dry_run=dry_run,
             org_tags=org_tags,
             tags=custom_tags,
         )
@@ -945,7 +875,7 @@ class IdentityService:
         users = [id_cfg.admin_user, id_cfg.breakglass_user, *id_cfg.additional_users]
         user_map: dict[str, str] = {}
         for u in users:
-            uid = self.get_or_create_user(u, dry_run=dry_run)
+            uid = self.get_or_create_user(u)
             if uid:
                 user_map[u.username] = uid
                 report.users_synced.append(u.username)
@@ -953,13 +883,11 @@ class IdentityService:
         accts = active_accounts if active_accounts is not None else self._fetch_active_accounts()
 
         total_assignments, group_map, synced_groups = self.sync_groups_and_assignments(
-            id_cfg.groups, ps_map, accts, dry_run=dry_run
+            id_cfg.groups, ps_map, accts
         )
         report.groups_synced = synced_groups
         report.assignments_created = total_assignments
 
-        report.memberships_added = self.sync_group_memberships(
-            id_cfg.groups, user_map, group_map, dry_run=dry_run
-        )
+        report.memberships_added = self.sync_group_memberships(id_cfg.groups, user_map, group_map)
 
         return report

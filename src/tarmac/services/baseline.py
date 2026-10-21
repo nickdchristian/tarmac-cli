@@ -80,7 +80,6 @@ class BaselineService:
         account_id: str,
         account_name: str,
         regions: list[str] | None = None,
-        dry_run: bool = False,
     ) -> list[VpcCleanupReport]:
         """Purge default VPCs, subnets, and internet gateways across active AWS regions.
 
@@ -98,17 +97,13 @@ class BaselineService:
 
         if len(target_regions) <= 1:
             for region in target_regions:
-                reports.append(
-                    self._cleanup_region_default_vpc(account_id, account_name, region, dry_run=dry_run)
-                )
+                reports.append(self._cleanup_region_default_vpc(account_id, account_name, region))
         else:
             with ThreadPoolExecutor(max_workers=min(8, len(target_regions))) as pool:
                 reports = list(
                     pool.map(
                         with_current_context(
-                            lambda reg: self._cleanup_region_default_vpc(
-                                account_id, account_name, reg, dry_run=dry_run
-                            )
+                            lambda reg: self._cleanup_region_default_vpc(account_id, account_name, reg)
                         ),
                         target_regions,
                     )
@@ -117,15 +112,13 @@ class BaselineService:
         return reports
 
     def _cleanup_region_default_vpc(
-        self, account_id: str, account_name: str, region: str, dry_run: bool
+        self, account_id: str, account_name: str, region: str
     ) -> VpcCleanupReport:
         """Scan and clean the default VPC in a single region, tagging log records with the account and region."""
         with bind(account_id=account_id, account_name=account_name, region=region):
-            return self._clean_default_vpc(account_id, account_name, region, dry_run)
+            return self._clean_default_vpc(account_id, account_name, region)
 
-    def _clean_default_vpc(
-        self, account_id: str, account_name: str, region: str, dry_run: bool
-    ) -> VpcCleanupReport:
+    def _clean_default_vpc(self, account_id: str, account_name: str, region: str) -> VpcCleanupReport:
         try:
             ec2 = self.session_mgr.get_member_client(account_id, "ec2", region_name=region)
             vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}]).get("Vpcs", [])
@@ -150,19 +143,6 @@ class BaselineService:
                     skipped=True,
                     message=f"Default VPC {vpc_id} is in use (network interfaces attached); not deleted.",
                 )
-            if dry_run:
-                audit(
-                    "delete",
-                    f"default-vpc:{account_id}:{region}",
-                    Outcome.SUCCEEDED,
-                    f"Would delete default VPC {vpc_id} in {region}",
-                    dry_run=True,
-                    vpc_id=vpc_id,
-                )
-                return VpcCleanupReport(
-                    region=region, vpc_id=vpc_id, skipped=True, message="Simulated VPC deletion"
-                )
-
             detached_igws = self._detach_and_delete_igws(ec2, vpc_id)
             deleted_subnets = self._delete_subnets(ec2, vpc_id)
             ec2.delete_vpc(VpcId=vpc_id)
@@ -254,7 +234,6 @@ class BaselineService:
         account_tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> BudgetReport:
         """Create or update a monthly cost budget in the member account via CloudFormation."""
         budget_name = budget_stack_name(account_name)
@@ -272,21 +251,6 @@ class BaselineService:
 
         if not budget_cfg.notification_emails and not budget_cfg.incident_response_webhook_url:
             return budget_report("SKIPPED", "No notification emails or incident response webhook specified.")
-
-        subscribers_count = len(budget_cfg.notification_emails) + (
-            1 if budget_cfg.incident_response_webhook_url else 0
-        )
-        if dry_run:
-            audit(
-                "deploy",
-                f"budget:{budget_name}",
-                Outcome.SUCCEEDED,
-                f"Would deploy budget '{budget_name}' (${budget_cfg.monthly_limit_usd:.2f}/month, "
-                f"{subscribers_count} subscriber(s)) in account '{account_name}'",
-                dry_run=True,
-                account_id=account_id,
-            )
-            return budget_report("SIMULATED", "Simulated budget creation via CloudFormation")
 
         emails = list(budget_cfg.notification_emails)
         if len(emails) > 1:
@@ -317,7 +281,6 @@ class BaselineService:
                 tags=custom_tags,
                 account_tags=account_tags,
                 org_tags=org_tags,
-                dry_run=dry_run,
                 on_before_create=lambda: self._remove_unmanaged_budget(account_id, account_name, budget_name),
             )
             if len(emails) > 1:
@@ -441,7 +404,6 @@ class BaselineService:
         account_id: str,
         account_name: str,
         anomaly_cfg: AnomalyDetectionConfig,
-        dry_run: bool = False,
     ) -> AnomalyReport:
         """Create Cost Anomaly Detection monitor and subscription in the management account."""
         monitor_name = f"{account_name}-cost-anomaly-monitor"
@@ -455,24 +417,6 @@ class BaselineService:
                 threshold_usd=anomaly_cfg.threshold_usd,
                 status="SKIPPED",
                 message="Anomaly detection disabled or missing notification emails.",
-            )
-
-        if dry_run:
-            audit(
-                "create",
-                f"anomaly-monitor:{monitor_name}",
-                Outcome.SUCCEEDED,
-                f"Would set up cost anomaly monitor '{monitor_name}' for account '{account_name}'",
-                dry_run=True,
-                account_id=account_id,
-            )
-            return AnomalyReport(
-                account_name=account_name,
-                account_id=account_id,
-                monitor_name=monitor_name,
-                threshold_usd=anomaly_cfg.threshold_usd,
-                status="SIMULATED",
-                message="Simulated anomaly monitor creation",
             )
 
         self._setup_member_anomaly_monitor(account_id, account_name, anomaly_cfg)
@@ -662,7 +606,6 @@ class BaselineService:
         acct_def: AccountDef,
         account_id: str,
         regions: list[str] | None = None,
-        dry_run: bool = False,
         force: bool = False,
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
@@ -688,9 +631,7 @@ class BaselineService:
                 )
             ]
         elif baseline.delete_default_vpc:
-            report.vpc_reports = self.cleanup_default_vpcs(
-                account_id, acct_def.name, regions=regions, dry_run=dry_run
-            )
+            report.vpc_reports = self.cleanup_default_vpcs(account_id, acct_def.name, regions=regions)
 
         if baseline.budget:
             report.budget_report = self.setup_account_budget(
@@ -700,23 +641,18 @@ class BaselineService:
                 account_tags=acct_def.tags,
                 org_tags=org_tags,
                 custom_tags=custom_tags,
-                dry_run=dry_run,
             )
 
         if baseline.anomaly_detection:
             report.anomaly_report = self.setup_cost_anomaly_monitor(
-                account_id, acct_def.name, baseline.anomaly_detection, dry_run=dry_run
+                account_id, acct_def.name, baseline.anomaly_detection
             )
 
         has_vpc_errors = any(r.error for r in report.vpc_reports)
         has_budget_failure = report.budget_report is not None and report.budget_report.status == "FAILED"
         has_anomaly_failure = report.anomaly_report is not None and report.anomaly_report.status == "FAILED"
 
-        if (
-            not dry_run
-            and not already_baselined
-            and not (has_vpc_errors or has_budget_failure or has_anomaly_failure)
-        ):
+        if not already_baselined and not (has_vpc_errors or has_budget_failure or has_anomaly_failure):
             self.mark_account_baselined(account_id)
 
         return report

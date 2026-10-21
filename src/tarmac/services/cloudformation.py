@@ -74,7 +74,6 @@ class CloudFormationService:
         tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
         account_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
         template_body: str | None = None,
         on_before_create: Callable[[], None] | None = None,
         termination_protection: bool = False,
@@ -86,20 +85,6 @@ class CloudFormationService:
         Tags are merged according to the Tarmac Tagging Hierarchy:
         Default System Tags (ManagedBy: tarmac) -> org_tags -> account_tags -> tags (stack/custom)
         """
-        template_name = template_file.name if template_file else "synthesized-template"
-        if dry_run:
-            audit(
-                "deploy",
-                f"stack:{stack_name}",
-                Outcome.SUCCEEDED,
-                f"Would deploy CloudFormation stack '{stack_name}' from template '{template_name}'",
-                dry_run=True,
-                template=template_name,
-            )
-            return StackDeployReport(
-                stack_name=stack_name, action="SIMULATED", outputs={}, status="SIMULATED"
-            )
-
         if template_body is None:
             if template_file is None:
                 raise DeploymentError("Either template_file or template_body must be provided.")
@@ -222,19 +207,8 @@ class CloudFormationService:
         tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
         account_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> StackDeployReport:
         """Create a CloudFormation stack by importing pre-existing AWS resources."""
-        if dry_run:
-            audit(
-                "import",
-                f"stack:{stack_name}",
-                Outcome.SUCCEEDED,
-                f"Would create CloudFormation stack '{stack_name}' importing "
-                f"{len(resources_to_import)} existing resource(s)",
-                dry_run=True,
-            )
-            return StackDeployReport(stack_name=stack_name, action="IMPORTED", outputs={}, status="SUCCEEDED")
 
         resolved_tags = merge_tags(org_tags, account_tags, tags)
         cfn_tags = to_cfn_tags(resolved_tags)

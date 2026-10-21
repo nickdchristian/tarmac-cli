@@ -153,23 +153,6 @@ def test_sync_account_tags_noop_when_in_sync():
     mock_org_client.tag_resource.assert_not_called()
 
 
-def test_sync_account_tags_dry_run():
-    mock_session_mgr = MagicMock()
-    mock_org_client = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_org_client
-
-    tag_paginator = MagicMock()
-    tag_paginator.paginate.return_value = [{"Tags": []}]
-    mock_org_client.get_paginator.return_value = tag_paginator
-
-    service = AccountService(mock_session_mgr)
-    declared_tags = {"Environment": "dev"}
-
-    updated = service.sync_account_tags("111111111111", "dev-account", declared_tags, dry_run=True)
-    assert updated is True
-    mock_org_client.tag_resource.assert_not_called()
-
-
 def test_provision_account_reused_syncs_tags():
     mock_session_mgr = MagicMock()
     mock_org_client = MagicMock()
@@ -201,7 +184,7 @@ def test_provision_account_reused_syncs_tags():
         tags={"Environment": "Infrastructure", "ManagedBy": "tarmac"},
     )
 
-    result = service.provision_account(acct_def, target_ou_id="ou-infra-123", dry_run=False)
+    result = service.provision_account(acct_def, target_ou_id="ou-infra-123")
     assert result.status == "SUCCEEDED"
     assert result.action_taken == "TAGGED"
     mock_org_client.tag_resource.assert_called_once_with(
@@ -402,7 +385,7 @@ def test_provision_account_skips_suspended():
     service = AccountService(mock_session_mgr)
     acct_def = AccountDef(name="ClosedInAws", email="closed@acme-corp.io", ou="Infrastructure")
 
-    result = service.provision_account(acct_def, target_ou_id="ou-infra-123", dry_run=False)
+    result = service.provision_account(acct_def, target_ou_id="ou-infra-123")
     assert result.status == "SKIPPED"
     assert result.action_taken == "SUSPENDED_SKIPPED"
     mock_org_client.move_account.assert_not_called()
@@ -446,7 +429,7 @@ def test_provision_account_new_account_full_lifecycle():
     )
 
     with patch("time.sleep", return_value=None):
-        res = service.provision_account(acct_def, target_ou_id="ou-sec-999", dry_run=False)
+        res = service.provision_account(acct_def, target_ou_id="ou-sec-999")
 
     assert res.status == "SUCCEEDED"
     assert res.action_taken == "CREATED"

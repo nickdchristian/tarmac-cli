@@ -154,7 +154,6 @@ def test_scp_reconcile_via_cloudformation(tmp_path: Path):
         ou_map={},
         project_root=tmp_path,
         org_name="myorg",
-        dry_run=False,
     )
 
     assert len(results) == 1
@@ -215,7 +214,6 @@ def test_scp_reconcile_via_cfn_fallback_when_preexisting_and_broken_stack(tmp_pa
         ou_map={},
         project_root=tmp_path,
         org_name="myorg",
-        dry_run=False,
     )
 
     mock_cfn.delete_stack.assert_any_call(StackName="myorg-organization-scps")
@@ -285,7 +283,6 @@ def test_scp_reconcile_via_cfn_raises_on_deployment_error(tmp_path: Path):
             ou_map={},
             project_root=tmp_path,
             org_name="myorg",
-            dry_run=False,
         )
 
     assert "Waiter timed out" in str(exc_info.value)
@@ -404,7 +401,6 @@ def test_scp_reconcile_via_cfn_imports_only_preexisting_when_mixed_with_new(tmp_
         ou_map={},
         project_root=tmp_path,
         org_name="myorg",
-        dry_run=False,
     )
 
     import_kwargs = mock_cfn.create_change_set.call_args.kwargs

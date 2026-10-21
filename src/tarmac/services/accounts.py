@@ -268,7 +268,7 @@ class AccountService:
             TAG_STATUS: STATUS_SUSPENDED,
             "Status": "Suspended",
         }
-        tags_updated = self.sync_account_tags(account_id, account_name, tags_to_apply, dry_run=dry_run)
+        tags_updated = self.sync_account_tags(account_id, account_name, tags_to_apply)
 
         closed = False
         close_error: str | None = None
@@ -313,24 +313,6 @@ class AccountService:
             status="SUCCEEDED" if (not close or closed) else "CLOSE_FAILED",
             message=msg,
         )
-
-    def simulate_move(self, account_id: str, account_name: str, target_ou_id: str) -> bool:
-        """Record the move a real run would make. Reads the current parent only; changes nothing."""
-        current_parent = self.get_account_parent_id(account_id)
-        if not current_parent or current_parent == target_ou_id:
-            return False
-        audit(
-            "move",
-            f"account:{account_id}",
-            Outcome.SIMULATED,
-            f"[DRY-RUN] Would move account '{account_name}' ({account_id}) from {current_parent} "
-            f"to OU {target_ou_id}",
-            dry_run=True,
-            account_id=account_id,
-            from_parent=current_parent,
-            to_parent=target_ou_id,
-        )
-        return True
 
     def move_account_if_needed(self, account_id: str, account_name: str, target_ou_id: str) -> bool:
         """Move account to target OU if not already placed there. Returns True if moved."""
@@ -398,7 +380,6 @@ class AccountService:
         account_id: str,
         account_name: str,
         declared_tags: dict[str, str],
-        dry_run: bool = False,
     ) -> bool:
         """Reconcile declared tags on an account in AWS Organizations. Returns True if tags were updated."""
         if not declared_tags:
@@ -410,18 +391,6 @@ class AccountService:
         if not tags_to_apply:
             logger.debug("Tags for account '%s' (%s) are up-to-date.", account_name, account_id)
             return False
-
-        if dry_run:
-            audit(
-                "tag",
-                f"account:{account_id}",
-                Outcome.SUCCEEDED,
-                f"Would apply {len(tags_to_apply)} tag(s) to account '{account_name}' ({account_id})",
-                dry_run=True,
-                account_id=account_id,
-                tags=tags_to_apply,
-            )
-            return True
 
         try:
             tag_list = [{"Key": k, "Value": v} for k, v in tags_to_apply.items()]
@@ -471,7 +440,6 @@ class AccountService:
         self,
         accounts: list[AccountDef],
         ou_map: dict[str, str],
-        dry_run: bool = False,
         poll_delay_sec: int = 15,
         max_poll_attempts: int = 40,
         org_tags: dict[str, str] | None = None,
@@ -516,29 +484,10 @@ class AccountService:
                     continue
 
                 logger.debug("Account '%s' exists (ID: %s)", name, acct_id)
-                if dry_run:
-                    moved = False
-                    self.simulate_move(acct_id, name, target_ou_id)
-                else:
-                    moved = self.move_account_if_needed(acct_id, name, target_ou_id)
-                tags_updated = self.sync_account_tags(acct_id, name, desired_tags, dry_run=dry_run)
+                moved = self.move_account_if_needed(acct_id, name, target_ou_id)
+                tags_updated = self.sync_account_tags(acct_id, name, desired_tags)
                 action = "MOVED" if moved else ("TAGGED" if tags_updated else "REUSED")
                 results[idx] = _make_result(acct_def, acct_id, target_ou_id, action, "SUCCEEDED")
-                continue
-
-            if dry_run:
-                audit(
-                    "create",
-                    f"account:{name}",
-                    Outcome.SUCCEEDED,
-                    f"Would create account '{name}' ({email}) in OU {target_ou_id}",
-                    dry_run=True,
-                    email=email,
-                    ou_id=target_ou_id,
-                )
-                results[idx] = _make_result(
-                    acct_def, "DRY-RUN-ID", target_ou_id, "SIMULATED_CREATE", "SIMULATED"
-                )
                 continue
 
             if is_placeholder_email(email):
@@ -660,7 +609,7 @@ class AccountService:
         try:
             self.move_account_if_needed(new_id, name, item["target_ou_id"])
             tags_to_sync = item.get("desired_tags", item["acct_def"].tags)
-            self.sync_account_tags(new_id, name, tags_to_sync, dry_run=False)
+            self.sync_account_tags(new_id, name, tags_to_sync)
         except ClientError as e:
             logger.warning("Error finishing account '%s' (%s): %s", name, new_id, e)
             failures.append(f"Account '{name}' ({new_id}) was created but could not be finished: {e}")
@@ -674,13 +623,10 @@ class AccountService:
         self,
         acct_def: AccountDef,
         target_ou_id: str,
-        dry_run: bool = False,
         org_tags: dict[str, str] | None = None,
     ) -> AccountProvisionResult:
         """Idempotently create an account and ensure placement in the target OU."""
-        results = self.provision_accounts(
-            [acct_def], {acct_def.ou: target_ou_id}, dry_run=dry_run, org_tags=org_tags
-        )
+        results = self.provision_accounts([acct_def], {acct_def.ou: target_ou_id}, org_tags=org_tags)
         return results[0]
 
     def _poll_create_account_status(

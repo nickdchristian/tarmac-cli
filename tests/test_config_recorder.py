@@ -369,13 +369,6 @@ def test_an_operation_that_never_finishes_times_out_with_guidance():
             service._wait(cf, NAME, "op-9")
 
 
-def test_dry_run_changes_nothing():
-    mgr = _session()
-    report = _deploy(_service(mgr), ["eu-west-1"], dry_run=True)
-    assert report.stack_set_action == "UNCHANGED"
-    mgr.get_client.assert_not_called()
-
-
 def test_service_linked_role_arn_is_built_when_it_already_exists():
     iam = _client("iam")
     mgr = _session(iam=iam)

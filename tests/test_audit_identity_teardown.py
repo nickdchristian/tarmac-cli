@@ -80,19 +80,14 @@ def test_existing_user_and_group_are_audited_as_unchanged(caplog):
     store.create_group.assert_not_called()
 
 
-def test_identity_dry_run_and_failures(caplog):
+def test_identity_failures_are_audited(caplog):
     svc, _, store = _identity()
     store.list_groups.return_value = {"Groups": []}
-    store.list_users.return_value = {"Users": []}
-
-    svc.get_or_create_group(GroupDef(name="Admins"), dry_run=True)
-    svc.add_user_to_group("g-1", "u-1", "Admins", "ann", dry_run=True)
-    svc.assign_group_to_accounts("g-1", "Admins", "arn:ps", ["111122223333"], dry_run=True)
     store.create_group.side_effect = _err("AccessDenied")
     with pytest.raises(IdentityCenterError):
         svc.get_or_create_group(GroupDef(name="Ops"))
 
-    assert [e["outcome"] for e in _events(caplog)] == ["simulated", "simulated", "simulated", "failed"]
+    assert [e["outcome"] for e in _events(caplog)] == ["failed"]
 
 
 def test_existing_membership_conflict_is_audited_as_unchanged(caplog):

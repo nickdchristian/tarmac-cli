@@ -263,110 +263,104 @@ class SCPService:
         org_name: str = "organization",
         org_tags: dict[str, str] | None = None,
         tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> list[SCPReconciliationResult]:
         """Reconcile all declared SCPs natively via a single CloudFormation stack."""
         if not config.enabled or not config.policies:
             logger.info("No Service Control Policies declared or enabled.")
             return []
 
-        if not dry_run:
-            self.ensure_scp_enabled(root_id)
+        self.ensure_scp_enabled(root_id)
 
         logical_ids = self._logical_ids_for_policies(config.policies)
         template_dict = self.synthesize_template(config, root_id, ou_map, project_root)
         template_body = yaml.dump(template_dict, sort_keys=False)
 
         outputs_dir = project_root / "outputs"
-        if not dry_run:
-            outputs_dir.mkdir(parents=True, exist_ok=True)
-            (outputs_dir / "managed-scps.yaml").write_text(template_body, encoding="utf-8")
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        (outputs_dir / "managed-scps.yaml").write_text(template_body, encoding="utf-8")
 
         stack_name = Stack.ORGANIZATION_SCPS.for_org(org_name)
         cfn_client = self.session_mgr.get_client("cloudformation")
         cfn_service = CloudFormationService(self.session_mgr)
 
-        if not dry_run:
-            existing_scps = self.list_existing_scps()
-            declared_names = {p.name for p in config.policies}
-            pre_existing = declared_names.intersection(existing_scps.keys())
+        existing_scps = self.list_existing_scps()
+        declared_names = {p.name for p in config.policies}
+        pre_existing = declared_names.intersection(existing_scps.keys())
 
-            if pre_existing:
-                stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
-                if (
-                    stack_status is None
-                    or stack_status == "DELETE_COMPLETE"
-                    or stack_status in UNUSABLE_STACK_STATES
-                ):
-                    self._require_declared_policies_adoptable(config, existing_scps, project_root)
-                    resources_to_import: list[dict[str, Any]] = []
-                    for scp_def in config.policies:
-                        if scp_def.name in existing_scps:
-                            logical_id = logical_ids[scp_def.name]
-                            policy_id = existing_scps[scp_def.name]["Id"]
-                            resources_to_import.append(
-                                {
-                                    "ResourceType": "AWS::Organizations::Policy",
-                                    "LogicalResourceId": logical_id,
-                                    "ResourceIdentifier": {"Id": policy_id},
-                                }
-                            )
-
-                    logger.debug(
-                        "Importing pre-existing SCPs %s into CloudFormation stack '%s'...",
-                        sorted(pre_existing),
-                        stack_name,
-                    )
-                    import_template_dict = self.synthesize_template(
-                        config, root_id, ou_map, project_root, include_ownership_tag=False
-                    )
-                    import_template_dict["Resources"] = {
-                        logical_ids[p.name]: import_template_dict["Resources"][logical_ids[p.name]]
-                        for p in config.policies
-                        if p.name in existing_scps
-                    }
-                    import_template_body = yaml.dump(import_template_dict, sort_keys=False)
-                    cfn_report = cfn_service.import_resources_and_deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        template_body=import_template_body,
-                        resources_to_import=resources_to_import,
-                        tags=tags,
-                        org_tags=org_tags,
-                        dry_run=dry_run,
-                    )
-                    # The policies are stack-managed now: apply the full template (adds ownership tags and any new SCPs).
-                    cfn_service.deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        parameters={},
-                        tags=tags,
-                        org_tags=org_tags,
-                        dry_run=dry_run,
-                        template_body=template_body,
-                    )
-                    import_results: list[SCPReconciliationResult] = []
-                    for scp_def in config.policies:
-                        targets_for_policy: list[str] = []
-                        unresolved: list[str] = []
-                        for target in scp_def.targets:
-                            resolved = self._resolve_target_id(target, root_id, ou_map)
-                            if resolved:
-                                targets_for_policy.append(f"{resolved[1]} ({resolved[0]})")
-                            else:
-                                unresolved.append(target)
-                        import_results.append(
-                            SCPReconciliationResult(
-                                name=scp_def.name,
-                                policy_id=existing_scps.get(scp_def.name, {}).get("Id"),
-                                action_taken=cfn_report.action,
-                                attached_targets=targets_for_policy,
-                                newly_attached_targets=[],
-                                status="FAILED" if unresolved else "SUCCEEDED",
-                                unresolved_targets=unresolved,
-                            )
+        if pre_existing:
+            stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
+            if (
+                stack_status is None
+                or stack_status == "DELETE_COMPLETE"
+                or stack_status in UNUSABLE_STACK_STATES
+            ):
+                self._require_declared_policies_adoptable(config, existing_scps, project_root)
+                resources_to_import: list[dict[str, Any]] = []
+                for scp_def in config.policies:
+                    if scp_def.name in existing_scps:
+                        logical_id = logical_ids[scp_def.name]
+                        policy_id = existing_scps[scp_def.name]["Id"]
+                        resources_to_import.append(
+                            {
+                                "ResourceType": "AWS::Organizations::Policy",
+                                "LogicalResourceId": logical_id,
+                                "ResourceIdentifier": {"Id": policy_id},
+                            }
                         )
-                    return import_results
+
+                logger.debug(
+                    "Importing pre-existing SCPs %s into CloudFormation stack '%s'...",
+                    sorted(pre_existing),
+                    stack_name,
+                )
+                import_template_dict = self.synthesize_template(
+                    config, root_id, ou_map, project_root, include_ownership_tag=False
+                )
+                import_template_dict["Resources"] = {
+                    logical_ids[p.name]: import_template_dict["Resources"][logical_ids[p.name]]
+                    for p in config.policies
+                    if p.name in existing_scps
+                }
+                import_template_body = yaml.dump(import_template_dict, sort_keys=False)
+                cfn_report = cfn_service.import_resources_and_deploy_stack(
+                    cfn_client=cfn_client,
+                    stack_name=stack_name,
+                    template_body=import_template_body,
+                    resources_to_import=resources_to_import,
+                    tags=tags,
+                    org_tags=org_tags,
+                )
+                # The policies are stack-managed now: apply the full template (adds ownership tags and any new SCPs).
+                cfn_service.deploy_stack(
+                    cfn_client=cfn_client,
+                    stack_name=stack_name,
+                    parameters={},
+                    tags=tags,
+                    org_tags=org_tags,
+                    template_body=template_body,
+                )
+                import_results: list[SCPReconciliationResult] = []
+                for scp_def in config.policies:
+                    targets_for_policy: list[str] = []
+                    unresolved: list[str] = []
+                    for target in scp_def.targets:
+                        resolved = self._resolve_target_id(target, root_id, ou_map)
+                        if resolved:
+                            targets_for_policy.append(f"{resolved[1]} ({resolved[0]})")
+                        else:
+                            unresolved.append(target)
+                    import_results.append(
+                        SCPReconciliationResult(
+                            name=scp_def.name,
+                            policy_id=existing_scps.get(scp_def.name, {}).get("Id"),
+                            action_taken=cfn_report.action,
+                            attached_targets=targets_for_policy,
+                            newly_attached_targets=[],
+                            status="FAILED" if unresolved else "SUCCEEDED",
+                            unresolved_targets=unresolved,
+                        )
+                    )
+                return import_results
 
         cfn_report = cfn_service.deploy_stack(
             cfn_client=cfn_client,
@@ -374,7 +368,6 @@ class SCPService:
             parameters={},
             tags=tags,
             org_tags=org_tags,
-            dry_run=dry_run,
             template_body=template_body,
         )
 

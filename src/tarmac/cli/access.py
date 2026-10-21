@@ -63,7 +63,9 @@ def access_bootstrap(
     aws_config: Annotated[
         Path, typer.Option("--aws-config", help="AWS config file to add the role profile to")
     ] = Path("~/.aws/config"),
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be deployed")] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show whether the stack would be created or updated")
+    ] = False,
 ) -> None:
     """Create the tarmac role (and optionally a bootstrap user) in the management account.
 
@@ -71,29 +73,32 @@ def access_bootstrap(
     session, so no root access keys are ever created.
     """
     print_header("Tarmac Access Bootstrap")
+    parameters = {
+        "RoleName": role_name,
+        "CreateBootstrapUser": "true" if with_bootstrap_user else "false",
+        "BootstrapUserName": BOOTSTRAP_USER,
+    }
     try:
         session_mgr = AwsSessionManager(region_name=region)
         account_id = session_mgr.get_caller_identity().get("Account", "")
         service = CloudFormationService(session_mgr)
+        cfn_client = session_mgr.get_client("cloudformation", region_name=region)
+        if dry_run:
+            action, detail = service.preview_stack(
+                cfn_client, stack_name, resolve_resource_path(TEMPLATE_PATH), parameters
+            )
+            print_info(f"[dry-run] Stack '{stack_name}': {action}" + (f" ({detail})" if detail else ""))
+            return
         report = service.deploy_stack(
-            session_mgr.get_client("cloudformation", region_name=region),
+            cfn_client,
             stack_name,
             resolve_resource_path(TEMPLATE_PATH),
-            {
-                "RoleName": role_name,
-                "CreateBootstrapUser": "true" if with_bootstrap_user else "false",
-                "BootstrapUserName": BOOTSTRAP_USER,
-            },
-            dry_run=dry_run,
+            parameters,
             termination_protection=True,
         )
     except GovernanceError as e:
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")
         raise typer.Exit(code=1)
-
-    if dry_run:
-        print_info(f"[dry-run] Would deploy stack '{stack_name}' ({report.action}).")
-        return
 
     role_arn = report.outputs.get("TarmacRoleArn") or f"arn:aws:iam::{account_id}:role/{role_name}"
     print_success(f"Role ready: {role_arn}")

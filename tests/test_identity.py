@@ -125,10 +125,6 @@ def test_identity_add_user_to_group():
 
     service = IdentityService(mock_session_mgr)
 
-    # Dry run
-    assert service.add_user_to_group("g-123", "u-456", "flumen-admin", "admin", dry_run=True) is True
-    mock_idstore.create_group_membership.assert_not_called()
-
     # Success (newly added)
     assert service.add_user_to_group("g-123", "u-456", "flumen-admin", "admin") is True
     mock_idstore.create_group_membership.assert_called_once_with(
@@ -349,22 +345,6 @@ def test_identity_synthesize_permission_sets_template(tmp_path: Path):
     assert cloud_ops["Properties"]["InlinePolicy"]["Statement"][0]["Effect"] == "Allow"
 
 
-def test_identity_sync_permission_sets_via_cfn_dry_run():
-    mock_session_mgr = MagicMock()
-    mock_sso = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_sso
-    mock_sso.list_instances.return_value = {
-        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-dry", "IdentityStoreId": "d-dry"}]
-    }
-
-    service = IdentityService(mock_session_mgr)
-    defs = [PermissionSetDef(name="DryRole")]
-    res = service.sync_permission_sets_via_cloudformation(defs, dry_run=True)
-
-    assert "DryRole" in res
-    assert "simulated" in res["DryRole"]
-
-
 def test_identity_sync_permission_sets_via_cfn_deploy(tmp_path: Path):
     mock_session_mgr = MagicMock()
     mock_sso = MagicMock()
@@ -408,7 +388,6 @@ def test_identity_sync_permission_sets_via_cfn_deploy(tmp_path: Path):
         permission_sets=defs,
         project_root=tmp_path,
         org_name="myorg",
-        dry_run=False,
         org_tags={"CostCenter": "CC-Global"},
     )
 
@@ -465,7 +444,6 @@ def test_identity_sync_permission_sets_via_cfn_imports_when_preexisting(tmp_path
         permission_sets=defs,
         project_root=tmp_path,
         org_name="myorg",
-        dry_run=False,
     )
 
     assert res == {"DeployRole": "arn:aws:sso:::permissionSet/ssoins-live/ps-live"}
@@ -535,7 +513,6 @@ def test_identity_sync_permission_sets_import_failure_raises_without_deleting(tm
             permission_sets=defs,
             project_root=tmp_path,
             org_name="myorg",
-            dry_run=False,
         )
 
     mock_sso.delete_permission_set.assert_not_called()
@@ -645,74 +622,6 @@ def test_identity_poll_assignment_status_timeout_logs_warning(caplog):
     assert any(r.levelname == "WARNING" and "111122223333" in r.getMessage() for r in caplog.records), (
         "timeout must be surfaced as a warning that names the account"
     )
-
-
-def test_identity_sync_dry_run_counts_assignments_and_memberships():
-    """Verify sync_identity in dry_run mode simulates group assignments and memberships."""
-    from tarmac.core.config_schema import (
-        AssignmentDef,
-        GroupDef,
-        IdentityCenterConfig,
-        PermissionSetDef,
-        UserDef,
-    )
-
-    mock_session_mgr = MagicMock()
-    mock_sso = MagicMock()
-    mock_idstore = MagicMock()
-    mock_org = MagicMock()
-
-    def client_side_effect(service_name: str, **kwargs: Any) -> MagicMock:
-        if service_name == "sso-admin":
-            return mock_sso
-        if service_name == "identitystore":
-            return mock_idstore
-        if service_name == "organizations":
-            return mock_org
-        return MagicMock()
-
-    mock_session_mgr.get_client.side_effect = client_side_effect
-    mock_sso.list_instances.return_value = {
-        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-123", "IdentityStoreId": "d-1234567890"}]
-    }
-    mock_idstore.list_users.return_value = {"Users": []}
-    mock_idstore.list_groups.return_value = {"Groups": []}
-    org_paginator = MagicMock()
-    org_paginator.paginate.return_value = [
-        {"Accounts": [{"Id": "111122223333", "Name": "audit", "Status": "ACTIVE"}]}
-    ]
-    mock_org.get_paginator.return_value = org_paginator
-
-    cfg = IdentityCenterConfig(
-        admin_user=UserDef(username="admin", email="admin@example.com", first_name="Admin", last_name="User"),
-        breakglass_user=UserDef(
-            username="breakglass", email="bg@example.com", first_name="Break", last_name="Glass"
-        ),
-        permission_sets=[
-            PermissionSetDef(
-                name="AdminAccess",
-                managed_policies=["arn:aws:iam::aws:policy/AdministratorAccess"],
-            )
-        ],
-        groups=[
-            GroupDef(
-                name="Admins",
-                members=["admin"],
-                assignments=[AssignmentDef(permission_set="AdminAccess", accounts=["audit"])],
-            )
-        ],
-    )
-
-    service = IdentityService(mock_session_mgr)
-    report = service.sync_identity(cfg, dry_run=True)
-
-    assert len(report.users_synced) == 2
-    assert report.groups_synced == ["Admins"]
-    assert report.assignments_created == 1
-    assert report.memberships_added == 1
-    mock_idstore.create_user.assert_not_called()
-    mock_idstore.create_group.assert_not_called()
-    mock_sso.create_account_assignment.assert_not_called()
 
 
 def _identity_service(mock_sso: MagicMock, mock_cfn: MagicMock) -> IdentityService:

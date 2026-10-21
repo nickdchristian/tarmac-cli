@@ -101,13 +101,11 @@ def test_account_move_tag_create_close_are_audited(caplog, mgr, client):
 
     svc.move_account_if_needed("111122223333", "dev", "ou-2")
     svc.sync_account_tags("111122223333", "dev", {"Env": "dev"})
-    svc.sync_account_tags("111122223333", "dev", {"Env": "qa"}, dry_run=True)
     svc.suspend_account("111122223333", "dev", "ou-s", close=True)
 
     actions = [(e["action"], e["outcome"]) for e in _events(caplog)]
     assert ("move", "succeeded") in actions
     assert ("tag", "succeeded") in actions
-    assert ("tag", "simulated") in actions
     assert ("close", "succeeded") in actions
 
 
@@ -124,7 +122,7 @@ def test_account_close_and_move_failures_are_audited(caplog, mgr, client):
     assert (ev["action"], ev["outcome"]) == ("move", "failed")
 
 
-def test_account_create_dry_run_and_request_are_audited(caplog, mgr, client):
+def test_account_create_request_is_audited(caplog, mgr, client):
     from tarmac.core.config_schema import AccountDef
 
     caplog.set_level(logging.INFO, logger="tarmac.audit")
@@ -134,11 +132,10 @@ def test_account_create_dry_run_and_request_are_audited(caplog, mgr, client):
     acct = AccountDef(name="dev", email="dev@acme-corp.io", ou="Workloads")
     svc._poll_pending_creations = MagicMock()  # type: ignore[method-assign]
 
-    svc.provision_accounts([acct], {"Workloads": "ou-1"}, dry_run=True)
-    svc.provision_accounts([acct], {"Workloads": "ou-1"}, dry_run=False)
+    svc.provision_accounts([acct], {"Workloads": "ou-1"})
 
     got = [(e["action"], e["outcome"]) for e in _events(caplog) if e["action"] == "create"]
-    assert got == [("create", "simulated"), ("create", "succeeded")]
+    assert got == [("create", "succeeded")]
 
 
 def test_deploy_binds_the_phase_name_while_a_phase_runs(tmp_path):
