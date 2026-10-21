@@ -297,6 +297,7 @@ class SecurityServicesService:
         """Central configuration: enable the hub and aggregator in the home Region, then apply one policy to the root."""
         try:
             with bind(region=home_region):
+                self._require_home_region_not_opt_in(home_region)
                 sh = self.session_mgr.get_member_client(audit_id, "securityhub", region_name=home_region)
                 self._ensure_hub_enabled(sh, audit_id, home_region)
                 # Central policies take effect in every linked Region, so link only the declared ones.
@@ -332,6 +333,28 @@ class SecurityServicesService:
                 f"{config.standards} to the organization in {', '.join(all_regions)}"
             ),
         )
+
+    def _require_home_region_not_opt_in(self, region: str) -> None:
+        """Central configuration cannot use an opt-in Region as its home Region.
+
+        The Security Hub documentation: "The home Region cannot be a Region that AWS has designated as an opt-in
+        Region." EC2 reports such Regions as `opted-in` or `not-opted-in`; default Regions are `opt-in-not-required`.
+        """
+        try:
+            regions = (
+                self.session_mgr.get_client("ec2", region_name=region)
+                .describe_regions(AllRegions=True, RegionNames=[region])
+                .get("Regions", [])
+            )
+        except ClientError:
+            return  # Cannot tell; Security Hub will refuse an opt-in Region itself.
+        status = regions[0].get("OptInStatus") if isinstance(regions, list) and regions else None
+        if status in ("opted-in", "not-opted-in"):
+            raise GovernanceError(
+                f"{region} is an opt-in Region, and Security Hub central configuration cannot use one as its home "
+                "Region. Choose a default Region as organization.primary_region, or set "
+                "security_services.securityhub.central_configuration: false."
+            )
 
     def _root_id(self) -> str:
         roots = self.session_mgr.get_client("organizations").list_roots().get("Roots", [])

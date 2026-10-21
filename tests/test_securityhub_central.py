@@ -298,6 +298,46 @@ def test_central_configuration_designates_the_administrator_in_the_home_region_o
     )
 
 
+def _regions_service(sh: Any, status: str | None) -> SecurityServicesService:
+    service = _service(sh)
+    ec2 = MagicMock()
+    ec2.describe_regions.return_value = {"Regions": [{"RegionName": "af-south-1", "OptInStatus": status}]}
+    original = service.session_mgr.get_client.side_effect
+    service.session_mgr.get_client.side_effect = lambda svc, **k: ec2 if svc == "ec2" else original(svc, **k)
+    return service
+
+
+@pytest.mark.parametrize("status", ["opted-in", "not-opted-in"])
+def test_an_opt_in_home_region_is_refused_before_anything_is_changed(status: str):
+    sh = MagicMock()
+    report = _regions_service(sh, status).configure_securityhub(
+        "111122223333", "af-south-1", ["af-south-1"], SecurityHubConfig(enabled=True)
+    )
+
+    assert report.status == "FAILED"
+    assert "opt-in Region" in report.message
+    sh.create_configuration_policy.assert_not_called()
+    sh.enable_security_hub.assert_not_called()
+
+
+def test_a_default_home_region_is_accepted():
+    sh = MagicMock()
+    sh.describe_organization_configuration.return_value = _org_config("CENTRAL")
+    sh.describe_standards.return_value = STANDARDS
+    sh.get_paginator.return_value.paginate.return_value = [{"ConfigurationPolicySummaries": []}]
+    sh.create_configuration_policy.return_value = {"Id": "pol-1"}
+    sh.get_configuration_policy_association.return_value = {}
+    sh.start_configuration_policy_association.return_value = {"AssociationStatus": "PENDING"}
+    sh.list_finding_aggregators.return_value = {"FindingAggregators": [{"FindingAggregatorArn": AGG_ARN}]}
+    sh.get_finding_aggregator.return_value = {"RegionLinkingMode": "NO_REGIONS", "Regions": []}
+
+    report = _regions_service(sh, "opt-in-not-required").configure_securityhub(
+        "111122223333", "af-south-1", ["af-south-1"], SecurityHubConfig(enabled=True)
+    )
+
+    assert report.status == "ENABLED"
+
+
 # -- finding aggregator scope ---------------------------------------------------------------------------------
 
 AGG_ARN = "arn:aws:securityhub:us-east-1:111122223333:finding-aggregator/abc"

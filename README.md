@@ -331,8 +331,9 @@ never links "all Regions" in this mode. An existing aggregator is narrowed to ma
 Switching an existing organization is guarded. tarmac stops, rather than guess, when Security Hub already has member
 accounts configured one by one, or when the root already uses a configuration policy tarmac did not create, because a
 policy can replace what those accounts enabled themselves. Review the difference and re-run with `--adopt-existing`, or
-set `central_configuration: false` to keep local configuration. This behaviour has not been verified against a live
-organization yet.
+set `central_configuration: false` to keep local configuration. The home Region (`organization.primary_region`) cannot be an
+opt-in Region such as `af-south-1` or `me-south-1`, because Security Hub does not allow it; tarmac checks this and stops
+before changing anything. This behaviour has not been verified against a live organization yet.
 
 Notes: policies can only be managed from the primary Region, which must not be an opt-in Region. In central mode the
 per-account settings are managed by the policy, so change standards in `organization.yaml` rather than by hand.
