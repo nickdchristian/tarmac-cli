@@ -16,7 +16,7 @@ Parameters:
     Type: String
     Default: ''
     Description: >-
-      Leave empty to use the least-privilege policy defined in this template (recommended). Set to an existing
+      Leave empty to use the policy defined in this template, scoped to what tarmac does (recommended). Set to an existing
       managed policy ARN (for example arn:aws:iam::aws:policy/AdministratorAccess) to use that instead.
 
   RequireMfa:
@@ -53,13 +53,14 @@ Conditions:
   MfaRequired: !Equals [!Ref RequireMfa, 'true']
 
 Resources:
-  # Least-privilege permissions for the management account. Everything tarmac does inside member accounts goes
+  # Permissions scoped to what tarmac does in the management account (not minimal: some services are granted
+  # service-wide, for example sso:*, identitystore:*, guardduty:* and securityhub:*). Everything tarmac does inside member accounts goes
   # through OrganizationAccountAccessRole, so only the sts:AssumeRole grant below applies there.
   TarmacPolicy:
     Type: AWS::IAM::ManagedPolicy
     Condition: UseBuiltInPolicy
     Properties:
-      Description: Least-privilege permissions for tarmac in the management account.
+      Description: Permissions scoped to what tarmac does in the management account.
       PolicyDocument:
         Version: '2012-10-17'
         Statement:

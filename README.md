@@ -165,10 +165,12 @@ needs one non-root principal first. `tarmac preflight` and live `tarmac deploy r
    tarmac access bootstrap
    ```
 
-   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a least-privilege policy (see below; MFA enforced for IAM
+   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a policy scoped to what tarmac does (see below; MFA enforced for IAM
    users, IAM Identity Center sessions pass; 4-hour sessions).
 2. Create the organization (`tarmac org bootstrap` from CloudShell, or the console), enable **IAM Identity Center**, create an
-   administrator user, and sign in with `aws sso login`. Run tarmac as that identity.
+   administrator user, and sign in with `aws sso login`. Run tarmac as that identity. Choose the Identity Center Region
+   deliberately: an organization can have it in one Region only, and moving it later means deleting the instance and creating
+   another ([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)).
 3. `tarmac access check` confirms the credentials are non-root and can read the organization; on failure it prints a hint.
 
 Before Identity Center exists you can instead run `tarmac access bootstrap --with-bootstrap-user`. (The IAM Identity Center path above avoids creating an IAM user with a long-lived key and is the simpler route.) That also creates an
