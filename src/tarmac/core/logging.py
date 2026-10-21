@@ -196,7 +196,7 @@ class RunLog:
         self._started = time.monotonic()
         fields: dict[str, Any] = {**_fields(), "run_id": self.run_id, "command": command}
         # Preview runs must not change anything; the AWS call recorder flags any change made while this is set.
-        if "--dry-run" in argv or "plan" in argv:
+        if "--dry-run" in argv:
             fields["dry_run"] = True
         self._token = _context.set(fields)
         logging.getLogger("tarmac.run").info(
