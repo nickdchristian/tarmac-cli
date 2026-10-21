@@ -61,6 +61,25 @@ def test_user_group_membership_and_assignment_are_audited(caplog):
     ]
 
 
+def test_existing_user_and_group_are_audited_as_unchanged(caplog):
+    svc, _, store = _identity()
+    store.list_users.return_value = {"Users": [{"UserId": "u-1"}]}
+    store.list_groups.return_value = {"Groups": [{"GroupId": "g-1"}]}
+
+    assert (
+        svc.get_or_create_user(UserDef(username="ann", email="a@example.com", first_name="A", last_name="N"))
+        == "u-1"
+    )
+    assert svc.get_or_create_group(GroupDef(name="Admins")) == "g-1"
+
+    assert [(e["resource"], e["outcome"]) for e in _events(caplog)] == [
+        ("identity-user:ann", "unchanged"),
+        ("identity-group:Admins", "unchanged"),
+    ]
+    store.create_user.assert_not_called()
+    store.create_group.assert_not_called()
+
+
 def test_identity_dry_run_and_failures(caplog):
     svc, _, store = _identity()
     store.list_groups.return_value = {"Groups": []}
