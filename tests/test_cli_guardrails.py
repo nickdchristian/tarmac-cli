@@ -169,3 +169,22 @@ def test_scp_apply_resolves_policy_files_relative_to_the_config_dir(tmp_path: Pa
 
     assert res.exit_code == 0, res.output
     assert scp_cls.return_value.reconcile_all.call_args.kwargs["project_root"] == cfg.parent
+
+
+def test_production_lock_is_not_hidden_by_a_higher_precedence_tag():
+    """accounts.yaml tags override organization.yaml tags, but a 'prod' anywhere must still block destroy."""
+    from types import SimpleNamespace
+    from typing import Any
+
+    import typer
+
+    from tarmac.cli.deploy import _enforce_production_lock
+
+    bundle: Any = SimpleNamespace(
+        org=SimpleNamespace(tags={"Environment": "prod"}, organization=SimpleNamespace(tags={})),
+        accounts=SimpleNamespace(tags={"Environment": "dev"}),
+        get_organization_tags=lambda: {"Environment": "dev"},
+    )
+    with pytest.raises(typer.Exit):
+        _enforce_production_lock(bundle, dry_run=False, force=False)
+    _enforce_production_lock(bundle, dry_run=False, force=True)
