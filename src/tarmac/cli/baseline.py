@@ -80,6 +80,7 @@ def deploy_cloudtrail(
             params,
             tags=custom_tags,
             org_tags=bundle.get_organization_tags(),
+            termination_protection=True,
             dry_run=dry_run,
         )
         _print_stack_report(report)
@@ -149,6 +150,7 @@ def deploy_backend(
             tags=custom_tags,
             org_tags=bundle.get_organization_tags(),
             account_tags=bundle.get_account_tags(backend_name),
+            termination_protection=True,
             dry_run=dry_run,
         )
         _print_stack_report(report)
@@ -188,6 +190,7 @@ def _deploy_log_archive_stack(
         tags=tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
+        termination_protection=True,
         dry_run=dry_run,
     )
     _print_stack_report(report)
@@ -232,6 +235,7 @@ def _deploy_audit_stack(
         tags=tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(audit_name),
+        termination_protection=True,
         dry_run=dry_run,
     )
     _print_stack_report(report)

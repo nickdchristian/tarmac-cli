@@ -78,6 +78,7 @@ def access_bootstrap(
                 "BootstrapUserName": BOOTSTRAP_USER,
             },
             dry_run=dry_run,
+            termination_protection=True,
         )
     except GovernanceError as e:
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")

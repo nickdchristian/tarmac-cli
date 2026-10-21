@@ -46,7 +46,9 @@ class LoggingTeardown(TeardownBase):
                     self._notify_progress(
                         f"Deleting CloudFormation stack '{stack_name}' in Management (waiting for AWS)..."
                     )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    self.cfn_service.delete_stack(
+                        cfn_client, stack_name, on_progress=self.on_progress, release_protection=True
+                    )
                     results.append(
                         TeardownItemReport(
                             resource_type="CloudFormation Stack",
@@ -267,7 +269,9 @@ class LoggingTeardown(TeardownBase):
                     self._notify_progress(
                         f"Deleting CloudFormation stack '{stack_name}' in {log_acct_name} (waiting for AWS)..."
                     )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    self.cfn_service.delete_stack(
+                        cfn_client, stack_name, on_progress=self.on_progress, release_protection=True
+                    )
                     results.append(
                         TeardownItemReport(
                             resource_type="CloudFormation Stack",
@@ -438,7 +442,9 @@ class LoggingTeardown(TeardownBase):
                     self._notify_progress(
                         f"Deleting CloudFormation stack '{stack_name}' in {audit_acct_name} (waiting for AWS)..."
                     )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    self.cfn_service.delete_stack(
+                        cfn_client, stack_name, on_progress=self.on_progress, release_protection=True
+                    )
                     results.append(
                         TeardownItemReport(
                             resource_type="CloudFormation Stack",

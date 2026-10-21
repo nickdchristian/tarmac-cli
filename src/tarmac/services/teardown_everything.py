@@ -510,7 +510,11 @@ class EverythingTeardown(TeardownBase):
                 break
             try:
                 self.cfn_service.delete_stack(
-                    cfn, ACCESS_STACK, wait=not using_role, on_progress=self.on_progress
+                    cfn,
+                    ACCESS_STACK,
+                    wait=not using_role,
+                    on_progress=self.on_progress,
+                    release_protection=True,
                 )
             except AWS_ERRORS as exc:
                 results.append(

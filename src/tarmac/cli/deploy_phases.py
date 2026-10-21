@@ -257,6 +257,7 @@ def _deploy_log_archive_hardening_stack(
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
+        termination_protection=True,
         dry_run=dry_run,
         on_before_create=on_before_create,
     )
@@ -352,6 +353,7 @@ def _run_phase_3_cloudtrail(
         params,
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
+        termination_protection=True,
         dry_run=dry_run,
     )
     print_success(f"Phase 3 complete: CloudTrail stack {report.action}.")
@@ -501,6 +503,7 @@ def _deploy_backend_stack(
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(backend_acct),
+        termination_protection=True,
         dry_run=dry_run,
         on_before_create=on_before_create,
     )
@@ -570,6 +573,7 @@ def _deploy_hardening_stacks(
             tags=custom_tags,
             org_tags=bundle.get_organization_tags(),
             account_tags=bundle.get_account_tags(audit_name),
+            termination_protection=True,
             dry_run=dry_run,
         )
 
