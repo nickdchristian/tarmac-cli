@@ -53,7 +53,27 @@ Parameters:
       Deleted versions are purged 7 days later. Choose a value that satisfies your audit and compliance
       requirements; logs cannot be recovered once purged.
 
+  ObjectLockMode:
+    Type: String
+    Default: ''
+    AllowedValues:
+      - ''
+      - GOVERNANCE
+      - COMPLIANCE
+    Description: >-
+      Optional S3 Object Lock default retention mode for the CloudTrail log bucket. Empty leaves Object Lock off.
+      COMPLIANCE cannot be shortened or removed by anyone, including the root user, until the retention period
+      ends, so the bucket and its logs cannot be deleted before then. GOVERNANCE can be bypassed by principals
+      with s3:BypassGovernanceRetention.
+
+  ObjectLockRetentionDays:
+    Type: String
+    Default: '0'
+    AllowedPattern: '^[0-9]{1,5}$'
+    Description: Days each new log object is locked for. Required when ObjectLockMode is set. Lifecycle expiry cannot delete a version before its lock ends.
+
 Conditions:
+  HasObjectLock: !Not [!Equals [!Ref ObjectLockMode, '']]
   UseKmsEncryption: !Equals [!Ref EnableKmsEncryption, 'true']
   HasLogRetention: !Not [!Equals [!Ref LogRetentionDays, '0']]
 
@@ -206,6 +226,15 @@ Resources:
         LogFilePrefix: cloudtrail-access/
       VersioningConfiguration:
         Status: Enabled
+      ObjectLockEnabled: !If [HasObjectLock, true, !Ref 'AWS::NoValue']
+      ObjectLockConfiguration: !If
+        - HasObjectLock
+        - ObjectLockEnabled: Enabled
+          Rule:
+            DefaultRetention:
+              Mode: !Ref ObjectLockMode
+              Days: !Ref ObjectLockRetentionDays
+        - !Ref 'AWS::NoValue'
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:

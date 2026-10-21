@@ -1,9 +1,9 @@
 """Pydantic data models for validating AWS Governance configuration files."""
 
 import re
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from .tagging import validate_tags
 
@@ -79,6 +79,18 @@ class OUDef(BaseModel):
     children: list["OUDef"] = Field(default_factory=list)
 
 
+class ObjectLockConfig(BaseModel):
+    mode: Literal["GOVERNANCE", "COMPLIANCE"] = Field(
+        description=(
+            "GOVERNANCE can be bypassed by principals with s3:BypassGovernanceRetention. COMPLIANCE cannot be "
+            "shortened or removed by anyone, including root, until the retention period ends."
+        )
+    )
+    retention_days: int = Field(
+        ge=1, le=36500, description="Days each new CloudTrail log object is locked for."
+    )
+
+
 class CloudTrailConfig(BaseModel):
     trail_name: str = Field(default="organization-trail")
     bucket_prefix: str = Field(default="org-cloudtrail")
@@ -104,9 +116,33 @@ class CloudTrailConfig(BaseModel):
         ),
     )
 
+    object_lock: ObjectLockConfig | None = Field(
+        default=None,
+        description=(
+            "S3 Object Lock default retention on the CloudTrail log bucket, so logs cannot be deleted or "
+            "overwritten during the period. Off unless set, because S3 does not allow Object Lock to be "
+            "disabled on a bucket once it is on. Recommended: mode GOVERNANCE, retention_days 365 (tarmac "
+            "warns on deploy while it is unset; write `object_lock: null` to acknowledge and silence the "
+            "warning). COMPLIANCE mode also blocks teardown from deleting the logs until the period ends."
+        ),
+    )
+
     @field_validator("bucket_prefix")
     def validate_bucket_prefix(cls, v: str) -> str:
         return _validate_bucket_prefix(v)
+
+    @model_validator(mode="after")
+    def object_lock_must_not_outlast_log_retention(self) -> "CloudTrailConfig":
+        """Lifecycle cannot delete a locked version, so a lock longer than ``retention_days`` would silently
+        keep logs longer than asked."""
+        lock = self.object_lock
+        if lock is not None and self.retention_days is not None and lock.retention_days > self.retention_days:
+            raise ValueError(
+                f"cloudtrail.object_lock.retention_days ({lock.retention_days}) is longer than "
+                f"cloudtrail.retention_days ({self.retention_days}): logs would be kept for the lock period "
+                "anyway. Shorten the lock, lengthen retention_days, or remove object_lock."
+            )
+        return self
 
 
 class TerraformBackendConfig(BaseModel):
