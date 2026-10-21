@@ -204,6 +204,7 @@ identity_center:
       assignments:
         - permission_set: "AdministratorAccess"
           accounts:
+            - "management"
             - "Production-App"
             - "Deployment"
 

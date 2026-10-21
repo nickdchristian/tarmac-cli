@@ -73,7 +73,7 @@ def test_deploy_refuses_root_but_allows_roles() -> None:
     unauth = MagicMock(spec=AwsSessionManager)
     unauth.is_root_identity.side_effect = RuntimeError("no creds")
     _refuse_root_identity(unauth)  # must not raise: phases report auth problems themselves
-    _refuse_root_identity(_mgr(ROOT), allow_root=True)  # phase 1 alone may run as root
+    _refuse_root_identity(_mgr(ROOT), allow_root=True)  # phases 1 and 6 alone may run as root
 
 
 def test_access_template_prints_and_writes(tmp_path: Path) -> None:
@@ -137,12 +137,14 @@ def test_template_defaults_and_mfa_condition() -> None:
     assert "CreateBootstrapUser:\n    Type: String\n    Default: 'false'" in text
 
 
-def test_write_role_profile_is_idempotent(tmp_path: Path) -> None:
-    from tarmac.cli.access import _write_role_profile
+def test_append_section_is_idempotent(tmp_path: Path) -> None:
+    from tarmac.cli.access import _append_section
 
     cfg = tmp_path / ".aws" / "config"
-    assert _write_role_profile(cfg, "tarmac", "arn:role", "tarmac-bootstrap", "arn:mfa", "us-east-1") is True
-    assert _write_role_profile(cfg, "tarmac", "arn:other", "x", "y", "z") is False
+    assert _append_section(
+        cfg, "profile tarmac", {"role_arn": "arn:role", "source_profile": "tarmac-bootstrap"}
+    )
+    assert _append_section(cfg, "profile tarmac", {"role_arn": "arn:other"}) is False
     text = cfg.read_text(encoding="utf-8")
     assert "[profile tarmac]" in text
     assert "role_arn = arn:role" in text
@@ -150,13 +152,13 @@ def test_write_role_profile_is_idempotent(tmp_path: Path) -> None:
     assert "arn:other" not in text
 
 
-def test_write_role_profile_preserves_existing_config(tmp_path: Path) -> None:
-    from tarmac.cli.access import _write_role_profile
+def test_append_section_preserves_existing_config(tmp_path: Path) -> None:
+    from tarmac.cli.access import _append_section
 
     cfg = tmp_path / "config"
     original = "# my settings\n[default]\nregion = eu-west-1   # home\n\n[sso-session corp]\nsso_start_url = https://x\n"
     cfg.write_text(original, encoding="utf-8")
-    assert _write_role_profile(cfg, "tarmac", "arn:role", "src", "arn:mfa", "us-east-1") is True
+    assert _append_section(cfg, "profile tarmac", {"role_arn": "arn:role"}) is True
     text = cfg.read_text(encoding="utf-8")
     assert text.startswith(original)  # comments, spacing and other sections untouched
     assert text.count("[profile tarmac]") == 1
@@ -216,6 +218,43 @@ def test_bootstrap_dry_run_and_failure() -> None:
         svc.return_value.deploy_stack.assert_not_called()
         svc.return_value.deploy_stack.side_effect = DeploymentError("boom")
         assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1
+
+
+def test_profile_writes_an_sso_profile_for_the_management_account(tmp_path: Path) -> None:
+    cfg = tmp_path / "config"
+    mgr = _bootstrap_mgr()
+    mgr.default_region = "eu-west-1"
+    with (
+        patch("tarmac.cli.access.AwsSessionManager", return_value=mgr),
+        patch(
+            "tarmac.cli.access.IdentityService.discover_instance",
+            return_value=("arn:inst", "d-123", "us-east-1"),
+        ),
+    ):
+        result = runner.invoke(app, ["access", "profile", "--aws-config", str(cfg)])
+    assert result.exit_code == 0
+    text = cfg.read_text(encoding="utf-8")
+    assert (
+        "[sso-session tarmac]\nsso_start_url = https://d-123.awsapps.com/start\nsso_region = us-east-1\n"
+        in text
+    )
+    assert "[profile tarmac]\nsso_session = tarmac\nsso_account_id = 111111111111\n" in text
+    assert "sso_role_name = AdministratorAccess\nregion = eu-west-1\n" in text
+
+
+def test_profile_fails_cleanly_without_identity_center(tmp_path: Path) -> None:
+    from tarmac.core.exceptions import IdentityCenterError
+
+    with (
+        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
+        patch(
+            "tarmac.cli.access.IdentityService.discover_instance",
+            side_effect=IdentityCenterError("No IAM Identity Center instance found across AWS regions."),
+        ),
+    ):
+        result = runner.invoke(app, ["access", "profile", "--aws-config", str(tmp_path / "config")])
+    assert result.exit_code == 1
+    assert not (tmp_path / "config").exists()
 
 
 # least-privilege policy

@@ -42,7 +42,8 @@ tarmac init --with-templates
 This generates:
 * **`config/organization.yaml`**: Organization settings, alternate contacts, OU hierarchy, and SCP guardrails.
 * **`config/accounts.yaml`**: Account Factory catalog, OU placement, monthly budgets, and security baselines.
-* **`config/identity.yaml`**: IAM Identity Center permission sets, users, groups, and multi-account assignments.
+* **`config/identity.yaml`**: IAM Identity Center permission sets, users, groups, and multi-account assignments. An
+  assignment's `accounts` take names from `accounts.yaml`, `management` for the management account, or `all`.
 
 ### 3. Validate & Inspect Readiness
 
@@ -71,25 +72,28 @@ tarmac deploy
 ### Starting from a brand-new AWS account
 
 Tarmac runs as the **management account** of the organization it creates, and it cannot run as the root user
-(root cannot assume the roles tarmac uses to configure member accounts). A fresh account therefore needs a few
-one-time steps that AWS does not allow to be automated. The most direct path is IAM Identity Center (SSO):
+(root cannot assume the roles tarmac uses to configure member accounts). Phases 1 and 6 only touch the management
+account, so they can run as root to create the organization and your IAM Identity Center (SSO) login. Only the
+steps AWS does not allow to be automated stay manual:
 
 1. Sign in as the root user, enable **MFA**, and add a payment method.
 2. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac
-   (`pip install --user tarmac-cli`), run `tarmac init`, and create the organization: `tarmac deploy --phase 1`
-   (phase 1 is the only one allowed to run as root).
-3. In the console, enable **IAM Identity Center** (it requires an existing organization).
-4. In Identity Center create a user, create a permission set (for example `AdministratorAccess`), and **assign that
-   user and permission set to the management account**. If this assignment is missing, `aws configure sso` stops
-   with `No AWS accounts are available to you`.
-5. In CloudShell run `aws configure sso`, then `aws sso login --use-device-code --profile <profile>` (see
-   [Using AWS CloudShell](#using-aws-cloudshell) for why the device-code flag is needed).
-6. `export AWS_PROFILE=<profile>`, then confirm with `tarmac info --strict`.
+   (`pip install --user tarmac-cli`) and run `tarmac init`. Put your own email in `admin_user` in `identity.yaml`.
+   Create the organization: `tarmac deploy --phase 1`.
+3. In the console, enable **IAM Identity Center** (choose its Region deliberately) and, under **Settings →
+   Authentication → Standard authentication**, turn on **Send email OTP**. Users created by tarmac have no password
+   until they verify their email this way.
+4. Back in CloudShell, still as root: `tarmac deploy --phase 6` creates the admin user, the permission sets, the
+   groups and their assignments (the starter `identity.yaml` gives `CloudAdmins` the `management` account), then
+   `tarmac access profile` writes a `tarmac` SSO profile to `~/.aws/config`.
+5. `aws sso login --use-device-code --profile tarmac` (see [Using AWS CloudShell](#using-aws-cloudshell) for why
+   the device-code flag is needed). The first sign-in emails you a code, then asks for a password and an MFA device.
+6. `export AWS_PROFILE=tarmac`, then confirm with `tarmac info --strict`.
 7. `tarmac preflight`, then `tarmac deploy --dry-run`, then `tarmac deploy`. Phases are idempotent, so a
-   failed run can simply be repeated.
+   failed run can simply be repeated. This run of phase 6 adds the assignments on member accounts created since.
 
-`tarmac preflight` and `tarmac deploy` (other than `--phase 1`) refuse to run as root, so do not run them before
-step 6.
+`tarmac preflight` and `tarmac deploy` (other than `--phase 1` and `--phase 6`) refuse to run as root, so do not
+run them before step 6.
 Each member account needs a **unique email address**; AWS never lets a closed account's email be reused, and
 `tarmac validate` warns about the sample addresses written by `tarmac init`. Gmail users can create unique
 addresses with the `+` trick (`you+prod@gmail.com`, `you+log@gmail.com`); all of them arrive in one inbox.
@@ -169,8 +173,10 @@ needs one non-root principal first. `tarmac preflight` and `tarmac deploy` refus
 
    This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a policy scoped to what tarmac does (see below; MFA enforced for IAM
    users, IAM Identity Center sessions pass; 4-hour sessions).
-2. Create the organization (`tarmac deploy --phase 1` from CloudShell, or the console), enable **IAM Identity Center**, create an
-   administrator user, and sign in with `aws sso login`. Run tarmac as that identity. Choose the Identity Center Region
+2. Create the organization (`tarmac deploy --phase 1` from CloudShell, or the console), enable **IAM Identity Center**, create
+   your administrator login with `tarmac deploy --phase 6` and `tarmac access profile` (see
+   [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account)), and sign in with `aws sso login`. Run
+   tarmac as that identity. Choose the Identity Center Region
    deliberately: an organization can have it in one Region only, and moving it later means deleting the instance and creating
    another ([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)).
 3. `tarmac info --strict` confirms the credentials are non-root and can read the organization; it exits 1 and says why
@@ -303,6 +309,7 @@ Everything that changes AWS goes through `tarmac deploy`, one phase at a time if
   * `tarmac logs FILE` — Summarize runs recorded with `--log-file`.
 * **Access**:
   * `tarmac access bootstrap` / `tarmac access template` — Create, or print, the role tarmac runs as.
+  * `tarmac access profile` — Write an IAM Identity Center profile for the management account to `~/.aws/config`.
 
 </details>
 
@@ -672,7 +679,7 @@ fix the cause and re-run teardown or deploy: both now delete and recreate stacks
 | What you see | Why | What to do |
 |---|---|---|
 | `Root credentials cannot assume roles in member accounts` | The shell is using root credentials (for example CloudShell's own session). | `export AWS_PROFILE=<sso-profile>` and re-run; see [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account). |
-| `aws configure sso` says `No AWS accounts are available to you` | Your Identity Center user has no permission set on any account. | In Identity Center, assign the user and a permission set to the management account, then run `aws configure sso` again. |
+| `aws sso login` or `aws configure sso` says `No AWS accounts are available to you` | Your Identity Center user has no permission set on the management account. | Add `management` to the accounts of a group assignment the user is a member of in `identity.yaml` and run `tarmac deploy --phase 6`. |
 | The SSO sign-in page redirects to `127.0.0.1` and fails | CloudShell has no browser to receive the callback. | Use `aws sso login --use-device-code`. |
 | `The config profile (...) could not be found` | `aws configure sso` stopped before writing the profile. | Fix the cause above, then run `aws configure sso` again. |
 | `tarmac info` shows Identity Center as not found | Identity Center lives in one Region, which may not be your shell's. | Set `AWS_REGION` to it, or pass `--region`. |

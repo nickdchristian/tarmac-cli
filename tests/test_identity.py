@@ -798,3 +798,13 @@ def test_existing_sets_missing_from_an_existing_stack_are_imported_into_it(tmp_p
     }
     assert resources["PermissionSetDeploy"]["Properties"]["Name"] == "Deploy"
     cfn.update_stack.assert_called()
+
+
+def test_management_target_resolves_to_the_management_account():
+    mgr = MagicMock()
+    mgr.get_caller_identity.return_value = {"Account": "999999999999"}
+    service = IdentityService(mgr)
+    assert service._resolve_target_account_ids(["management", "Audit"], {"Audit": "111"}, ["111"]) == [
+        "999999999999",
+        "111",
+    ]

@@ -348,7 +348,7 @@ def test_existing_files_make_the_cli_fail_cleanly(monkeypatch, tmp_path: Path):
 
 
 def test_assignments_outside_accounts_yaml_are_reported_not_written(monkeypatch, tmp_path: Path):
-    """The management account and root-level accounts are not in accounts.yaml, so assigning to them would not validate."""
+    """Root-level accounts are not in accounts.yaml, so assigning to them would not validate; the management account is."""
     session = FakeSession()
     sso, store = MagicMock(), MagicMock()
     pages = {
@@ -395,10 +395,12 @@ def test_assignments_outside_accounts_yaml_are_reported_not_written(monkeypatch,
     report = ImportService(session, "us-east-1").discover_and_write(tmp_path / "cfg")  # type: ignore[arg-type]
 
     ident = yaml.safe_load((tmp_path / "cfg" / "identity.yaml").read_text())["identity_center"]
-    assert ident["groups"][0]["assignments"] == [{"permission_set": "Admin", "accounts": ["Audit"]}]
+    assert ident["groups"][0]["assignments"] == [
+        {"permission_set": "Admin", "accounts": ["Audit", "management"]}
+    ]
     assert not any("undefined account" in e for e in report.validation_errors)
     text = "\n".join(report.todos)
-    assert "2 group assignment(s) on 2 account(s)" in text
+    assert "1 group assignment(s) on 1 account(s)" in text
     assert "3 permission-set assignment(s) made directly to users" in text
 
 

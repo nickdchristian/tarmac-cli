@@ -11,6 +11,7 @@ from ..core.exceptions import GovernanceError
 from ..core.stack_names import ACCESS_STACK
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
+from ..services.identity import IdentityService
 from .ui import console, error_console, print_header, print_info, print_success
 
 app = typer.Typer(help="Bootstrap the non-root role tarmac runs as", no_args_is_help=True)
@@ -19,21 +20,16 @@ TEMPLATE_PATH = "cloudformation/tarmac-access.yaml"
 BOOTSTRAP_USER = "tarmac-bootstrap"
 
 
-def _write_role_profile(
-    config_path: Path, profile: str, role_arn: str, source_profile: str, mfa_serial: str, region: str
-) -> bool:
-    """Append a role profile to the AWS config file; returns False when it already exists.
+def _append_section(config_path: Path, name: str, fields: dict[str, str]) -> bool:
+    """Append a section to the AWS config file; returns False when it already exists.
 
     The file is appended to rather than parsed and rewritten, so the user's comments and formatting survive.
     """
-    section = f"[profile {profile}]"
+    section = f"[{name}]"
     existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
     if any(line.strip() == section for line in existing.splitlines()):
         return False
-    block = (
-        f"{section}\nrole_arn = {role_arn}\nsource_profile = {source_profile}\n"
-        f"mfa_serial = {mfa_serial}\nregion = {region}\n"
-    )
+    block = section + "\n" + "".join(f"{key} = {value}\n" for key, value in fields.items())
     config_path.parent.mkdir(parents=True, exist_ok=True)
     separator = "" if not existing else ("\n" if existing.endswith("\n") else "\n\n")
     with config_path.open("a", encoding="utf-8") as fh:
@@ -104,8 +100,15 @@ def access_bootstrap(
     print_success(f"Role ready: {role_arn}")
     if with_bootstrap_user:
         mfa_serial = f"arn:aws:iam::{account_id}:mfa/{BOOTSTRAP_USER}"
-        added = _write_role_profile(
-            aws_config.expanduser(), profile, role_arn, BOOTSTRAP_USER, mfa_serial, region
+        added = _append_section(
+            aws_config.expanduser(),
+            f"profile {profile}",
+            {
+                "role_arn": role_arn,
+                "source_profile": BOOTSTRAP_USER,
+                "mfa_serial": mfa_serial,
+                "region": region,
+            },
         )
         print_info(
             f"{'Added' if added else 'Kept existing'} profile '{profile}' in {aws_config}. Next: in the IAM console "
@@ -115,8 +118,54 @@ def access_bootstrap(
     else:
         print_info(
             "Next: enable IAM Identity Center (pick its Region deliberately: it can only be moved by deleting the "
-            "instance), create an administrator user, sign in with 'aws sso login', then run: tarmac info --strict"
+            "instance) and turn on 'Send email OTP', then run: tarmac deploy --phase 6 && tarmac access profile"
         )
+
+
+@app.command("profile")
+def access_profile(
+    profile: Annotated[str, typer.Option("--profile-name", help="AWS CLI profile to write")] = "tarmac",
+    permission_set: Annotated[
+        str, typer.Option("--permission-set", help="Permission set to sign in to the management account with")
+    ] = "AdministratorAccess",
+    aws_config: Annotated[
+        Path, typer.Option("--aws-config", help="AWS config file to add the profile to")
+    ] = Path("~/.aws/config"),
+) -> None:
+    """Write an IAM Identity Center profile for the management account, in place of 'aws configure sso'."""
+    try:
+        session_mgr = AwsSessionManager()
+        account_id = session_mgr.get_caller_identity().get("Account", "")
+        _, store_id, sso_region = IdentityService.discover_instance(session_mgr)
+    except GovernanceError as e:
+        error_console.print(f"[red]Could not write the profile:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    config_path = aws_config.expanduser()
+    _append_section(
+        config_path,
+        f"sso-session {profile}",
+        {
+            "sso_start_url": f"https://{store_id}.awsapps.com/start",
+            "sso_region": sso_region,
+            "sso_registration_scopes": "sso:account:access",
+        },
+    )
+    added = _append_section(
+        config_path,
+        f"profile {profile}",
+        {
+            "sso_session": profile,
+            "sso_account_id": account_id,
+            "sso_role_name": permission_set,
+            "region": session_mgr.default_region,
+        },
+    )
+    print_success(f"{'Added' if added else 'Kept existing'} profile '{profile}' in {aws_config}.")
+    print_info(
+        f"Next: aws sso login --use-device-code --profile {profile}, then export AWS_PROFILE={profile} "
+        "and run: tarmac info --strict"
+    )
 
 
 @app.command("template")

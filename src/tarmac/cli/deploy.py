@@ -102,8 +102,8 @@ def _validate_phase(phase: int | None, allowed: range) -> None:
 def _refuse_root_identity(session_mgr: AwsSessionManager, allow_root: bool = False) -> None:
     """Stop with unusable credentials, or with root credentials (they cannot assume member roles).
 
-    ``allow_root`` is for phase 1 on its own: it only touches the management account, so a brand-new account can
-    create its organization from CloudShell as root before any other identity exists.
+    ``allow_root`` is for phases 1 and 6 on their own: they only touch the management account, so a brand-new
+    account can create its organization and Identity Center users from CloudShell as root.
     """
     require_credentials_or_exit(session_mgr)
     if allow_root:
@@ -119,7 +119,7 @@ def _refuse_root_identity(session_mgr: AwsSessionManager, allow_root: bool = Fal
                 "You are authenticated as the account root user. Root cannot call sts:AssumeRole, "
                 "so tarmac cannot reach member accounts.\n"
                 "Run [bold]tarmac access template[/bold], deploy it, and re-run as the tarmac role "
-                "(see README: Bootstrap access). Only [bold]--phase 1[/bold] may run as root.",
+                "(see README: Bootstrap access). Only [bold]--phase 1[/bold] and [bold]--phase 6[/bold] may run as root.",
                 title="[bold red]Root Credentials Not Supported[/bold red]",
                 border_style="red",
             )
@@ -230,7 +230,7 @@ def deploy_command(
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
     phases = [phase] if phase is not None else ALL_PHASES
-    _refuse_root_identity(session_mgr, allow_root=phases == [1])
+    _refuse_root_identity(session_mgr, allow_root=set(phases) <= {1, 6})
 
     try:
         if dry_run:

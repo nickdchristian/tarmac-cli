@@ -457,8 +457,8 @@ class ImportService:
         if outside:
             self.report.todos.append(
                 f"{sum(outside.values())} group assignment(s) on {len(outside)} account(s) that are not in "
-                f"accounts.yaml were left out ({', '.join(sorted(outside))}), usually the management account. "
-                "Tarmac only assigns permission sets on the member accounts it manages."
+                f"accounts.yaml were left out ({', '.join(sorted(outside))}). "
+                "Tarmac only assigns permission sets on those accounts and the management account."
             )
         if user_assignments:
             self.report.todos.append(
@@ -553,7 +553,9 @@ class ImportService:
                     "organization.yaml."
                 )
 
-        identity = self._identity(self.imported_accounts) if include_identity else None
+        identity = (
+            self._identity({**self.imported_accounts, mgmt_id: "management"}) if include_identity else None
+        )
 
         self._dump(
             config_dir / "organization.yaml",
