@@ -41,17 +41,6 @@ def test_aws_session_manager_region_resolution(monkeypatch):
         assert mgr.default_region == "ap-southeast-1"
 
 
-def test_aws_session_manager_profile_resolution(monkeypatch):
-    """Verify profile resolution priority: explicit > AWS_PROFILE."""
-    monkeypatch.setenv("AWS_PROFILE", "env-profile")
-    with patch("boto3.Session"):
-        mgr = AwsSessionManager()
-        assert mgr.profile_name == "env-profile"
-
-        mgr_explicit = AwsSessionManager(profile_name="explicit-profile")
-        assert mgr_explicit.profile_name == "explicit-profile"
-
-
 def test_aws_session_manager_caller_identity_caching():
     """Verify caller identity is cached and doesn't call STS multiple times."""
     with patch("boto3.Session") as mock_session_cls:

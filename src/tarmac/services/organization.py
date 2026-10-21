@@ -20,6 +20,7 @@ from ..core.models import (
     TAG_STATUS,
     TAG_VERSION,
 )
+from ..core.org_accounts import active_account_ids
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +159,6 @@ class OrganizationService:
         }
         return all(str(current.get(key, "")).strip() == str(value).strip() for key, value in wanted.items())
 
-    def _contact_already_set(self, contact_type: str, desired: Any) -> bool:
-        """True when the management account already has this exact alternate contact."""
-        return self._contact_matches(self._current_contact(contact_type), desired)
-
     def _enabled_service_principals(self) -> set[str]:
         """Service principals that already have trusted access (empty when it cannot be read)."""
         try:
@@ -182,6 +179,20 @@ class OrganizationService:
             return set()
         features = response.get("EnabledFeatures", []) if isinstance(response, dict) else []
         return {str(f) for f in features} if isinstance(features, list) else set()
+
+    def missing_trusted_services(self, services: list[str] | None = None) -> list[str]:
+        """The services that do not have trusted access yet (all of them when it cannot be read)."""
+        enabled = self._enabled_service_principals()
+        return [s for s in services or DEFAULT_TRUSTED_SERVICES if s not in enabled]
+
+    def delegated_administrator_ids(self, service_principal: str) -> set[str]:
+        """Account IDs registered as delegated administrator for the service. AWS errors propagate."""
+        paginator = self.org_client.get_paginator("list_delegated_administrators")
+        return {
+            str(admin.get("Id", ""))
+            for page in paginator.paginate(ServicePrincipal=service_principal)
+            for admin in page.get("DelegatedAdministrators", [])
+        }
 
     def enable_trusted_services(self, services: list[str] | None = None) -> list[str]:
         """Enable trusted service access for foundational AWS services in Organizations."""
@@ -219,7 +230,6 @@ class OrganizationService:
         self,
         config: RootAccessConfig,
         account_id_map: dict[str, str] | None = None,
-        management_account_id: str | None = None,
     ) -> dict[str, bool]:
         """Configure centralized root access management and optional delegated administrator."""
         if not config.enabled:
@@ -245,11 +255,7 @@ class OrganizationService:
                 self._enable_root_sessions(enabled_features) if config.enable_root_sessions else False
             ),
             "delegated_admin": (
-                self._register_delegated_admin(
-                    config.delegated_admin_account,
-                    resolved_map,
-                    management_account_id=management_account_id,
-                )
+                self._register_delegated_admin(config.delegated_admin_account, resolved_map)
                 if config.delegated_admin_account and resolved_map
                 else False
             ),
@@ -260,13 +266,7 @@ class OrganizationService:
         if account_id_map is not None:
             return dict(account_id_map)
         try:
-            paginator = self.org_client.get_paginator("list_accounts")
-            return {
-                a["Name"]: a["Id"]
-                for page in paginator.paginate()
-                for a in page.get("Accounts", [])
-                if a.get("Status") == "ACTIVE"
-            }
+            return active_account_ids(self.org_client)
         except AWS_ERRORS as e:
             logger.warning("Could not query accounts for delegated admin: %s", e)
             return {}
@@ -347,7 +347,6 @@ class OrganizationService:
         self,
         admin_account: str,
         account_id_map: dict[str, str],
-        management_account_id: str | None = None,
     ) -> bool:
         """Register IAM delegated administrator account."""
         admin_acct_id = account_id_map.get(admin_account)
@@ -361,14 +360,6 @@ class OrganizationService:
             err_msg = (
                 f"Delegated admin account '{admin_account}' not found in active accounts: "
                 f"{list(account_id_map.keys())}"
-            )
-            self.last_error["delegated_admin"] = err_msg
-            logger.warning(err_msg)
-            return False
-        if management_account_id and admin_acct_id == management_account_id:
-            err_msg = (
-                f"Delegated admin account '{admin_account}' ({admin_acct_id}) is the management account; "
-                "a member account must be used for delegated administration."
             )
             self.last_error["delegated_admin"] = err_msg
             logger.warning(err_msg)
@@ -462,9 +453,7 @@ class OrganizationService:
             logger.debug("Could not query tags on management account %s: %s", mgmt_account_id, e)
         return set()
 
-    def record_phase_completed(
-        self, mgmt_account_id: str, phase_name: str, version: str = __version__
-    ) -> set[str]:
+    def record_phase_completed(self, mgmt_account_id: str, phase_name: str) -> set[str]:
         """Record a completed phase on the Management Account in AWS Organizations."""
         current_phases = self.get_completed_phases(mgmt_account_id)
         current_phases.add(phase_name)
@@ -474,7 +463,7 @@ class OrganizationService:
                 ResourceId=mgmt_account_id,
                 Tags=[
                     {"Key": TAG_COMPLETED_PHASES, "Value": val},
-                    {"Key": TAG_VERSION, "Value": version},
+                    {"Key": TAG_VERSION, "Value": __version__},
                     {"Key": TAG_STATUS, "Value": STATUS_IN_PROGRESS},
                     {"Key": TAG_MANAGED_BY, "Value": "tarmac"},
                 ],
@@ -490,7 +479,7 @@ class OrganizationService:
             logger.warning("Could not record phase '%s' tag on management account: %s", phase_name, e)
         return current_phases
 
-    def mark_deployment_ready(self, mgmt_account_id: str, version: str = __version__) -> None:
+    def mark_deployment_ready(self, mgmt_account_id: str) -> None:
         """Mark the overall landing zone deployment as 'ready' on the Management Account."""
         try:
             current_phases = self.get_completed_phases(mgmt_account_id)
@@ -499,7 +488,7 @@ class OrganizationService:
                 ResourceId=mgmt_account_id,
                 Tags=[
                     {"Key": TAG_STATUS, "Value": STATUS_READY},
-                    {"Key": TAG_VERSION, "Value": version},
+                    {"Key": TAG_VERSION, "Value": __version__},
                     {"Key": TAG_COMPLETED_PHASES, "Value": val},
                     {"Key": TAG_MANAGED_BY, "Value": "tarmac"},
                 ],
@@ -513,6 +502,17 @@ class OrganizationService:
         except ClientError as e:
             logger.warning("Could not mark landing zone ready on management account: %s", e)
 
+    def inactive_cost_allocation_tags(self, tag_keys: list[str]) -> list[str]:
+        """The given tag keys that Cost Explorer knows about but has not activated. AWS errors propagate."""
+        ce = self.session_mgr.get_client("ce", region_name="us-east-1")
+        wanted = set(tag_keys)
+        return [
+            str(tag.get("TagKey", ""))
+            for page in ce.get_paginator("list_cost_allocation_tags").paginate(Status="Inactive")
+            for tag in page.get("CostAllocationTags", [])
+            if str(tag.get("TagKey", "")) in wanted
+        ]
+
     def activate_cost_allocation_tags(self, tag_keys: list[str]) -> list[str]:
         """Activate user-defined and AWS-generated cost allocation tags in AWS Cost Explorer.
 
@@ -522,19 +522,9 @@ class OrganizationService:
         if not tag_keys:
             return []
 
-        target_keys = set(tag_keys)
-
         try:
             ce = self.session_mgr.get_client("ce", region_name="us-east-1")
-            paginator = ce.get_paginator("list_cost_allocation_tags")
-            to_activate: list[str] = []
-
-            for page in paginator.paginate(Status="Inactive"):
-                for tag in page.get("CostAllocationTags", []):
-                    k = str(tag.get("TagKey", ""))
-                    if k in target_keys:
-                        to_activate.append(k)
-
+            to_activate = self.inactive_cost_allocation_tags(tag_keys)
             if not to_activate:
                 logger.debug("No inactive cost allocation tags matching target keys found to activate.")
                 return []

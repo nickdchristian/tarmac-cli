@@ -13,7 +13,7 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import normalize_account_name
 from ..core.config_schema import AccountBaselineConfig, AccountDef, AccountsCatalog
-from ..core.exceptions import AccountProvisioningError, GovernanceError, aws_error_message
+from ..core.exceptions import AWS_ERRORS, AccountProvisioningError, GovernanceError, aws_error_message
 from ..core.models import (
     STATUS_SUSPENDED,
     TAG_MANAGED_BY,
@@ -22,6 +22,7 @@ from ..core.models import (
     AccountProvisionResult,
     AccountSuspensionResult,
 )
+from ..core.org_accounts import account_state, is_active, is_closed, iter_accounts
 from ..core.placeholders import is_placeholder_email
 
 logger = logging.getLogger(__name__)
@@ -56,23 +57,9 @@ class AccountService:
 
     def list_all_accounts(self) -> list[dict[str, Any]]:
         """Fetch all accounts across all pages from AWS Organizations."""
-        accounts: list[dict[str, Any]] = []
         try:
-            paginator = self.org_client.get_paginator("list_accounts")
-            for page in paginator.paginate():
-                acct_list = page.get("Accounts", [])
-                if isinstance(acct_list, list):
-                    accounts.extend([a for a in acct_list if isinstance(a, dict)])
-            if accounts:
-                return accounts
-        except (AttributeError, ClientError, KeyError):
-            pass
-        try:
-            resp = self.org_client.list_accounts()
-            if isinstance(resp, dict):
-                return [a for a in resp.get("Accounts", []) if isinstance(a, dict)]
-            return []
-        except Exception as e:
+            return list(iter_accounts(self.org_client))
+        except AWS_ERRORS as e:
             raise AccountProvisioningError("Failed to list existing AWS accounts", details=str(e)) from e
 
     def list_existing_accounts(self) -> dict[str, dict[str, Any]]:
@@ -84,11 +71,7 @@ class AccountService:
         accounts: dict[str, dict[str, Any]] = {}
         for acct in all_accts:
             name = acct["Name"]
-            if (
-                name in accounts
-                and accounts[name].get("Status") == "ACTIVE"
-                and acct.get("Status") != "ACTIVE"
-            ):
+            if name in accounts and is_active(accounts[name]) and not is_active(acct):
                 continue
             accounts[name] = acct
         return accounts
@@ -156,10 +139,9 @@ class AccountService:
             if acct_id == mgmt_id:
                 continue
 
-            status = acct.get("Status", "ACTIVE")
             current_parent = self.get_account_parent_id(acct_id)
 
-            is_aws_suspended = status == "SUSPENDED"
+            is_aws_suspended = is_closed(acct)
             is_in_suspended_ou = bool(suspended_ou_id and current_parent == suspended_ou_id)
 
             action: Literal["CREATE", "MOVE", "NOOP", "SUSPEND", "SUSPENDED"]
@@ -207,9 +189,7 @@ class AccountService:
             action: Literal["CREATE", "MOVE", "NOOP", "SUSPEND", "SUSPENDED"]
             if current_acct:
                 acct_id = current_acct["Id"]
-                acct_status = current_acct.get("Status", "ACTIVE")
-
-                if acct_status == "SUSPENDED":
+                if is_closed(current_acct):
                     action = "SUSPENDED"
                     reason = f"Account declared in accounts.yaml but is SUSPENDED (closed) in AWS Organizations ({acct_id})"
                 else:
@@ -255,7 +235,7 @@ class AccountService:
         if not suspended_ou_id:
             raise GovernanceError(
                 "No 'Suspended' OU exists in the organization, so the account cannot be quarantined.",
-                details="Declare a 'Suspended' OU in organization.yaml and run 'tarmac ou sync' first.",
+                details="Declare a 'Suspended' OU in organization.yaml and run 'tarmac deploy --phase 2' first.",
             )
 
         if dry_run:
@@ -272,7 +252,6 @@ class AccountService:
             return AccountSuspensionResult(
                 name=account_name,
                 account_id=account_id,
-                moved_to_ou=suspended_ou_id,
                 tags_updated=True,
                 closed=close,
                 status="SIMULATED",
@@ -288,7 +267,7 @@ class AccountService:
             TAG_STATUS: STATUS_SUSPENDED,
             "Status": "Suspended",
         }
-        tags_updated = self.sync_account_tags(account_id, account_name, tags_to_apply, dry_run=dry_run)
+        tags_updated = self.sync_account_tags(account_id, account_name, tags_to_apply)
 
         closed = False
         close_error: str | None = None
@@ -327,30 +306,11 @@ class AccountService:
         return AccountSuspensionResult(
             name=account_name,
             account_id=account_id,
-            moved_to_ou=suspended_ou_id,
             tags_updated=tags_updated,
             closed=closed,
             status="SUCCEEDED" if (not close or closed) else "CLOSE_FAILED",
             message=msg,
         )
-
-    def simulate_move(self, account_id: str, account_name: str, target_ou_id: str) -> bool:
-        """Record the move a real run would make. Reads the current parent only; changes nothing."""
-        current_parent = self.get_account_parent_id(account_id)
-        if not current_parent or current_parent == target_ou_id:
-            return False
-        audit(
-            "move",
-            f"account:{account_id}",
-            Outcome.SIMULATED,
-            f"[DRY-RUN] Would move account '{account_name}' ({account_id}) from {current_parent} "
-            f"to OU {target_ou_id}",
-            dry_run=True,
-            account_id=account_id,
-            from_parent=current_parent,
-            to_parent=target_ou_id,
-        )
-        return True
 
     def move_account_if_needed(self, account_id: str, account_name: str, target_ou_id: str) -> bool:
         """Move account to target OU if not already placed there. Returns True if moved."""
@@ -418,7 +378,6 @@ class AccountService:
         account_id: str,
         account_name: str,
         declared_tags: dict[str, str],
-        dry_run: bool = False,
     ) -> bool:
         """Reconcile declared tags on an account in AWS Organizations. Returns True if tags were updated."""
         if not declared_tags:
@@ -430,18 +389,6 @@ class AccountService:
         if not tags_to_apply:
             logger.debug("Tags for account '%s' (%s) are up-to-date.", account_name, account_id)
             return False
-
-        if dry_run:
-            audit(
-                "tag",
-                f"account:{account_id}",
-                Outcome.SUCCEEDED,
-                f"Would apply {len(tags_to_apply)} tag(s) to account '{account_name}' ({account_id})",
-                dry_run=True,
-                account_id=account_id,
-                tags=tags_to_apply,
-            )
-            return True
 
         try:
             tag_list = [{"Key": k, "Value": v} for k, v in tags_to_apply.items()]
@@ -491,7 +438,6 @@ class AccountService:
         self,
         accounts: list[AccountDef],
         ou_map: dict[str, str],
-        dry_run: bool = False,
         poll_delay_sec: int = 15,
         max_poll_attempts: int = 40,
         org_tags: dict[str, str] | None = None,
@@ -528,7 +474,7 @@ class AccountService:
                 continue
             if existing_acct:
                 acct_id = str(existing_acct["Id"])
-                if existing_acct.get("Status") == "SUSPENDED":
+                if is_closed(existing_acct):
                     logger.warning("Account '%s' (%s) is SUSPENDED; skipping.", name, acct_id)
                     results[idx] = _make_result(
                         acct_def, acct_id, target_ou_id, "SUSPENDED_SKIPPED", "SKIPPED"
@@ -536,29 +482,10 @@ class AccountService:
                     continue
 
                 logger.debug("Account '%s' exists (ID: %s)", name, acct_id)
-                if dry_run:
-                    moved = False
-                    self.simulate_move(acct_id, name, target_ou_id)
-                else:
-                    moved = self.move_account_if_needed(acct_id, name, target_ou_id)
-                tags_updated = self.sync_account_tags(acct_id, name, desired_tags, dry_run=dry_run)
+                moved = self.move_account_if_needed(acct_id, name, target_ou_id)
+                tags_updated = self.sync_account_tags(acct_id, name, desired_tags)
                 action = "MOVED" if moved else ("TAGGED" if tags_updated else "REUSED")
                 results[idx] = _make_result(acct_def, acct_id, target_ou_id, action, "SUCCEEDED")
-                continue
-
-            if dry_run:
-                audit(
-                    "create",
-                    f"account:{name}",
-                    Outcome.SUCCEEDED,
-                    f"Would create account '{name}' ({email}) in OU {target_ou_id}",
-                    dry_run=True,
-                    email=email,
-                    ou_id=target_ou_id,
-                )
-                results[idx] = _make_result(
-                    acct_def, "DRY-RUN-ID", target_ou_id, "SIMULATED_CREATE", "SIMULATED"
-                )
                 continue
 
             if is_placeholder_email(email):
@@ -680,7 +607,7 @@ class AccountService:
         try:
             self.move_account_if_needed(new_id, name, item["target_ou_id"])
             tags_to_sync = item.get("desired_tags", item["acct_def"].tags)
-            self.sync_account_tags(new_id, name, tags_to_sync, dry_run=False)
+            self.sync_account_tags(new_id, name, tags_to_sync)
         except ClientError as e:
             logger.warning("Error finishing account '%s' (%s): %s", name, new_id, e)
             failures.append(f"Account '{name}' ({new_id}) was created but could not be finished: {e}")
@@ -689,55 +616,6 @@ class AccountService:
             item["acct_def"], new_id, item["target_ou_id"], "CREATED", "SUCCEEDED"
         )
         return False
-
-    def provision_account(
-        self,
-        acct_def: AccountDef,
-        target_ou_id: str,
-        dry_run: bool = False,
-        org_tags: dict[str, str] | None = None,
-    ) -> AccountProvisionResult:
-        """Idempotently create an account and ensure placement in the target OU."""
-        results = self.provision_accounts(
-            [acct_def], {acct_def.ou: target_ou_id}, dry_run=dry_run, org_tags=org_tags
-        )
-        return results[0]
-
-    def _poll_create_account_status(
-        self, request_id: str, account_name: str, max_attempts: int = 40, delay_sec: int = 15
-    ) -> str:
-        """Poll account creation status until SUCCEEDED or failed."""
-        last_state = "IN_PROGRESS"
-        last_reason = ""
-        for attempt in range(1, max_attempts + 1):
-            time.sleep(delay_sec)
-            try:
-                last_state, account_id, last_reason = self._describe_create_status(request_id)
-                logger.info(
-                    "Creation status for '%s': %s (attempt %d/%d)",
-                    account_name,
-                    last_state,
-                    attempt,
-                    max_attempts,
-                )
-                if last_state == "SUCCEEDED":
-                    if not account_id:
-                        raise AccountProvisioningError(
-                            f"Account creation for '{account_name}' succeeded but AccountId was not returned."
-                        )
-                    return account_id
-                if last_state != "IN_PROGRESS":
-                    raise AccountProvisioningError(
-                        f"Account creation for '{account_name}' failed with status: {last_state}",
-                        details=last_reason or f"Status ended in {last_state}",
-                    )
-            except ClientError as e:
-                logger.warning("Error querying creation status: %s", e)
-
-        raise AccountProvisioningError(
-            f"Account creation for '{account_name}' failed with status: {last_state}",
-            details=last_reason or f"Status timed out or ended in {last_state}",
-        )
 
     def export_inventory(self, catalog: AccountsCatalog, ou_map: dict[str, str], output_dir: Path) -> Path:
         """Export current organization account inventory to JSON and environment shell script."""
@@ -751,7 +629,7 @@ class AccountService:
             name = acct_def.name
             acct_data = self.find_existing_account(name, existing)
             acct_id = acct_data["Id"] if acct_data else None
-            status = acct_data["Status"] if acct_data else "NOT_PROVISIONED"
+            status = account_state(acct_data) if acct_data else "NOT_PROVISIONED"
             ou_id = ou_map.get(acct_def.ou, "")
 
             entry = {
@@ -776,7 +654,7 @@ class AccountService:
             if normalize_account_name(name) in declared_names:
                 continue
             acct_id = str(acct_data["Id"])
-            status = str(acct_data.get("Status", "UNKNOWN"))
+            status = account_state(acct_data)
             parent_id = self.get_account_parent_id(acct_id) or ""
             ou_name = next((k for k, v in ou_map.items() if v == parent_id), "Unknown")
             if parent_id == ou_map.get("Suspended"):
@@ -793,13 +671,13 @@ class AccountService:
                 }
             )
 
-        json_path = output_dir / "inventory.json"
+        json_path = output_dir / "accounts.json"
         with json_path.open("w", encoding="utf-8") as f:
             json.dump(inventory, f, indent=2)
 
-        env_path = output_dir / "env.sh"
+        env_path = output_dir / "accounts.env"
         with env_path.open("w", encoding="utf-8") as f:
-            f.write("#!/bin/sh\n# Generated by tarmac account export - DO NOT EDIT MANUALLY\n")
+            f.write("#!/bin/sh\n# Generated by tarmac deploy (phase 4); do not edit\n")
             for k, v in env_vars.items():
                 escaped_v = (
                     str(v).replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")

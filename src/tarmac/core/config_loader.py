@@ -18,7 +18,6 @@ from .config_schema import (
     OUDef,
 )
 from .exceptions import ConfigurationError
-from .tagging import merge_tags
 from .templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
@@ -169,7 +168,7 @@ class ConfigBundle:
             if acct.ou not in valid_ous:
                 errors.append(
                     f"Account '{acct.name}' references undefined OU '{acct.ou}'. "
-                    f"Valid OUs are: {sorted(list(valid_ous))}"
+                    f"Valid OUs are: {sorted(valid_ous)}"
                 )
         return errors
 
@@ -181,7 +180,7 @@ class ConfigBundle:
         if del_admin and normalize_account_name(del_admin) not in norm_names:
             errors.append(
                 f"Delegated admin account '{del_admin}' in organization.yaml does not exist in accounts catalog. "
-                f"Valid accounts: {sorted(list(account_names))}"
+                f"Valid accounts: {sorted(account_names)}"
             )
 
         sec_cfg = self.org.security_services
@@ -190,7 +189,7 @@ class ConfigBundle:
             if normalize_account_name(sec_admin) not in norm_names:
                 errors.append(
                     f"Security services delegated admin account '{sec_admin}' in organization.yaml does not exist in accounts catalog. "
-                    f"Valid accounts: {sorted(list(account_names))}"
+                    f"Valid accounts: {sorted(account_names)}"
                 )
         return errors
 
@@ -340,6 +339,17 @@ class ConfigBundle:
             tags.update(self.accounts.tags)
         return tags
 
+    def deprecated_settings(self) -> list[str]:
+        """Settings the configuration still sets that tarmac now ignores, as messages to show the user."""
+        found = []
+        for section in ("cloudtrail", "terraform_backend"):
+            if "bucket_prefix" in getattr(self.org, section).model_fields_set:
+                found.append(
+                    f"organization.yaml: {section}.bucket_prefix is ignored (bucket names come from "
+                    "organization.name). Remove it."
+                )
+        return found
+
     def get_cost_allocation_tags(self) -> list[str]:
         """Collect user-defined cost allocation tag keys from configuration."""
         if not self.org.cost_allocation_tags.enabled:
@@ -347,28 +357,12 @@ class ConfigBundle:
         tags = list(self.org.cost_allocation_tags.tags)
         if not tags and self.org.organization.cost_allocation_tags:
             tags = list(self.org.organization.cost_allocation_tags)
-        return sorted(list(dict.fromkeys(tags)))
+        return sorted(set(tags))
 
     def get_account_tags(self, account_name: str | None) -> dict[str, str]:
         """Fetch declared tags for an account."""
         acct = self.get_account(account_name)
         return dict(acct.tags) if acct else {}
-
-    def get_resolved_tags(
-        self,
-        account_name: str | None = None,
-        custom_tags: dict[str, str] | None = None,
-    ) -> dict[str, str]:
-        """Resolve full tag hierarchy for an account or organization deployment:
-
-        Default System Tags -> Organization Tags -> Account Tags -> Custom Tags
-        """
-
-        return merge_tags(
-            self.get_organization_tags(),
-            self.get_account_tags(account_name) if account_name else None,
-            custom_tags,
-        )
 
 
 def _load_model(config_dir: Path, base_name: str, model_cls: type[T], errors: list[str]) -> T | None:
@@ -402,11 +396,3 @@ def load_all_configs(config_dir: Path | None = None) -> tuple[ConfigBundle | Non
     errors.extend(bundle.validate_cross_references())
 
     return (None if errors else bundle), errors
-
-
-def load_config_bundle(config_dir: Path | None = None) -> ConfigBundle:
-    """Load, parse, and validate all configuration files, raising ConfigurationError on failure."""
-    bundle, errors = load_all_configs(config_dir)
-    if errors or bundle is None:
-        raise ConfigurationError("Configuration validation failed.", details="\n".join(errors))
-    return bundle

@@ -12,29 +12,6 @@ from tarmac.core.config_schema import (
 from tarmac.services.security import SecurityServicesService
 
 
-def test_security_services_dry_run():
-    mock_session_mgr = MagicMock()
-    service = SecurityServicesService(mock_session_mgr)
-    cfg = SecurityServicesConfig(
-        delegated_account="audit",
-        guardduty=GuardDutyConfig(enabled=True),
-        securityhub=SecurityHubConfig(enabled=True),
-    )
-
-    reports = service.configure_security_services(
-        config=cfg,
-        primary_region="eu-west-1",
-        all_regions=["eu-west-1", "us-east-1"],
-        account_id_map={"audit": "111122223333"},
-        dry_run=True,
-    )
-
-    assert len(reports) == 2
-    assert all(r.status == "SIMULATED" for r in reports)
-    mock_session_mgr.get_client.assert_not_called()
-    mock_session_mgr.get_member_client.assert_not_called()
-
-
 def test_security_services_unresolved_audit_account():
     mock_session_mgr = MagicMock()
     service = SecurityServicesService(mock_session_mgr)
@@ -49,7 +26,6 @@ def test_security_services_unresolved_audit_account():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         account_id_map={"workload": "999999999999"},
-        dry_run=False,
     )
 
     assert len(reports) == 2
@@ -77,7 +53,6 @@ def test_guardduty_delegation_and_member_configuration():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         config=cfg,
-        dry_run=False,
     )
 
     assert report.status == "ENABLED"
@@ -109,7 +84,6 @@ def test_guardduty_idempotent_when_already_registered():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         config=cfg,
-        dry_run=False,
     )
 
     assert report.status == "ENABLED"
@@ -158,7 +132,6 @@ def test_securityhub_delegation_and_member_configuration():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         config=cfg,
-        dry_run=False,
     )
 
     assert report.status == "ENABLED"
@@ -197,6 +170,9 @@ def test_securityhub_idempotent_when_already_enabled():
         ]
     }
     mock_sh_audit.get_finding_aggregator.return_value = {"RegionLinkingMode": "NO_REGIONS", "Regions": []}
+    mock_sh_audit.describe_organization_configuration.return_value = {
+        "OrganizationConfiguration": {"ConfigurationType": "CENTRAL", "Status": "ENABLED"}
+    }
 
     service = SecurityServicesService(mock_session_mgr)
     cfg = SecurityHubConfig(
@@ -210,7 +186,6 @@ def test_securityhub_idempotent_when_already_enabled():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         config=cfg,
-        dry_run=False,
     )
 
     assert report.status == "ENABLED"
@@ -238,7 +213,6 @@ def test_guardduty_handles_client_error_on_admin_registration():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         config=cfg,
-        dry_run=False,
     )
 
     assert report.status == "FAILED"
@@ -267,7 +241,6 @@ def test_guardduty_and_securityhub_report_failed_when_all_regions_fail():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         config=GuardDutyConfig(enabled=True),
-        dry_run=False,
     )
     assert gd_report.status == "FAILED"
     assert gd_report.regions == []
@@ -277,7 +250,6 @@ def test_guardduty_and_securityhub_report_failed_when_all_regions_fail():
         primary_region="eu-west-1",
         all_regions=["eu-west-1"],
         config=SecurityHubConfig(enabled=True),
-        dry_run=False,
     )
     assert sh_report.status == "FAILED"
     assert sh_report.regions == []
@@ -352,6 +324,9 @@ def _sh_service(
         ]
     }
     sh.get_enabled_standards.return_value = {"StandardsSubscriptions": []}
+    sh.describe_organization_configuration.return_value = {
+        "OrganizationConfiguration": {"ConfigurationType": "LOCAL", "Status": "ENABLED"}
+    }
     if fail_update:
         sh.update_organization_configuration.side_effect = _ce(
             "AccessDeniedException", "cannot set auto-enable"

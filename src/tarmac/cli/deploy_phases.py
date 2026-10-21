@@ -1,16 +1,15 @@
-"""Phase runners for the multi-stage deployment pipeline."""
+"""Phase runners for the live deployment pipeline (the dry-run plan is built by services.plan)."""
 
 import logging
-import sys
 from pathlib import Path
 from typing import Any
 
-import typer
-
 from ..core.aws_client import AwsSessionManager
-from ..core.config_loader import ConfigBundle
+from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
-from ..core.models import BaselineReport, PreflightCheckStatus, PreflightReport, StackDeployReport
+from ..core.models import BaselineReport, StackDeployReport
+from ..core.org_accounts import get_active_account_id_map
+from ..core.stack_names import LOG_ARCHIVE_BUCKETS, Bucket, Stack
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
@@ -19,39 +18,41 @@ from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
-from ..services.preflight import PreflightService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
+from ..services.stack_parameters import (
+    audit_hardening_parameters,
+    backend_parameters,
+    cloudtrail_parameters,
+    log_archive_parameters,
+    object_lock_advice,
+)
 from ..services.teardown import cleanup_orphaned_bucket
-from .common import get_active_account_id_map, log_archive_parameters, warn_if_object_lock_unset
 from .deploy_config_recorder import deploy_config_recorder
-from .deploy_dry_run import (
-    _render_phase_0_dry_run,
-    _render_phase_1_dry_run,
-    _render_phase_2_dry_run,
-    _render_phase_3_dry_run,
-    _render_phase_4_dry_run,
-    _render_phase_5_dry_run,
-    _render_phase_6_dry_run,
-)
 from .deploy_root_alert import deploy_management_root_alert
-from .ui import (
-    error_console,
-    print_info,
-    print_step,
-    print_success,
-    print_warning,
-)
+from .ui import print_info, print_step, print_success, print_warning
 
 logger = logging.getLogger(__name__)
 
 
-def _get_service(name: str, fallback: Any) -> Any:
-    """Retrieve service class from tarmac.cli.deploy if patched in tests, else fallback."""
-    deploy_mod = sys.modules.get("tarmac.cli.deploy")
-    if deploy_mod is not None and hasattr(deploy_mod, name):
-        return getattr(deploy_mod, name)
-    return fallback
+def _record_phase(session_mgr: AwsSessionManager, milestone: str) -> None:
+    """Mark a pipeline milestone as completed on the management account."""
+    mgmt_id = session_mgr.get_caller_identity().get("Account", "")
+    if mgmt_id:
+        OrganizationService(session_mgr).record_phase_completed(mgmt_id, milestone)
+
+
+def _existing_ou_map(session_mgr: AwsSessionManager, needed: set[str]) -> dict[str, str]:
+    """Live OUs by name. Raises when a needed OU is missing: only phase 2 creates OUs, because it also
+    attaches their SCPs, and an account must never land in an OU without its guardrails."""
+    ou_map = OUService(session_mgr).list_all_ous()
+    missing = sorted(needed - set(ou_map))
+    if missing:
+        raise GovernanceError(
+            f"OU(s) {', '.join(missing)} do not exist yet.",
+            details="Run `tarmac deploy --phase 2` first: it creates the OUs and attaches their SCPs.",
+        )
+    return ou_map
 
 
 def _suspended_account_guidance(name: str, email: str, account_id: str) -> str:
@@ -73,57 +74,35 @@ def _baseline_failures(report: BaselineReport) -> list[str]:
     return [f"{report.account_name} ({report.account_id}) {p}" for p in problems]
 
 
-def _handle_preflight_failures(report: PreflightReport) -> None:
-    """Display preflight errors and abort deployment."""
-    error_console.print(
-        f"[red]✗ Pre-flight failed with {report.failures} blocking error(s) and {report.warnings} warning(s).[/red]"
-    )
-    for check in report.checks:
-        if check.status == PreflightCheckStatus.FAIL:
-            error_console.print(f"  [bold red]• {check.name}:[/bold red] {check.action_required}")
-    error_console.print(
-        "\n[yellow]Resolve the above issues or re-run with --skip-preflight to bypass.[/yellow]"
-    )
-    raise typer.Exit(code=1)
-
-
-def _run_phase_0_preflight(
-    session_mgr: AwsSessionManager,
-    bundle: ConfigBundle,
-    dry_run: bool,
-) -> None:
-    """Phase 0: Pre-flight manual prerequisites and operational readiness checks."""
-    print_step("0", "Pre-Flight Prerequisites & Health Diagnostics")
-    if dry_run:
-        _render_phase_0_dry_run(bundle)
+def _cleanup_management_default_vpcs(session_mgr: AwsSessionManager) -> None:
+    baseliner = BaselineService(session_mgr)
+    mgmt_id = session_mgr.get_caller_identity().get("Account", "")
+    if not mgmt_id:
         return
-
-    service = _get_service("PreflightService", PreflightService)(session_mgr, bundle)
-    report = service.run_all_checks()
-
-    if report.failures > 0:
-        _handle_preflight_failures(report)
-
-    if report.warnings > 0:
-        print_warning(
-            f"Pre-flight completed with {report.warnings} non-blocking warning(s). Proceeding with deployment..."
+    vpc_reports = baseliner.cleanup_default_vpcs(mgmt_id, "management", regions=None)
+    for r in vpc_reports:
+        if not r.skipped and r.deleted_vpc:
+            print_success(f"Management Account: Purged default VPC ({r.vpc_id}) in {r.region}")
+    vpc_failures = [f"{r.region}: {r.message}" for r in vpc_reports if r.error]
+    if vpc_failures:
+        for failure in vpc_failures:
+            print_warning(f"Management Account default VPC cleanup failed in {failure}")
+        raise GovernanceError(
+            f"Phase 1 incomplete: default VPC cleanup failed in {len(vpc_failures)} region(s).",
+            details=(
+                "Fix the cause (the role needs ec2:DescribeVpcs/Subnets/InternetGateways/"
+                "NetworkInterfaces and the matching Detach/Delete actions), or set "
+                "organization.delete_default_vpc: false to leave the management account's VPCs alone."
+            ),
         )
-    else:
-        print_success("Phase 0 complete: All pre-flight checks passed.")
+    baseliner.mark_account_baselined(mgmt_id)
 
 
-def _run_phase_1_org(
-    session_mgr: AwsSessionManager,
-    bundle: ConfigBundle,
-    dry_run: bool,
-) -> None:
+def _run_phase_1_org(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
     """Phase 1: AWS Organizations Bootstrap, Contacts, and Management Account Hardening."""
     print_step("1", "Organizations Bootstrap & Contacts")
-    if dry_run:
-        _render_phase_1_dry_run(bundle)
-        return
 
-    org_service = _get_service("OrganizationService", OrganizationService)(session_mgr)
+    org_service = OrganizationService(session_mgr)
     org_id = org_service.ensure_organization()
     org_service.set_account_contacts(bundle.org.contacts)
     org_service.enable_trusted_services()
@@ -140,34 +119,11 @@ def _run_phase_1_org(
             print_success(f"Activated Cost Allocation Tag(s): {', '.join(activated_tags)}")
 
     if bundle.org.organization.delete_default_vpc:
-        baseliner = _get_service("BaselineService", BaselineService)(session_mgr)
-        caller = session_mgr.get_caller_identity()
-        mgmt_id = caller.get("Account", "")
-        if mgmt_id:
-            vpc_reports = baseliner.cleanup_default_vpcs(mgmt_id, "management", regions=None, dry_run=dry_run)
-            for r in vpc_reports:
-                if not r.skipped and r.deleted_vpc:
-                    print_success(f"Management Account: Purged default VPC ({r.vpc_id}) in {r.region}")
-            vpc_failures = [f"{r.region}: {r.message}" for r in vpc_reports if r.error]
-            if vpc_failures and not dry_run:
-                for failure in vpc_failures:
-                    print_warning(f"Management Account default VPC cleanup failed in {failure}")
-                raise GovernanceError(
-                    f"Phase 1 incomplete: default VPC cleanup failed in {len(vpc_failures)} region(s).",
-                    details=(
-                        "Fix the cause (the role needs ec2:DescribeVpcs/Subnets/InternetGateways/"
-                        "NetworkInterfaces and the matching Detach/Delete actions), or set "
-                        "organization.delete_default_vpc: false to leave the management account's VPCs alone."
-                    ),
-                )
-            if not dry_run:
-                baseliner.mark_account_baselined(mgmt_id)
+        _cleanup_management_default_vpcs(session_mgr)
 
-    caller = session_mgr.get_caller_identity()
-    mgmt_id = caller.get("Account", "")
-    if not dry_run and mgmt_id:
+    mgmt_id = session_mgr.get_caller_identity().get("Account", "")
+    if mgmt_id:
         org_service.record_phase_completed(mgmt_id, "org")
-
     print_success(f"Phase 1 complete: Org {org_id} configured.")
 
 
@@ -175,16 +131,12 @@ def _run_phase_2_ou(
     session_mgr: AwsSessionManager,
     bundle: ConfigBundle,
     project_root: Path,
-    dry_run: bool,
     custom_tags: dict[str, str] | None = None,
 ) -> None:
     """Phase 2: Organizational Units Synchronization & Guardrails."""
     print_step("2", "Organizational Units & Guardrails")
-    if dry_run:
-        _render_phase_2_dry_run(bundle)
-        return
 
-    ou_service = _get_service("OUService", OUService)(session_mgr)
+    ou_service = OUService(session_mgr)
     root_id = ou_service.get_root_id()
     report = ou_service.sync_ou_structure(bundle.org.ou_structure)
     print_success(
@@ -193,8 +145,7 @@ def _run_phase_2_ou(
     )
 
     if bundle.org.service_control_policies and bundle.org.service_control_policies.enabled:
-        scp_service = _get_service("SCPService", SCPService)(session_mgr)
-        results = scp_service.reconcile_via_cloudformation(
+        results = SCPService(session_mgr).reconcile_via_cloudformation(
             bundle.org.service_control_policies,
             root_id,
             report.synced_ous,
@@ -202,18 +153,18 @@ def _run_phase_2_ou(
             org_name=bundle.org.organization.name,
             org_tags=bundle.get_organization_tags(),
             tags=custom_tags,
-            dry_run=dry_run,
         )
+        unresolved = {r.name: r.unresolved_targets for r in results if r.unresolved_targets}
+        if unresolved:
+            raise GovernanceError(
+                "Phase 2 failed: SCP targets not found in the organization.",
+                details="; ".join(f"{name}: {', '.join(targets)}" for name, targets in unresolved.items()),
+            )
         print_success(f"Phase 2 complete: Reconciled {len(results)} Service Control Policies.")
     else:
         print_success("Phase 2 complete: OUs synchronized.")
 
-    caller = session_mgr.get_caller_identity()
-    mgmt_id = caller.get("Account", "")
-    if not dry_run and mgmt_id:
-        _get_service("OrganizationService", OrganizationService)(session_mgr).record_phase_completed(
-            mgmt_id, "ou"
-        )
+    _record_phase(session_mgr, "ou")
 
 
 def _deploy_log_archive_hardening_stack(
@@ -224,44 +175,66 @@ def _deploy_log_archive_hardening_stack(
     project_root: Path,
     org_id: str,
     log_archive_id: str,
-    dry_run: bool,
     custom_tags: dict[str, str] | None = None,
 ) -> StackDeployReport:
     """Deploy the Log Archive account hardening stack containing the centralized S3 sink & KMS key."""
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
-    warn_if_object_lock_unset(bundle)
+    advice = object_lock_advice(bundle)
+    if advice:
+        print_warning(advice)
     cfn_client = session_mgr.get_member_client(log_archive_id, "cloudformation", region_name=target_region)
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=project_root
     )
 
     def on_before_create() -> None:
-        if not dry_run:
-            s3_client = session_mgr.get_member_client(log_archive_id, "s3", region_name=target_region)
-            buckets = [
-                f"{bundle.org.organization.name}-log-archive-access-logs-{log_archive_id}",
-                f"{bundle.org.organization.name}-org-cloudtrail-logs-{log_archive_id}",
-                f"{bundle.org.organization.name}-org-config-logs-{log_archive_id}",
-                f"{bundle.org.cloudtrail.bucket_prefix}-{log_archive_id}",
-            ]
-            for b in set(buckets):
-                cleanup_orphaned_bucket(s3_client, b, account_id=log_archive_id)
+        s3_client = session_mgr.get_member_client(log_archive_id, "s3", region_name=target_region)
+        for bucket in LOG_ARCHIVE_BUCKETS:
+            name = bucket.for_account(bundle.org.organization.name, log_archive_id)
+            cleanup_orphaned_bucket(s3_client, name, account_id=log_archive_id)
 
-    if not dry_run:
-        resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
+    resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
 
     return cfn_service.deploy_stack(
         cfn_client,
-        f"{bundle.org.organization.name}-log-archive-hardening",
+        Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
         template_file,
         log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", ""))),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
         termination_protection=True,
-        dry_run=dry_run,
         on_before_create=on_before_create,
     )
+
+
+def _provision_log_archive_account(
+    session_mgr: AwsSessionManager, bundle: ConfigBundle, log_archive_name: str, accts: dict[str, str]
+) -> str:
+    """Create the declared log archive account when it does not exist yet; return its ID ("" if undeclared)."""
+    acct_def = bundle.get_account(log_archive_name)
+    if not acct_def:
+        return ""
+    print_info(
+        f"Phase 3: Foundational account '{acct_def.name}' ({acct_def.email}) not yet active. Provisioning..."
+    )
+    ou_map = _existing_ou_map(session_mgr, {acct_def.ou})
+    prov_results = AccountService(session_mgr).provision_accounts(
+        [acct_def], ou_map=ou_map, org_tags=bundle.get_organization_tags()
+    )
+    if prov_results and prov_results[0].status == "SKIPPED":
+        raise GovernanceError(
+            "Phase 3 failed: "
+            + _suspended_account_guidance(
+                acct_def.name, acct_def.email, prov_results[0].account_id or "unknown"
+            )
+        )
+    if prov_results and prov_results[0].account_id:
+        log_archive_id = prov_results[0].account_id
+        accts[acct_def.name] = log_archive_id
+        print_success(f"Phase 3: Provisioned foundational account '{acct_def.name}' ({log_archive_id}).")
+        return log_archive_id
+    return ""
 
 
 def _run_phase_3_cloudtrail(
@@ -269,124 +242,76 @@ def _run_phase_3_cloudtrail(
     bundle: ConfigBundle,
     target_region: str,
     project_root: Path,
-    dry_run: bool,
     custom_tags: dict[str, str] | None = None,
 ) -> None:
     """Phase 3: Organization-wide CloudTrail deployment."""
     print_step("3", "Foundational Organization CloudTrail")
-    if dry_run:
-        _render_phase_3_dry_run(bundle, target_region)
-        return
 
-    cfn_service = _get_service("CloudFormationService", CloudFormationService)(session_mgr)
-    org_client = session_mgr.get_client("organizations")
-    org_id = str(org_client.describe_organization()["Organization"]["Id"])
+    cfn_service = CloudFormationService(session_mgr)
+    org_id = str(session_mgr.get_client("organizations").describe_organization()["Organization"]["Id"])
 
     accts = get_active_account_id_map(session_mgr)
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     log_archive_id = bundle.resolve_account_id(log_archive_name, accts) or ""
-
-    if not log_archive_id and not dry_run:
-        acct_def = bundle.get_account(log_archive_name)
-        if acct_def:
-            print_info(
-                f"Phase 3: Foundational account '{acct_def.name}' ({acct_def.email}) not yet active. Provisioning..."
-            )
-            ou_service = _get_service("OUService", OUService)(session_mgr)
-            ou_map = ou_service.sync_ou_structure(bundle.org.ou_structure).synced_ous
-            account_service = _get_service("AccountService", AccountService)(session_mgr)
-            prov_results = account_service.provision_accounts([acct_def], ou_map=ou_map, dry_run=False)
-            if prov_results and prov_results[0].status == "SKIPPED":
-                raise GovernanceError(
-                    "Phase 3 failed: "
-                    + _suspended_account_guidance(
-                        acct_def.name, acct_def.email, prov_results[0].account_id or "unknown"
-                    )
-                )
-            if prov_results and prov_results[0].account_id and prov_results[0].account_id != "DRY-RUN-ID":
-                log_archive_id = prov_results[0].account_id
-                accts[acct_def.name] = log_archive_id
-                print_success(
-                    f"Phase 3: Provisioned foundational account '{acct_def.name}' ({log_archive_id})."
-                )
-
-    if not log_archive_id and not dry_run:
+    if not log_archive_id:
+        log_archive_id = _provision_log_archive_account(session_mgr, bundle, log_archive_name, accts)
+    if not log_archive_id:
         raise GovernanceError(
             f"Phase 3 failed: Log Archive account '{log_archive_name}' could not be resolved from active accounts. "
             "Ensure the account is declared in accounts.yaml and provisioned before deploying CloudTrail."
         )
 
-    if log_archive_id and not dry_run:
-        log_archive_report = _deploy_log_archive_hardening_stack(
-            cfn_service,
-            session_mgr,
-            bundle,
-            target_region,
-            project_root,
-            org_id,
-            log_archive_id,
-            dry_run,
-            custom_tags=custom_tags,
-        )
-        print_success(f"Phase 3: Log Archive hardening stack {log_archive_report.action}.")
-    elif dry_run:
-        log_archive_id = log_archive_id or "DRY-RUN-LOG-ARCHIVE-ID"
+    log_archive_report = _deploy_log_archive_hardening_stack(
+        cfn_service,
+        session_mgr,
+        bundle,
+        target_region,
+        project_root,
+        org_id,
+        log_archive_id,
+        custom_tags=custom_tags,
+    )
+    print_success(f"Phase 3: Log Archive hardening stack {log_archive_report.action}.")
 
     template_file = resolve_resource_path(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
-    stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
-
-    if not dry_run:
-        resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
-
-    params = {
-        "OrgName": bundle.org.organization.name,
-        "LogArchiveAccountId": log_archive_id,
-        "TrailName": bundle.org.cloudtrail.trail_name,
-        "EnableKmsEncryption": "true" if bundle.org.cloudtrail.enable_kms else "false",
-    }
-    cfn_client = session_mgr.get_client("cloudformation", region_name=target_region)
     report = cfn_service.deploy_stack(
-        cfn_client,
-        stack_name,
+        session_mgr.get_client("cloudformation", region_name=target_region),
+        Stack.CLOUDTRAIL.for_org(bundle.org.organization.name),
         template_file,
-        params,
+        cloudtrail_parameters(bundle, log_archive_id, bool(bundle.org.cloudtrail.enable_kms)),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         termination_protection=True,
-        dry_run=dry_run,
     )
     print_success(f"Phase 3 complete: CloudTrail stack {report.action}.")
-
-    caller = session_mgr.get_caller_identity()
-    mgmt_id = caller.get("Account", "")
-    if not dry_run and mgmt_id:
-        _get_service("OrganizationService", OrganizationService)(session_mgr).record_phase_completed(
-            mgmt_id, "cloudtrail"
-        )
+    _record_phase(session_mgr, "cloudtrail")
 
 
 def _run_phase_4_accounts(
     session_mgr: AwsSessionManager,
     bundle: ConfigBundle,
     project_root: Path,
-    dry_run: bool,
     custom_tags: dict[str, str] | None = None,
+    only: list[str] | None = None,
 ) -> None:
-    """Phase 4: Account Factory Provisioning & Baselining."""
+    """Phase 4: Account Factory Provisioning & Baselining.
+
+    ``only`` limits the run to those declared accounts; accounts missing from accounts.yaml are then left alone.
+    """
     print_step("4", "Account Factory Provisioning & Baselining")
-    if dry_run:
-        _render_phase_4_dry_run(session_mgr, bundle)
-        return
 
-    ou_service = _get_service("OUService", OUService)(session_mgr)
-    account_service = _get_service("AccountService", AccountService)(session_mgr)
-    baseliner = _get_service("BaselineService", BaselineService)(session_mgr)
+    account_service = AccountService(session_mgr)
+    baseliner = BaselineService(session_mgr)
 
-    ou_map = ou_service.sync_ou_structure(bundle.org.ou_structure).synced_ous
-    results = account_service.provision_accounts(bundle.accounts.accounts, ou_map=ou_map, dry_run=False)
-    acct_def_map = {a.name: a for a in bundle.accounts.accounts}
+    wanted = {normalize_account_name(name) for name in only or []}
+    declared = [a for a in bundle.accounts.accounts if not wanted or normalize_account_name(a.name) in wanted]
+    ou_map = _existing_ou_map(session_mgr, {a.ou for a in declared})
+    results = account_service.provision_accounts(
+        declared, ou_map=ou_map, org_tags=bundle.get_organization_tags()
+    )
+    acct_def_map = {a.name: a for a in declared}
 
     baseline_problems: list[str] = []
     for result in results:
@@ -396,12 +321,11 @@ def _run_phase_4_accounts(
                 _suspended_account_guidance(result.name, result.email, result.account_id or "unknown")
             )
             continue
-        if acct_def and result.account_id and result.account_id != "DRY-RUN-ID":
+        if acct_def and result.account_id:
             baseline_report = baseliner.baseline_account(
                 acct_def,
                 result.account_id,
                 regions=None,
-                dry_run=False,
                 org_tags=bundle.get_organization_tags(),
                 custom_tags=custom_tags,
             )
@@ -415,14 +339,12 @@ def _run_phase_4_accounts(
         )
 
     suspended_ou_id = ou_map.get("Suspended")
-    plan_items = account_service.plan(bundle.accounts, ou_map)
-    for item in plan_items:
+    for item in [] if wanted else account_service.plan(bundle.accounts, ou_map):
         if item.action == "SUSPEND" and item.account_id:
             account_service.suspend_account(
                 account_id=item.account_id,
                 account_name=item.name,
                 suspended_ou_id=suspended_ou_id,
-                dry_run=False,
             )
             print_warning(
                 f"Account '{item.name}' ({item.account_id}) removed from YAML -> Quarantined in Suspended OU and tagged."
@@ -435,16 +357,14 @@ def _run_phase_4_accounts(
         # Do not record the "accounts" milestone: the accounts exist, but their baseline is incomplete.
         raise AccountProvisioningError(
             f"Phase 4 finished with {len(baseline_problems)} failed baseline step(s); "
-            "fix the cause and re-run `tarmac deploy run --phase 4`.",
+            "fix the cause and re-run `tarmac deploy --phase 4`.",
             details="\n".join(baseline_problems),
         )
 
-    caller = session_mgr.get_caller_identity()
-    mgmt_id = caller.get("Account", "")
-    if mgmt_id:
-        _get_service("OrganizationService", OrganizationService)(session_mgr).record_phase_completed(
-            mgmt_id, "accounts"
-        )
+    if wanted:
+        print_success(f"Phase 4 complete for {', '.join(a.name for a in declared)}.")
+        return
+    _record_phase(session_mgr, "accounts")
     print_success("Phase 4 complete: All accounts provisioned, baselined, and exported.")
 
 
@@ -453,10 +373,7 @@ def _ensure_delegated_admin(session_mgr: AwsSessionManager, bundle: ConfigBundle
     root_mgmt = bundle.org.root_access_management
     if not (root_mgmt.enabled and root_mgmt.delegated_admin_account):
         return
-
-    org_service = _get_service("OrganizationService", OrganizationService)(session_mgr)
-    delegated_res = org_service.configure_root_access(root_mgmt)
-    if delegated_res.get("delegated_admin"):
+    if OrganizationService(session_mgr).configure_root_access(root_mgmt).get("delegated_admin"):
         print_success(f"Delegated administrator ({root_mgmt.delegated_admin_account}) for IAM is in place.")
 
 
@@ -465,26 +382,19 @@ def _deploy_backend_stack(
     cfn_client: Any,
     bundle: ConfigBundle,
     project_root: Path,
-    dry_run: bool,
+    session_mgr: AwsSessionManager,
+    deployment_id: str,
+    target_region: str,
     custom_tags: dict[str, str] | None = None,
-    session_mgr: AwsSessionManager | None = None,
-    deployment_id: str | None = None,
-    target_region: str | None = None,
 ) -> None:
     template_file = resolve_resource_path("cloudformation/terraform-backend.yaml", project_root=project_root)
-    backend_acct = bundle.get_backend_account_name()
 
     def on_before_create() -> None:
-        if not dry_run and session_mgr and deployment_id:
-            s3_client = session_mgr.get_member_client(deployment_id, "s3", region_name=target_region)
-            state_buckets = [
-                f"{bundle.org.organization.name}-terraform-state-{deployment_id}",
-                f"{bundle.org.terraform_backend.bucket_prefix}-{deployment_id}",
-            ]
-            for b in set(state_buckets):
-                cleanup_orphaned_bucket(s3_client, b, account_id=deployment_id)
+        s3_client = session_mgr.get_member_client(deployment_id, "s3", region_name=target_region)
+        name = Bucket.TERRAFORM_STATE.for_account(bundle.org.organization.name, deployment_id)
+        cleanup_orphaned_bucket(s3_client, name, account_id=deployment_id)
 
-    backend_stack = f"{bundle.org.organization.name}-terraform-backend"
+    backend_stack = Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name)
     enable_dynamodb, lock_warning = lock_table_wanted(
         cfn_client, backend_stack, bundle.org.terraform_backend.enable_dynamodb
     )
@@ -495,17 +405,11 @@ def _deploy_backend_stack(
         cfn_client,
         backend_stack,
         template_file,
-        {
-            "OrgName": bundle.org.organization.name,
-            "BucketPrefix": bundle.org.terraform_backend.bucket_prefix,
-            "EnableDynamoDB": "true" if enable_dynamodb else "false",
-            "DynamoDBTableName": bundle.org.terraform_backend.dynamodb_table_name,
-        },
+        backend_parameters(bundle, enable_dynamodb),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
-        account_tags=bundle.get_account_tags(backend_acct),
+        account_tags=bundle.get_account_tags(bundle.get_backend_account_name()),
         termination_protection=True,
-        dry_run=dry_run,
         on_before_create=on_before_create,
     )
 
@@ -518,7 +422,6 @@ def _deploy_hardening_stacks(
     project_root: Path,
     org_id: str,
     accts: dict[str, str],
-    dry_run: bool,
     custom_tags: dict[str, str] | None = None,
     skip_log_archive_hardening: bool = False,
 ) -> None:
@@ -533,50 +436,31 @@ def _deploy_hardening_stacks(
             project_root,
             org_id,
             log_archive_id,
-            dry_run,
             custom_tags=custom_tags,
         )
 
     audit_name = bundle.get_audit_account_name() or "audit"
     audit_id = bundle.resolve_account_id(audit_name, accts)
-    if not audit_id and not dry_run:
+    if not audit_id:
         print_warning(
             f"Audit account '{audit_name}' was not found among active accounts; "
             "skipping audit hardening and Config delegation."
         )
-    if audit_id:
-        org_service = _get_service("OrganizationService", OrganizationService)(session_mgr)
-        org_service.register_service_delegated_administrators(
-            audit_id,
-            ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com"],
-        )
+        return
 
-        cfn_client = session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region)
-        template_file = resolve_resource_path(
-            "cloudformation/audit-account-hardening.yaml", project_root=project_root
-        )
-        hardening_params = {
-            "OrgName": bundle.org.organization.name,
-            "OrganizationId": org_id,
-            "AlertEmail": str(bundle.org.contacts.security.email)
-            if bundle.org.contacts.security.email
-            else "",
-        }
-        if bundle.org.security_services.incident_response_webhook_url:
-            hardening_params["IncidentResponseWebhookUrl"] = str(
-                bundle.org.security_services.incident_response_webhook_url
-            )
-        cfn_service.deploy_stack(
-            cfn_client,
-            f"{bundle.org.organization.name}-audit-account-hardening",
-            template_file,
-            hardening_params,
-            tags=custom_tags,
-            org_tags=bundle.get_organization_tags(),
-            account_tags=bundle.get_account_tags(audit_name),
-            termination_protection=True,
-            dry_run=dry_run,
-        )
+    OrganizationService(session_mgr).register_service_delegated_administrators(
+        audit_id, ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com"]
+    )
+    cfn_service.deploy_stack(
+        session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region),
+        Stack.AUDIT_ACCOUNT.for_org(bundle.org.organization.name),
+        resolve_resource_path("cloudformation/audit-account-hardening.yaml", project_root=project_root),
+        audit_hardening_parameters(bundle, org_id),
+        tags=custom_tags,
+        org_tags=bundle.get_organization_tags(),
+        account_tags=bundle.get_account_tags(audit_name),
+        termination_protection=True,
+    )
 
 
 def _delegate_security_services(
@@ -584,25 +468,21 @@ def _delegate_security_services(
     bundle: ConfigBundle,
     target_region: str,
     accts: dict[str, str],
-    dry_run: bool,
 ) -> None:
     """Delegate GuardDuty and Security Hub to Audit account if configured."""
     sec_cfg = bundle.org.security_services
     if not (sec_cfg.guardduty.enabled or sec_cfg.securityhub.enabled):
         return
 
-    sec_service = _get_service("SecurityServicesService", SecurityServicesService)(session_mgr)
-    all_regions = [target_region, *bundle.org.organization.additional_regions]
-    reports = sec_service.configure_security_services(
+    reports = SecurityServicesService(session_mgr).configure_security_services(
         config=sec_cfg,
         primary_region=target_region,
-        all_regions=all_regions,
+        all_regions=[target_region, *bundle.org.organization.additional_regions],
         account_id_map=accts,
-        dry_run=dry_run,
     )
     failed: list[str] = []
     for rep in reports:
-        if rep.status in ("ENABLED", "ALREADY_CONFIGURED", "SIMULATED"):
+        if rep.status in ("ENABLED", "ALREADY_CONFIGURED"):
             print_success(f"Security Delegation ({rep.service_name}): {rep.message}")
         else:
             print_warning(f"Security Delegation ({rep.service_name}): {rep.message}")
@@ -619,40 +499,33 @@ def _run_phase_5_hardening(
     bundle: ConfigBundle,
     target_region: str,
     project_root: Path,
-    dry_run: bool,
     custom_tags: dict[str, str] | None = None,
     skip_log_archive_hardening: bool = False,
 ) -> None:
     """Phase 5: Account Hardening, Terraform Backend & Security Services."""
     print_step("5", "Backend, Hardening & Security Services Deployments")
-    if dry_run:
-        _render_phase_5_dry_run(bundle)
-        return
 
-    cfn_service = _get_service("CloudFormationService", CloudFormationService)(session_mgr)
-    org_client = session_mgr.get_client("organizations")
-    org_id = str(org_client.describe_organization()["Organization"]["Id"])
+    cfn_service = CloudFormationService(session_mgr)
+    org_id = str(session_mgr.get_client("organizations").describe_organization()["Organization"]["Id"])
     accts = get_active_account_id_map(session_mgr)
 
     backend_name = bundle.get_backend_account_name() or "deployment"
     deployment_id = bundle.resolve_account_id(backend_name, accts)
-    if not deployment_id:
+    if deployment_id:
+        _deploy_backend_stack(
+            cfn_service,
+            session_mgr.get_member_client(deployment_id, "cloudformation", region_name=target_region),
+            bundle,
+            project_root,
+            session_mgr,
+            deployment_id,
+            target_region,
+            custom_tags=custom_tags,
+        )
+    else:
         print_warning(
             f"Backend account '{backend_name}' was not found among active accounts; "
             "skipping the Terraform backend stack."
-        )
-    if deployment_id:
-        cfn_client = session_mgr.get_member_client(deployment_id, "cloudformation", region_name=target_region)
-        _deploy_backend_stack(
-            cfn_service,
-            cfn_client,
-            bundle,
-            project_root,
-            dry_run,
-            custom_tags=custom_tags,
-            session_mgr=session_mgr,
-            deployment_id=deployment_id,
-            target_region=target_region,
         )
 
     _deploy_hardening_stacks(
@@ -663,33 +536,18 @@ def _run_phase_5_hardening(
         project_root,
         org_id,
         accts,
-        dry_run,
         custom_tags=custom_tags,
         skip_log_archive_hardening=skip_log_archive_hardening,
     )
-
     deploy_config_recorder(
         session_mgr, cfn_service, bundle, target_region, project_root, accts, custom_tags=custom_tags
     )
-
     deploy_management_root_alert(
-        session_mgr,
-        cfn_service,
-        bundle,
-        target_region,
-        project_root,
-        dry_run,
-        custom_tags=custom_tags,
+        session_mgr, cfn_service, bundle, target_region, project_root, custom_tags=custom_tags
     )
+    _delegate_security_services(session_mgr, bundle, target_region, accts)
 
-    _delegate_security_services(session_mgr, bundle, target_region, accts, dry_run)
-
-    caller = session_mgr.get_caller_identity()
-    mgmt_id = caller.get("Account", "")
-    if mgmt_id:
-        _get_service("OrganizationService", OrganizationService)(session_mgr).record_phase_completed(
-            mgmt_id, "hardening"
-        )
+    _record_phase(session_mgr, "hardening")
     print_success("Phase 5 complete: Foundation stacks deployed and security services delegated.")
 
 
@@ -697,43 +555,28 @@ def _run_phase_6_identity(
     session_mgr: AwsSessionManager,
     bundle: ConfigBundle,
     project_root: Path,
-    dry_run: bool,
     region_override: str | None = None,
     custom_tags: dict[str, str] | None = None,
 ) -> None:
     """Phase 6: IAM Identity Center (SSO)."""
     print_step("6", "IAM Identity Center (SSO)")
-    id_cfg = bundle.identity.identity_center
-    if dry_run:
-        _render_phase_6_dry_run(bundle, region_override)
-        return
 
+    id_cfg = bundle.identity.identity_center
     target_region = region_override or id_cfg.region or bundle.org.organization.primary_region
     sso_session_mgr = (
         session_mgr
         if session_mgr.default_region == target_region
-        else _get_service("AwsSessionManager", AwsSessionManager)(region_name=target_region)
+        else AwsSessionManager(region_name=target_region)
     )
-    identity_service = _get_service("IdentityService", IdentityService)(
-        sso_session_mgr, preferred_region=target_region
-    )
-
-    report = identity_service.sync_identity(
+    report = IdentityService(sso_session_mgr, preferred_region=target_region).sync_identity(
         id_cfg,
         project_root=project_root,
         org_name=bundle.org.organization.name,
-        dry_run=dry_run,
         org_tags=bundle.get_organization_tags(),
         custom_tags=custom_tags,
     )
 
-    caller = session_mgr.get_caller_identity()
-    mgmt_id = caller.get("Account", "")
-    if mgmt_id:
-        _get_service("OrganizationService", OrganizationService)(session_mgr).record_phase_completed(
-            mgmt_id, "identity"
-        )
-
+    _record_phase(session_mgr, "identity")
     print_success(
         f"Phase 6 complete: Synced {len(report.permission_sets_synced)} permission set(s), "
         f"{len(report.users_synced)} user(s), {report.assignments_created} assignment(s), "

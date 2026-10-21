@@ -1,7 +1,6 @@
 """A run that changes nothing must say so: reads before writes, UNCHANGED outcomes and quiet handled errors."""
 
 import logging
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -9,10 +8,8 @@ import pytest
 from botocore.exceptions import ClientError, WaiterError
 
 from tarmac.core.aws_audit import DRY_RUN_ALLOWED, is_benign_error
-from tarmac.core.config_loader import load_all_configs
 from tarmac.core.config_schema import Contact, ContactsConfig
 from tarmac.core.exceptions import DeploymentError
-from tarmac.services.accounts import AccountService
 from tarmac.services.cloudformation import CloudFormationService
 from tarmac.services.identity import IdentityService
 from tarmac.services.organization import DEFAULT_TRUSTED_SERVICES, OrganizationService
@@ -165,21 +162,6 @@ def test_sso_token_refresh_is_not_a_dry_run_violation():
     assert "sso-oidc.CreateToken" in DRY_RUN_ALLOWED
 
 
-def test_dry_run_move_is_simulated_and_changes_nothing(caplog):
-    svc = AccountService(MagicMock())
-    svc.org_client = MagicMock()
-    svc.get_account_parent_id = MagicMock(return_value="ou-old")  # type: ignore[method-assign]
-
-    assert svc.simulate_move("111122223333", "dev", "ou-new") is True
-    assert svc.simulate_move("111122223333", "dev", "ou-old") is False
-
-    (event,) = _events(caplog)
-    assert event["outcome"] == "simulated"
-    assert event["details"]["from_parent"] == "ou-old"
-    assert event["details"]["to_parent"] == "ou-new"
-    svc.org_client.move_account.assert_not_called()
-
-
 def test_failed_change_set_reports_its_status_reason_and_owning_stack():
     cfn = MagicMock()
     cfn.describe_stacks.side_effect = ClientError(
@@ -199,16 +181,3 @@ def test_failed_change_set_reports_its_status_reason_and_owning_stack():
     details = str(exc_info.value.details)
     assert "p-123 already exists in stack" in details
     assert "organization.name" in details
-
-
-def test_deploy_dry_run_records_that_the_plan_was_previewed(sample_config_dir: Path, caplog):
-    from tarmac.cli.deploy_dry_run import _render_phase_2_dry_run
-
-    bundle, _ = load_all_configs(sample_config_dir)
-    assert bundle is not None
-
-    _render_phase_2_dry_run(bundle)
-
-    (event,) = _events(caplog)
-    assert event["outcome"] == "simulated"
-    assert event["resource"] == "phase:2"

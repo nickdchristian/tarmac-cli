@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import DeploymentError, aws_error_message
+from ..core.stack_names import Stack
 
 PARAMETER = "EnableKmsEncryption"
 
@@ -44,6 +45,6 @@ def resolve_log_encryption(
     keep_key = False
     if log_archive_id:
         cfn = session_mgr.get_member_client(log_archive_id, "cloudformation", region_name=region)
-        keep_key = existing_kms_choice(cfn, f"{bundle.org.organization.name}-log-archive-hardening") == "true"
+        keep_key = existing_kms_choice(cfn, Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name)) == "true"
     trail.enable_kms = keep_key
     return keep_key

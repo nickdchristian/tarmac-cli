@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from botocore.exceptions import BotoCoreError, ClientError, WaiterError
 
 from ..core.audit import Outcome, audit
@@ -24,9 +25,55 @@ UNUSABLE_STACK_STATES = frozenset(
 )
 
 
-def lock_table_wanted(
-    cfn_client: Any, stack_name: str, configured: bool | None, s3_only: bool = False
-) -> tuple[bool, str | None]:
+def _as_stored(template: str) -> str:
+    """The template as GetTemplate returns it: CloudFormation stores each non-ASCII character as '?'."""
+    return template.strip().encode("ascii", "replace").decode("ascii")
+
+
+class _TemplateLoader(yaml.SafeLoader):
+    """Reads CloudFormation YAML, keeping short-form tags such as !Ref as {"!Ref": value}."""
+
+
+def _tagged(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> dict[str, Any]:
+    if isinstance(node, yaml.ScalarNode):
+        return {f"!{suffix}": loader.construct_scalar(node)}
+    if isinstance(node, yaml.SequenceNode):
+        return {f"!{suffix}": loader.construct_sequence(node, deep=True)}
+    return {f"!{suffix}": loader.construct_mapping(node, deep=True)}  # pyright: ignore[reportArgumentType]
+
+
+_TemplateLoader.add_multi_constructor("!", _tagged)
+
+
+def _parsed(template: Any) -> Any:
+    if isinstance(template, dict):
+        return template
+    try:
+        return yaml.load(_as_stored(str(template)), Loader=_TemplateLoader)  # noqa: S506 - safe loader subclass
+    except yaml.YAMLError:
+        return None
+
+
+def same_template(live: Any, local: str) -> bool:
+    """Whether the live template and the local one are the same, ignoring formatting and key order."""
+    if isinstance(live, str) and _as_stored(live) == _as_stored(local):
+        return True
+    parsed = _parsed(live)
+    return parsed is not None and parsed == _parsed(local)
+
+
+def _tags_in(value: Any) -> set[str]:
+    """Short-form tag keys anywhere in a parsed template (they cannot be written back as plain YAML)."""
+    if isinstance(value, dict):
+        return {k for k in value if isinstance(k, str) and k.startswith("!")} | {
+            t for v in value.values() for t in _tags_in(v)
+        }
+    if isinstance(value, list):
+        return {t for v in value for t in _tags_in(v)}
+    return set()
+
+
+def lock_table_wanted(cfn_client: Any, stack_name: str, configured: bool | None) -> tuple[bool, str | None]:
     """Decide whether the Terraform backend stack should have a DynamoDB lock table.
 
     Returns (wanted, warning). With nothing configured a new backend is S3-only, which is cheaper and is what
@@ -35,12 +82,9 @@ def lock_table_wanted(
     """
     current = _stack_parameter(cfn_client, stack_name, "EnableDynamoDB")
     has_table = current == "true"
-    if s3_only:
-        wanted = False
-    elif configured is None:
+    if configured is None:
         return has_table, None
-    else:
-        wanted = configured
+    wanted = configured
     if has_table and not wanted:
         return False, (
             f"Stack '{stack_name}' has a DynamoDB lock table and this deployment removes it. Terraform "
@@ -79,7 +123,6 @@ class CloudFormationService:
         tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
         account_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
         template_body: str | None = None,
         on_before_create: Callable[[], None] | None = None,
         termination_protection: bool = False,
@@ -91,20 +134,6 @@ class CloudFormationService:
         Tags are merged according to the Tarmac Tagging Hierarchy:
         Default System Tags (ManagedBy: tarmac) -> org_tags -> account_tags -> tags (stack/custom)
         """
-        template_name = template_file.name if template_file else "synthesized-template"
-        if dry_run:
-            audit(
-                "deploy",
-                f"stack:{stack_name}",
-                Outcome.SUCCEEDED,
-                f"Would deploy CloudFormation stack '{stack_name}' from template '{template_name}'",
-                dry_run=True,
-                template=template_name,
-            )
-            return StackDeployReport(
-                stack_name=stack_name, action="SIMULATED", outputs={}, status="SIMULATED"
-            )
-
         if template_body is None:
             if template_file is None:
                 raise DeploymentError("Either template_file or template_body must be provided.")
@@ -140,7 +169,85 @@ class CloudFormationService:
         if termination_protection:
             self.protect_stack(cfn_client, stack_name)
 
-        return StackDeployReport(stack_name=stack_name, action=action, outputs=outputs, status="SUCCEEDED")
+        return StackDeployReport(action=action, outputs=outputs, status="SUCCEEDED")
+
+    def preview_stack(
+        self,
+        cfn_client: Any,
+        stack_name: str,
+        template_file: Path | None = None,
+        parameters: dict[str, str] | None = None,
+        tags: dict[str, str] | None = None,
+        org_tags: dict[str, str] | None = None,
+        account_tags: dict[str, str] | None = None,
+        template_body: str | None = None,
+    ) -> tuple[str, str]:
+        """What deploy_stack would do, read-only: (action, detail).
+
+        The action is CREATE, REPLACE (the stack is in a state that forces delete and recreate), UPDATE or
+        NO CHANGE. An update names what differs: the template text, which of the given parameters, or the tags.
+        Parameters the stack has but that are not given here are not compared.
+        """
+        if template_body is None:
+            if template_file is None:
+                raise DeploymentError("Either template_file or template_body must be provided.")
+            template_body = template_file.read_text(encoding="utf-8")
+
+        status = self._get_stack_status(cfn_client, stack_name)
+        if status in (None, "DELETE_COMPLETE"):
+            return "CREATE", ""
+        if status in UNUSABLE_STACK_STATES:
+            return "REPLACE", f"stack is {status}; it is deleted and created again"
+
+        stack = cfn_client.describe_stacks(StackName=stack_name)["Stacks"][0]
+        live_params = {
+            str(p["ParameterKey"]): str(p.get("ParameterValue", "")) for p in stack.get("Parameters", [])
+        }
+        changes = [
+            f"{key}: {live_params.get(key, '(unset)')} -> {value}"
+            for key, value in (parameters or {}).items()
+            if live_params.get(key) != str(value)
+        ]
+        live_body = cfn_client.get_template(StackName=stack_name, TemplateStage="Original").get(
+            "TemplateBody"
+        )
+        if not same_template(live_body, template_body):
+            changes.append("template")
+        live_tags = {str(tag["Key"]): str(tag["Value"]) for tag in stack.get("Tags", [])}
+        if live_tags != merge_tags(org_tags, account_tags, tags):
+            changes.append("tags")
+        return ("UPDATE", "; ".join(changes)) if changes else ("NO CHANGE", "")
+
+    def is_usable(self, cfn_client: Any, stack_name: str) -> bool:
+        """Whether the stack exists in a state that can be updated or imported into."""
+        status = self._get_stack_status(cfn_client, stack_name)
+        return status not in (None, "DELETE_COMPLETE") and status not in UNUSABLE_STACK_STATES
+
+    @staticmethod
+    def resource_ids(cfn_client: Any, stack_name: str) -> set[str]:
+        """Logical IDs of the resources the stack manages."""
+        pages = cfn_client.get_paginator("list_stack_resources").paginate(StackName=stack_name)
+        return {str(r["LogicalResourceId"]) for page in pages for r in page.get("StackResourceSummaries", [])}
+
+    def import_template(
+        self, cfn_client: Any, stack_name: str, template: dict[str, Any], adopted: dict[str, Any]
+    ) -> str:
+        """The template for an IMPORT change set that adopts ``adopted`` (logical ID -> resource).
+
+        An import may not change anything already in the stack, so into a usable stack it is the live template
+        plus the adopted resources; for a new stack it is ``template`` with only the adopted resources.
+        """
+        if not self.is_usable(cfn_client, stack_name):
+            return yaml.dump({**template, "Resources": adopted}, sort_keys=False)
+        live = _parsed(
+            cfn_client.get_template(StackName=stack_name, TemplateStage="Original")["TemplateBody"]
+        )
+        if not isinstance(live, dict) or any(k.startswith("!") for k in _tags_in(live)):
+            raise DeploymentError(
+                f"Could not read the live template of stack '{stack_name}' to import into it."
+            )
+        live["Resources"] = {**(live.get("Resources") or {}), **adopted}
+        return yaml.dump(live, sort_keys=False)
 
     def protect_stack(self, cfn_client: Any, stack_name: str) -> None:
         """Turn on termination protection. Failing to do so never fails a deployment; it is reported instead."""
@@ -179,22 +286,10 @@ class CloudFormationService:
         resources_to_import: list[dict[str, Any]],
         tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
-        account_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> StackDeployReport:
         """Create a CloudFormation stack by importing pre-existing AWS resources."""
-        if dry_run:
-            audit(
-                "import",
-                f"stack:{stack_name}",
-                Outcome.SUCCEEDED,
-                f"Would create CloudFormation stack '{stack_name}' importing "
-                f"{len(resources_to_import)} existing resource(s)",
-                dry_run=True,
-            )
-            return StackDeployReport(stack_name=stack_name, action="IMPORTED", outputs={}, status="SUCCEEDED")
 
-        resolved_tags = merge_tags(org_tags, account_tags, tags)
+        resolved_tags = merge_tags(org_tags, tags)
         cfn_tags = to_cfn_tags(resolved_tags)
         change_set_name = f"import-{int(time.time())}"
 
@@ -265,9 +360,7 @@ class CloudFormationService:
                         logger.warning("Failed to apply tags to stack '%s': %s", stack_name, e)
 
             outputs = self._fetch_stack_outputs(cfn_client, stack_name)
-            return StackDeployReport(
-                stack_name=stack_name, action="IMPORTED", outputs=outputs, status="SUCCEEDED"
-            )
+            return StackDeployReport(action="IMPORTED", outputs=outputs, status="SUCCEEDED")
         except (ClientError, WaiterError) as e:
             reasons = self._change_set_failure_reason(cfn_client, stack_name, change_set_name)
             reasons = reasons or self._fetch_failure_reasons(cfn_client, stack_name)
@@ -466,26 +559,21 @@ class CloudFormationService:
     ) -> Literal["CREATED", "UPDATED", "NO_CHANGES"]:
         """Execute stack creation or update and wait for completion."""
         action: Literal["CREATED", "UPDATED", "NO_CHANGES"] = "UPDATED" if stack_exists else "CREATED"
+        request = {
+            "StackName": stack_name,
+            "TemplateBody": template_body,
+            "Parameters": cfn_params,
+            "Capabilities": ["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
+            "Tags": cfn_tags,
+        }
         try:
             if not stack_exists:
                 logger.debug("Creating CloudFormation stack '%s'...", stack_name)
-                cfn_client.create_stack(
-                    StackName=stack_name,
-                    TemplateBody=template_body,
-                    Parameters=cfn_params,
-                    Capabilities=["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
-                    Tags=cfn_tags,
-                )
+                cfn_client.create_stack(**request)
                 waiter = cfn_client.get_waiter("stack_create_complete")
             else:
                 logger.debug("Updating CloudFormation stack '%s'...", stack_name)
-                cfn_client.update_stack(
-                    StackName=stack_name,
-                    TemplateBody=template_body,
-                    Parameters=cfn_params,
-                    Capabilities=["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
-                    Tags=cfn_tags,
-                )
+                cfn_client.update_stack(**request)
                 waiter = cfn_client.get_waiter("stack_update_complete")
 
             logger.debug("Waiting for stack '%s' to complete...", stack_name)

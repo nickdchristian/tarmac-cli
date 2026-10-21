@@ -10,27 +10,6 @@ from tarmac.core.exceptions import DeploymentError
 from tarmac.services.cloudformation import CloudFormationService
 
 
-def test_cfn_deploy_stack_dry_run(tmp_path: Path):
-    template = tmp_path / "test-template.yaml"
-    template.write_text("AWSTemplateFormatVersion: '2010-09-09'\nResources: {}\n")
-
-    mock_session_mgr = MagicMock()
-    mock_cfn = MagicMock()
-
-    service = CloudFormationService(mock_session_mgr)
-    report = service.deploy_stack(
-        cfn_client=mock_cfn,
-        stack_name="my-test-stack",
-        template_file=template,
-        parameters={"Param1": "Val1"},
-        dry_run=True,
-    )
-
-    assert report.status == "SIMULATED"
-    assert report.action == "SIMULATED"
-    mock_cfn.create_stack.assert_not_called()
-
-
 def test_cfn_deploy_stack_creates_new_stack(tmp_path: Path):
     template = tmp_path / "test-template.yaml"
     template.write_text("AWSTemplateFormatVersion: '2010-09-09'\nResources: {}\n")
@@ -55,7 +34,6 @@ def test_cfn_deploy_stack_creates_new_stack(tmp_path: Path):
         stack_name="my-test-stack",
         template_file=template,
         parameters={"Key": "Value"},
-        dry_run=False,
     )
 
     assert report.status == "SUCCEEDED"
@@ -104,7 +82,6 @@ def test_cfn_deploy_stack_handles_rollback_complete(tmp_path: Path):
         stack_name="my-broken-stack",
         template_file=template,
         parameters={"Env": "Test"},
-        dry_run=False,
     )
 
     mock_cfn.delete_stack.assert_called_once_with(StackName="my-broken-stack")
@@ -149,7 +126,6 @@ def test_cfn_deploy_stack_surfaces_event_failure_causes(tmp_path: Path):
             stack_name="failing-stack",
             template_file=template,
             parameters={},
-            dry_run=False,
         )
 
     assert "Bucket already exists globally in S3" in (exc_info.value.details or "")
@@ -188,7 +164,6 @@ def test_cfn_import_resources_and_deploy_stack_omits_tags_on_import():
             }
         ],
         tags={"Environment": "production"},
-        dry_run=False,
     )
 
     mock_cfn.create_change_set.assert_called_once()
@@ -233,7 +208,6 @@ def test_cfn_import_resources_failure_raises_deployment_error():
             stack_name="failing-import-stack",
             template_body="Resources: {}",
             resources_to_import=[],
-            dry_run=False,
         )
 
     assert "Failed to import resources into stack 'failing-import-stack'" in str(exc_info.value)

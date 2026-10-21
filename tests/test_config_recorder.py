@@ -12,22 +12,24 @@ import pytest
 import yaml
 from botocore.stub import ANY, Stubber
 
-from tarmac.cli.deploy_config_recorder import (
-    config_recorder_regions,
-    deploy_config_recorder,
-    warn_if_config_recorder_missing,
-)
+from tarmac.cli.deploy_config_recorder import deploy_config_recorder
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_schema import ConfigRecorderConfig, SecurityServicesConfig
 from tarmac.core.exceptions import GovernanceError
 from tarmac.core.models import TAG_MANAGED_BY, StackDeployReport
-from tarmac.services.config_recorder import ConfigRecorderService, stack_set_name
+from tarmac.core.stack_names import Stack
+from tarmac.services.config_recorder import ConfigRecorderService
+from tarmac.services.stack_parameters import (
+    config_recorder_advice,
+    config_recorder_regions,
+    log_archive_parameters,
+)
 from tarmac.services.teardown import TeardownService
 
 ROOT = Path(__file__).resolve().parent.parent
-TEMPLATE = ROOT / "cloudformation" / "config-recorder.yaml"
+TEMPLATE = ROOT / "src/tarmac/templates/cloudformation" / "config-recorder.yaml"
 MGMT = "111111111111"
-NAME = stack_set_name("acme")
+NAME = Stack.CONFIG_RECORDER.for_org("acme")
 PARAMS = {
     "DeliveryBucketName": "acme-org-cloudtrail-logs-222222222222",
     "DeliveryKmsKeyArn": "",
@@ -85,9 +87,7 @@ def _session(**clients: Any) -> MagicMock:
 def _service(mgr: MagicMock, cfn_service: Any = None) -> ConfigRecorderService:
     cfn = cfn_service or MagicMock()
     if cfn_service is None:
-        cfn.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(
-            stack_name=a[1], action="CREATED", outputs={}
-        )
+        cfn.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(action="CREATED", outputs={})
     return ConfigRecorderService(mgr, cfn, sleep=lambda _s: None, poll_seconds=0, timeout_seconds=5)
 
 
@@ -169,9 +169,7 @@ def _setup() -> tuple[Any, Any, Any, Any]:
 def test_first_run_creates_the_stack_set_its_instances_and_the_management_stacks():
     cf, org, iam, mgr = _setup()
     cfn_service = MagicMock()
-    cfn_service.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(
-        stack_name=a[1], action="CREATED", outputs={}
-    )
+    cfn_service.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(action="CREATED", outputs={})
     with Stubber(cf) as cfs, Stubber(org) as orgs, Stubber(iam) as iams:
         cfs.add_response("activate_organizations_access", {}, {})
         _organization(org, orgs)
@@ -367,13 +365,6 @@ def test_an_operation_that_never_finishes_times_out_with_guidance():
             service._wait(cf, NAME, "op-9")
 
 
-def test_dry_run_changes_nothing():
-    mgr = _session()
-    report = _deploy(_service(mgr), ["eu-west-1"], dry_run=True)
-    assert report.stack_set_action == "UNCHANGED"
-    mgr.get_client.assert_not_called()
-
-
 def test_service_linked_role_arn_is_built_when_it_already_exists():
     iam = _client("iam")
     mgr = _session(iam=iam)
@@ -510,15 +501,11 @@ def test_regions_are_primary_first_without_repeats():
         ({"securityhub": {"enabled": False}}, False),  # nothing needs it
     ],
 )
-def test_warns_about_security_hub_without_a_recorder_only_while_unset(monkeypatch, security, warns):
-    messages: list[str] = []
-    monkeypatch.setattr("tarmac.cli.deploy_config_recorder.print_warning", messages.append)
+def test_warns_about_security_hub_without_a_recorder_only_while_unset(security, warns):
     bundle = MagicMock()
     bundle.org.security_services = SecurityServicesConfig(**security)
 
-    warn_if_config_recorder_missing(bundle)
-
-    assert bool(messages) is warns
+    assert bool(config_recorder_advice(bundle)) is warns
 
 
 def test_nothing_is_deployed_while_the_feature_is_off(monkeypatch):
@@ -669,7 +656,7 @@ def test_recorder_template_sets_the_kms_key_and_recording_frequency():
     )
 
 
-LOG_ARCHIVE = ROOT / "cloudformation" / "log-archive-hardening.yaml"
+LOG_ARCHIVE = ROOT / "src/tarmac/templates/cloudformation" / "log-archive-hardening.yaml"
 
 
 def test_config_gets_its_own_unlocked_bucket_and_cloudtrails_bucket_has_no_config_access():
@@ -725,8 +712,6 @@ def test_config_bucket_is_only_created_when_enabled_and_needs_the_management_acc
 
 @pytest.mark.parametrize(("enabled", "expected"), [(False, ("false", "")), (True, ("true", MGMT))])
 def test_log_archive_stack_parameters_turn_on_config_delivery_only_when_enabled(enabled, expected):
-    from tarmac.cli.common import log_archive_parameters
-
     params = log_archive_parameters(_bundle(config={"enabled": enabled}), "o-abc1234567", MGMT)  # type: ignore[arg-type]
 
     assert (params["EnableConfigDelivery"], params["ManagementAccountId"]) == expected
@@ -747,8 +732,11 @@ def test_destroy_empties_and_deletes_the_config_bucket_with_the_other_log_bucket
         bundle, "eu-west-1", dry_run=True, account_id_map={"log-archive": "222222222222"}
     )
 
-    assert "acme-org-config-logs-222222222222" in {
-        i.resource_name for i in items if i.resource_type == "S3 Bucket"
+    # Exactly the buckets log-archive-hardening.yaml creates, and never one named from the retired bucket_prefix.
+    assert {i.resource_name for i in items if i.resource_type == "S3 Bucket"} == {
+        "acme-log-archive-access-logs-222222222222",
+        "acme-org-cloudtrail-logs-222222222222",
+        "acme-org-config-logs-222222222222",
     }
 
 

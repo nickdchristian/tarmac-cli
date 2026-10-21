@@ -12,7 +12,6 @@ from tarmac.core.exceptions import AccountProvisioningError, OUManagementError
 from tarmac.services.accounts import AccountService
 from tarmac.services.organization import OrganizationService
 from tarmac.services.ou import OUService
-from tarmac.services.scp import SCPService
 
 
 def _events(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
@@ -60,49 +59,6 @@ def test_ou_create_failure_is_audited(caplog, mgr, client):
     assert "Sec" in ev["resource"]
 
 
-def test_scp_create_update_attach_and_dry_run_are_audited(caplog, mgr, client):
-    caplog.set_level(logging.INFO, logger="tarmac.audit")
-    client.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-1"}}}
-    svc = SCPService(mgr)
-
-    svc.sync_policy("Guard", "d", "{}", {}, dry_run=False)
-    svc.sync_policy("Guard2", "d", "{}", {}, dry_run=True)
-    svc.attach_policy_if_needed("p-1", "r-1", "Root", [], dry_run=False)
-    svc.attach_policy_if_needed("p-1", "r-1", "Root", [], dry_run=True)
-
-    got = [(e["action"], e["outcome"], e["dry_run"]) for e in _events(caplog)]
-    assert got == [
-        ("create", "succeeded", False),
-        ("create", "simulated", True),
-        ("attach", "succeeded", False),
-        ("attach", "simulated", True),
-    ]
-
-
-def test_scp_update_is_audited(caplog, mgr, client):
-    caplog.set_level(logging.INFO, logger="tarmac.audit")
-    svc = SCPService(mgr)
-    svc.get_policy_content = MagicMock(return_value='{"a": 1}')  # type: ignore[method-assign]
-    svc._ensure_ownership_tag = MagicMock()  # type: ignore[method-assign]
-    svc.is_tarmac_managed = MagicMock(return_value=True)  # type: ignore[method-assign]
-
-    svc.sync_policy("Guard", "d", '{"a": 2}', {"Guard": {"Id": "p-7"}})
-
-    [ev] = _events(caplog)
-    assert (ev["action"], ev["resource"]) == ("update", "scp:Guard")
-    assert ev["details"]["policy_id"] == "p-7"
-
-
-def test_unchanged_scp_emits_no_audit_event(caplog, mgr):
-    caplog.set_level(logging.INFO, logger="tarmac.audit")
-    svc = SCPService(mgr)
-    svc.get_policy_content = MagicMock(return_value='{"a": 1}')  # type: ignore[method-assign]
-
-    svc.sync_policy("Guard", "d", '{"a": 1}', {"Guard": {"Id": "p-7"}})
-
-    assert _events(caplog) == []
-
-
 def test_organization_changes_are_audited(caplog, mgr, client):
     caplog.set_level(logging.INFO, logger="tarmac.audit")
     client.create_organization.return_value = {"Organization": {"Id": "o-abc"}}
@@ -145,13 +101,11 @@ def test_account_move_tag_create_close_are_audited(caplog, mgr, client):
 
     svc.move_account_if_needed("111122223333", "dev", "ou-2")
     svc.sync_account_tags("111122223333", "dev", {"Env": "dev"})
-    svc.sync_account_tags("111122223333", "dev", {"Env": "qa"}, dry_run=True)
     svc.suspend_account("111122223333", "dev", "ou-s", close=True)
 
     actions = [(e["action"], e["outcome"]) for e in _events(caplog)]
     assert ("move", "succeeded") in actions
     assert ("tag", "succeeded") in actions
-    assert ("tag", "simulated") in actions
     assert ("close", "succeeded") in actions
 
 
@@ -168,7 +122,7 @@ def test_account_close_and_move_failures_are_audited(caplog, mgr, client):
     assert (ev["action"], ev["outcome"]) == ("move", "failed")
 
 
-def test_account_create_dry_run_and_request_are_audited(caplog, mgr, client):
+def test_account_create_request_is_audited(caplog, mgr, client):
     from tarmac.core.config_schema import AccountDef
 
     caplog.set_level(logging.INFO, logger="tarmac.audit")
@@ -178,11 +132,10 @@ def test_account_create_dry_run_and_request_are_audited(caplog, mgr, client):
     acct = AccountDef(name="dev", email="dev@acme-corp.io", ou="Workloads")
     svc._poll_pending_creations = MagicMock()  # type: ignore[method-assign]
 
-    svc.provision_accounts([acct], {"Workloads": "ou-1"}, dry_run=True)
-    svc.provision_accounts([acct], {"Workloads": "ou-1"}, dry_run=False)
+    svc.provision_accounts([acct], {"Workloads": "ou-1"})
 
     got = [(e["action"], e["outcome"]) for e in _events(caplog) if e["action"] == "create"]
-    assert got == [("create", "simulated"), ("create", "succeeded")]
+    assert got == [("create", "succeeded")]
 
 
 def test_deploy_binds_the_phase_name_while_a_phase_runs(tmp_path):
@@ -191,7 +144,7 @@ def test_deploy_binds_the_phase_name_while_a_phase_runs(tmp_path):
     from helpers import make_config
     from typer.testing import CliRunner
 
-    from tarmac.cli.deploy import app
+    from tarmac.cli.main import app
     from tarmac.core.logging import current_context
 
     seen: list[str | None] = []
@@ -203,7 +156,7 @@ def test_deploy_binds_the_phase_name_while_a_phase_runs(tmp_path):
             side_effect=lambda *a, **k: seen.append(current_context().get("phase")),
         ),
     ):
-        res = CliRunner().invoke(app, ["run", "--yes", "--phase", "1", "-c", str(cfg)])
+        res = CliRunner().invoke(app, ["deploy", "--yes", "--phase", "1", "-c", str(cfg)])
 
     assert res.exit_code == 0, res.output
     assert seen == ["organization"]

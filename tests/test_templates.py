@@ -8,7 +8,6 @@ import yaml
 from tarmac.core.exceptions import ConfigurationError
 from tarmac.core.templates import (
     export_bundled_templates,
-    read_resource_text,
     resolve_resource_path,
 )
 from tarmac.services.scaffold import scaffold_project
@@ -44,9 +43,6 @@ def test_resolve_resource_path_local_override(tmp_path: Path):
 
     resolved = resolve_resource_path("cloudformation/organization-cloudtrail.yaml", project_root=tmp_path)
     assert resolved == custom_file
-    assert read_resource_text("cloudformation/organization-cloudtrail.yaml", project_root=tmp_path) == (
-        "AWSTemplateFormatVersion: '2010-09-09'\nDescription: Custom"
-    )
 
 
 def test_resolve_resource_path_not_found(tmp_path: Path):
@@ -194,8 +190,8 @@ def test_bundled_scp_policies_are_valid_json_and_under_size_limit():
         assert len(data["Statement"]) > 0, f"Policy {rel_path} has empty Statement"
 
 
-def test_template_parity_and_export_consistency():
-    """Verify 100% parity between root and packaged templates, and consistent stack exports."""
+def test_template_exports_are_stack_prefixed():
+    """Every template output is exported under a name prefixed with the stack name."""
 
     import yaml
 
@@ -221,19 +217,10 @@ def test_template_parity_and_export_consistency():
         "terraform-backend.yaml",
     ]
 
-    root_dir = Path(__file__).resolve().parent.parent / "cloudformation"
     pkg_dir = Path(__file__).resolve().parent.parent / "src" / "tarmac" / "templates" / "cloudformation"
 
     for name in template_names:
-        root_file = root_dir / name
-        pkg_file = pkg_dir / name
-        assert root_file.exists(), f"Missing root template: {root_file}"
-        assert pkg_file.exists(), f"Missing packaged template: {pkg_file}"
-        assert root_file.read_text(encoding="utf-8") == pkg_file.read_text(encoding="utf-8"), (
-            f"Templates out of sync: {name}"
-        )
-
-        content = yaml.load(root_file.read_text(encoding="utf-8"), Loader=CfnYamlLoader)
+        content = yaml.load((pkg_dir / name).read_text(encoding="utf-8"), Loader=CfnYamlLoader)
         outputs = content.get("Outputs", {})
         assert outputs, f"Template {name} should declare Outputs"
         for out_name, out_spec in outputs.items():
@@ -244,30 +231,14 @@ def test_template_parity_and_export_consistency():
                 f"Output {out_name} export name '{sub_str}' in {name} not prefixed with '${{AWS::StackName}}-'"
             )
 
-    # Specific assertion for terraform-backend OrgName support
     tf_content = yaml.load(
-        (root_dir / "terraform-backend.yaml").read_text(encoding="utf-8"), Loader=CfnYamlLoader
+        (pkg_dir / "terraform-backend.yaml").read_text(encoding="utf-8"), Loader=CfnYamlLoader
     )
     assert "OrgName" in tf_content["Parameters"]
     assert "HasOrgName" in tf_content["Conditions"]
 
 
-def test_scp_policy_parity():
-    """Verify 100% parity between root policies/scp and packaged src/tarmac/templates/policies/scp."""
-    root_scp_dir = Path(__file__).resolve().parent.parent / "policies" / "scp"
-    pkg_scp_dir = Path(__file__).resolve().parent.parent / "src" / "tarmac" / "templates" / "policies" / "scp"
-
-    root_files = {p.name for p in root_scp_dir.glob("*.json")}
-    pkg_files = {p.name for p in pkg_scp_dir.glob("*.json")}
-    assert root_files == pkg_files, f"SCP file sets differ: {root_files} vs {pkg_files}"
-
-    for filename in root_files:
-        root_text = (root_scp_dir / filename).read_text(encoding="utf-8")
-        pkg_text = (pkg_scp_dir / filename).read_text(encoding="utf-8")
-        assert root_text == pkg_text, f"SCP policy content mismatch for {filename}"
-
-
-@pytest.mark.parametrize("base", ["cloudformation", "src/tarmac/templates/cloudformation"])
+@pytest.mark.parametrize("base", ["src/tarmac/templates/cloudformation"])
 def test_log_archive_template_hardening(base: str):
     root = Path(__file__).resolve().parents[1]
 
@@ -326,16 +297,6 @@ def _denied_actions(policy_name: str) -> set[str]:
 def test_shipped_scps_deny_leaving_the_organization_and_closing_accounts(policy_name: str):
     """AWS recommends denying both so member accounts cannot leave or close without management approval."""
     assert {"organizations:LeaveOrganization", "account:CloseAccount"} <= _denied_actions(policy_name)
-
-
-def test_bundled_scps_match_the_repository_copies():
-
-    import tarmac
-
-    repo_policies = Path(__file__).resolve().parents[1] / "policies" / "scp"
-    bundled = Path(tarmac.__file__).parent / "templates" / "policies" / "scp"
-    for f in sorted(repo_policies.glob("*.json")):
-        assert (bundled / f.name).read_text() == f.read_text(), f.name
 
 
 def test_example_config_is_not_rewritten_by_tests(project_root: Path):
@@ -407,7 +368,7 @@ def test_example_security_services_scp_blocks_disabling_but_not_configuring():
     assert "TarmacDeploymentRole" in exempt
 
 
-@pytest.mark.parametrize("base", ["cloudformation", "src/tarmac/templates/cloudformation"])
+@pytest.mark.parametrize("base", ["src/tarmac/templates/cloudformation"])
 def test_terraform_state_bucket_name_does_not_change(base: str):
     """Renaming the bucket makes CloudFormation replace it, leaving Terraform pointed at an empty bucket."""
 

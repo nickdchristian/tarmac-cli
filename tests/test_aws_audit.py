@@ -148,7 +148,7 @@ def test_secrets_in_parameters_are_redacted(info_log: Path):
     assert "Sup3rSecret" not in json.dumps(record)
 
 
-def test_dry_run_flags_state_changing_calls_but_not_reads_or_change_sets(info_log: Path):
+def test_dry_run_flags_every_state_changing_call_but_not_reads(info_log: Path):
     orgs = _client("organizations")
     cfn = _client("cloudformation")
     with Stubber(orgs) as org_stub, Stubber(cfn) as cfn_stub, bind(dry_run=True):
@@ -161,10 +161,9 @@ def test_dry_run_flags_state_changing_calls_but_not_reads_or_change_sets(info_lo
 
     records = _records(info_log)
     violations = [r for r in records if r["event"] == "dry_run_violation"]
-    assert len(violations) == 1
-    assert violations[0]["level"] == "ERROR"
-    assert violations[0]["data"]["operation"] == "CreatePolicy"
-    assert [r["data"]["operation"] for r in records if r["event"] == "aws_call"] == ["CreateChangeSet"]
+    assert [v["data"]["operation"] for v in violations] == ["CreatePolicy", "CreateChangeSet"]
+    assert {v["level"] for v in violations} == {"ERROR"}
+    assert [r for r in records if r["event"] == "aws_call"] == []
 
 
 def test_summarize_params_caps_size_and_redacts_nested_secrets():
@@ -193,11 +192,10 @@ def test_hook_failures_never_break_the_aws_call(info_log: Path):
         )
 
 
-def test_plan_and_dry_run_arguments_enable_the_guard():
-    for argv in (["run", "--dry-run"], ["org", "scp", "plan"]):
-        run = start_run("x", "0", argv)
-        assert current_context().get("dry_run") is True
-        run.finish(None)
+def test_the_dry_run_argument_enables_the_guard():
+    run = start_run("x", "0", ["deploy", "--dry-run"])
+    assert current_context().get("dry_run") is True
+    run.finish(None)
     run = start_run("x", "0", ["run", "--yes"])
     assert "dry_run" not in current_context()
     run.finish(None)

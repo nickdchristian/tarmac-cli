@@ -11,10 +11,12 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
+from ..core.org_accounts import get_active_account_id_map
 from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
 
+STACK = "CloudFormation Stack"
 
 _ACTION_OUTCOMES = {
     "DELETED": Outcome.SUCCEEDED,
@@ -132,17 +134,7 @@ class TeardownBase:
         """Fetch all ACTIVE accounts in the organization as {AccountName: AccountId}."""
         if not self._has_credentials():
             return {}
-        org_client = self.session_mgr.get_client("organizations")
-        accts: dict[str, str] = {}
-        try:
-            paginator = org_client.get_paginator("list_accounts")
-            for page in paginator.paginate():
-                for a in page.get("Accounts", []):
-                    if isinstance(a, dict) and a.get("Status") in ("ACTIVE", None):
-                        accts[a["Name"]] = str(a["Id"])
-        except AWS_ERRORS as e:
-            logger.debug("Could not query active accounts: %s", e)
-        return accts
+        return get_active_account_id_map(self.session_mgr)
 
     def _get_management_account_id(self) -> str:
         """Resolve current management account ID."""
@@ -152,6 +144,39 @@ class TeardownBase:
             return str(self.session_mgr.get_caller_identity().get("Account", ""))
         except AWS_ERRORS:
             return ""
+
+    def _remove_stack(
+        self,
+        cfn_client: Any,
+        stack_name: str,
+        status: str | None,
+        account_name: str,
+        account_id: str,
+        dry_run: bool,
+        *,
+        would: str,
+        deleted: str,
+        missing: str | None = "Stack does not exist",
+        release_protection: bool = False,
+        noun: str = "CloudFormation stack",
+    ) -> TeardownItemReport | None:
+        """Delete (or simulate deleting) a stack whose ``status`` was already looked up, and report it.
+
+        ``would`` gets the status appended for the dry-run message. A missing stack is reported as NOT_FOUND
+        with ``missing``, or not at all when ``missing`` is None. AWS errors propagate to the caller.
+        """
+        if not status or status == "DELETE_COMPLETE":
+            if missing is None:
+                return None
+            return TeardownItemReport(STACK, stack_name, account_name, account_id, "NOT_FOUND", missing)
+        if dry_run:
+            return TeardownItemReport(
+                STACK, stack_name, account_name, account_id, "SIMULATED", f"{would} (status: {status})"
+            )
+        self._notify_progress(f"Deleting {noun} '{stack_name}' in {account_name} (waiting for AWS)...")
+        protection: dict[str, bool] = {"release_protection": True} if release_protection else {}
+        self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress, **protection)
+        return TeardownItemReport(STACK, stack_name, account_name, account_id, "DELETED", deleted)
 
     def _delete_retained_bucket(
         self, s3_client: Any, bucket: str, account_name: str, account_id: str

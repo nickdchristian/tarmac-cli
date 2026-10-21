@@ -77,10 +77,9 @@ def test_setup_account_budget_creates_stack():
         notification_emails=["test@example.com"],
     )
 
-    report = baseliner.setup_account_budget("123456789012", "ProdAccount", budget_cfg, dry_run=False)
+    report = baseliner.setup_account_budget("123456789012", "ProdAccount", budget_cfg)
 
     assert report.status == "CREATED"
-    assert report.limit_usd == 100.0
     mock_cfn.create_stack.assert_called_once()
     call_kwargs = mock_cfn.create_stack.call_args[1]
     assert call_kwargs["StackName"] == "ProdAccount-monthly-budget"
@@ -104,7 +103,7 @@ def test_forecast_alert_parameter_follows_the_configured_value(forecast, expecte
         monthly_limit_usd=100.0, notification_emails=["a@b.co"], forecast_alert_threshold_percent=forecast
     )
 
-    BaselineService(mgr).setup_account_budget("123456789012", "ProdAccount", cfg, dry_run=False)
+    BaselineService(mgr).setup_account_budget("123456789012", "ProdAccount", cfg)
 
     params = {p["ParameterKey"]: p["ParameterValue"] for p in cfn.create_stack.call_args[1]["Parameters"]}
     assert params.get("ForecastThresholdPercent") == expected
@@ -123,7 +122,11 @@ def test_budget_template_adds_the_forecast_notification_only_when_asked():
     import yaml
 
     template = yaml.load(
-        (Path(__file__).resolve().parent.parent / "cloudformation" / "account-budget.yaml").read_text(),
+        (
+            Path(__file__).resolve().parent.parent
+            / "src/tarmac/templates/cloudformation"
+            / "account-budget.yaml"
+        ).read_text(),
         Loader=CfnLoader,
     )
     assert template["Parameters"]["ForecastThresholdPercent"]["Default"] == 0
@@ -153,7 +156,7 @@ def test_budget_template_adds_the_forecast_notification_only_when_asked():
         notification_emails=emails,  # pyright: ignore[reportArgumentType]
     )
 
-    report = baseliner.setup_account_budget("123456789012", "CoreApp", budget_cfg, dry_run=False)
+    report = baseliner.setup_account_budget("123456789012", "CoreApp", budget_cfg)
     assert report.status == "CREATED"
     call_kwargs = mock_cfn.create_stack.call_args[1]
     param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
@@ -177,7 +180,7 @@ def test_setup_account_budget_updates_stack():
         notification_emails=["alert@example.com"],
     )
 
-    report = baseliner.setup_account_budget("123456789012", "ProdAccount", budget_cfg, dry_run=False)
+    report = baseliner.setup_account_budget("123456789012", "ProdAccount", budget_cfg)
 
     assert report.status == "UPDATED"
     mock_cfn.update_stack.assert_called_once()
@@ -216,7 +219,7 @@ def test_setup_account_budget_cleans_up_orphan_unmanaged_budget():
         notification_emails=["test@example.com"],
     )
 
-    report = baseliner.setup_account_budget("123456789012", "ProdAccount", budget_cfg, dry_run=False)
+    report = baseliner.setup_account_budget("123456789012", "ProdAccount", budget_cfg)
 
     assert report.status == "CREATED"
     mock_budgets.delete_budget.assert_called_once_with(
@@ -252,26 +255,11 @@ def test_replaced_budget_definition_is_recorded_in_the_audit_log(caplog):
     }
     cfg = BudgetConfig(monthly_limit_usd=100.0, alert_threshold_percent=80.0, notification_emails=["a@b.co"])
 
-    BaselineService(mock_session_mgr).setup_account_budget("123456789012", "ProdAccount", cfg, dry_run=False)
+    BaselineService(mock_session_mgr).setup_account_budget("123456789012", "ProdAccount", cfg)
 
     deleted = next(r.data for r in caplog.records if getattr(r, "data", {}).get("action") == "delete")
     assert deleted["details"]["previous_limit"] == "250.0 USD"
     assert deleted["details"]["previous_time_unit"] == "MONTHLY"
-
-
-def test_setup_account_budget_dry_run():
-    mock_session_mgr = MagicMock()
-    baseliner = BaselineService(mock_session_mgr)
-    budget_cfg = BudgetConfig(
-        monthly_limit_usd=100.0,
-        alert_threshold_percent=80.0,
-        notification_emails=["test@example.com"],
-    )
-
-    report = baseliner.setup_account_budget("123456789012", "ProdAccount", budget_cfg, dry_run=True)
-
-    assert report.status == "SIMULATED"
-    mock_session_mgr.get_member_client.assert_not_called()
 
 
 def test_setup_account_budget_with_webhook_only():
@@ -293,7 +281,7 @@ def test_setup_account_budget_with_webhook_only():
         incident_response_webhook_url="https://events.pagerduty.com/integration/test",
     )
 
-    report = baseliner.setup_account_budget("123456789012", "OpsAccount", budget_cfg, dry_run=False)
+    report = baseliner.setup_account_budget("123456789012", "OpsAccount", budget_cfg)
     assert report.status == "CREATED"
     call_kwargs = mock_cfn.create_stack.call_args[1]
     param_dict = {p["ParameterKey"]: p["ParameterValue"] for p in call_kwargs["Parameters"]}
@@ -308,7 +296,7 @@ def test_setup_account_budget_skipped_when_no_subscribers():
         monthly_limit_usd=100.0,
     )
 
-    report = baseliner.setup_account_budget("123456789012", "EmptyAccount", budget_cfg, dry_run=False)
+    report = baseliner.setup_account_budget("123456789012", "EmptyAccount", budget_cfg)
     assert report.status == "SKIPPED"
     assert report.message == "No notification emails or incident response webhook specified."
     mock_session_mgr.get_member_client.assert_not_called()
@@ -338,7 +326,6 @@ def test_setup_cost_anomaly_monitor():
     report = baseliner.setup_cost_anomaly_monitor("123456789012", "ProdAccount", anomaly_cfg)
 
     assert report.status == "CREATED"
-    assert report.monitor_name == "ProdAccount-cost-anomaly-monitor"
     mock_ce.create_anomaly_monitor.assert_called_once()
     call_args = mock_ce.create_anomaly_monitor.call_args[1]
     monitor_spec = call_args["AnomalyMonitor"]["MonitorSpecification"]
@@ -572,7 +559,7 @@ def test_setup_account_budget_subscribes_additional_emails():
         notification_emails=["first@example.com", "second@example.com", "third@example.com"],
     )
 
-    report = baseliner.setup_account_budget("123456789012", "Prod", budget_cfg, dry_run=False)
+    report = baseliner.setup_account_budget("123456789012", "Prod", budget_cfg)
     assert report.status == "CREATED"
     assert mock_sns.subscribe.call_count == 2
     subscribed_endpoints = [c.kwargs["Endpoint"] for c in mock_sns.subscribe.call_args_list]
@@ -670,8 +657,7 @@ def test_baseline_account_not_marked_complete_when_a_region_errors():
     org.tag_resource.assert_not_called()  # not marked tarmac:baseline=completed, so it is retried next run
 
 
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_cleanup_default_vpc_in_use_is_left_intact(dry_run: bool):
+def test_cleanup_default_vpc_in_use_is_left_intact():
     """A default VPC with network interfaces must not lose its internet gateway or subnets."""
     mgr = MagicMock()
     ec2 = MagicMock()
@@ -679,9 +665,7 @@ def test_cleanup_default_vpc_in_use_is_left_intact(dry_run: bool):
     ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-busy"}]}
     ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": [{"NetworkInterfaceId": "eni-1"}]}
 
-    reports = BaselineService(mgr).cleanup_default_vpcs(
-        "123456789012", "TestAccount", regions=["eu-west-1"], dry_run=dry_run
-    )
+    reports = BaselineService(mgr).cleanup_default_vpcs("123456789012", "TestAccount", regions=["eu-west-1"])
 
     assert reports[0].skipped is True
     assert reports[0].vpc_id is None
@@ -708,7 +692,7 @@ def test_existing_budget_is_not_deleted_without_adopt_existing():
     }
     cfg = BudgetConfig(monthly_limit_usd=100.0, notification_emails=["a@b.co"])
 
-    report = BaselineService(mgr).setup_account_budget("123456789012", "ProdAccount", cfg, dry_run=False)
+    report = BaselineService(mgr).setup_account_budget("123456789012", "ProdAccount", cfg)
 
     assert report.status == "FAILED"
     assert "tarmac did not create it" in report.message

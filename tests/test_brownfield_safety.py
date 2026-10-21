@@ -174,6 +174,6 @@ def test_account_with_sample_email_is_never_created():
     accounts = [AccountDef(name="Prod", email="prod@myorg.example.com", ou="Production")]
 
     with pytest.raises(Exception, match="sample email"):
-        service.provision_accounts(accounts, {"Production": "ou-prod"}, dry_run=False)
+        service.provision_accounts(accounts, {"Production": "ou-prod"})
 
     org.create_account.assert_not_called()

@@ -63,8 +63,6 @@ class SecurityHubCentralConfiguration:
         policy_id = self._ensure_policy()
         self._ensure_association(policy_id)
 
-    # -- central mode ---------------------------------------------------------------------------------------
-
     def _require_no_local_members(self) -> None:
         """Switching to central configuration makes the policy authoritative for member accounts.
 
@@ -86,7 +84,7 @@ class SecurityHubCentralConfiguration:
             )
 
     def _enable_central_mode(self) -> None:
-        if self._configuration_type() != "CENTRAL":
+        if self._configuration().get("ConfigurationType") != "CENTRAL":
             self._require_no_local_members()
             self.sh.update_organization_configuration(
                 AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
@@ -100,12 +98,7 @@ class SecurityHubCentralConfiguration:
         self._wait_until_enabled()
 
     def _configuration(self) -> dict[str, Any]:
-        resp = self.sh.describe_organization_configuration()
-        config = resp.get("OrganizationConfiguration", {}) if isinstance(resp, dict) else {}
-        return config if isinstance(config, dict) else {}
-
-    def _configuration_type(self) -> str:
-        return str(self._configuration().get("ConfigurationType", "LOCAL"))
+        return self.sh.describe_organization_configuration()["OrganizationConfiguration"]
 
     def _wait_until_enabled(self) -> None:
         waited = 0.0
@@ -126,8 +119,6 @@ class SecurityHubCentralConfiguration:
                 )
             self._sleep(5.0)
             waited += 5.0
-
-    # -- policy ---------------------------------------------------------------------------------------------
 
     def _desired_policy(self) -> dict[str, Any]:
         available = self.sh.describe_standards().get("Standards", [])
@@ -195,8 +186,6 @@ class SecurityHubCentralConfiguration:
             policy_id=policy_id,
         )
         return policy_id
-
-    # -- association ----------------------------------------------------------------------------------------
 
     def _current_association(self) -> dict[str, Any]:
         try:

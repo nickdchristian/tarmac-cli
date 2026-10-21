@@ -17,8 +17,9 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
 from ..core.exceptions import GovernanceError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
-from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
+from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class SCPService:
                         return True
         return False
 
-    def ensure_scp_enabled(self, root_id: str, max_wait_seconds: int = 60) -> bool:
+    def ensure_scp_enabled(self, root_id: str) -> bool:
         """Enable SERVICE_CONTROL_POLICY policy type on the organization root if needed."""
         if self._is_scp_enabled_on_root(root_id):
             logger.debug("SCPs are already enabled on root %s", root_id)
@@ -61,7 +62,7 @@ class SCPService:
                 raise GovernanceError("Failed to enable Service Control Policies", details=str(e)) from e
 
         start_time = time.time()
-        while time.time() - start_time < max_wait_seconds:
+        while time.time() - start_time < 60:
             if self._is_scp_enabled_on_root(root_id):
                 logger.debug("SERVICE_CONTROL_POLICY is now ENABLED on root %s", root_id)
                 return True
@@ -124,15 +125,6 @@ class SCPService:
         except ValueError:
             return content.strip()
 
-    def _ensure_ownership_tag(self, policy_id: str) -> None:
-        """Best-effort: stamp an existing policy that tarmac manages with the ownership tag."""
-        try:
-            self.org_client.tag_resource(
-                ResourceId=policy_id, Tags=[{"Key": TAG_MANAGED_BY, "Value": "tarmac"}]
-            )
-        except ClientError as e:
-            logger.warning("Could not tag policy %s: %s", policy_id, e)
-
     def require_adoptable(
         self, name: str, policy_id: str, normalized_current: str, normalized_new: str
     ) -> None:
@@ -160,149 +152,6 @@ class SCPService:
 
         return f"Live statements: {sids(normalized_current) or 'unreadable'}; policy file statements: {sids(normalized_new)}."
 
-    def sync_policy(
-        self,
-        name: str,
-        description: str,
-        content: str,
-        existing_scps: dict[str, dict[str, Any]],
-        dry_run: bool = False,
-    ) -> tuple[str, str]:
-        """Create or update SCP document. Returns (policy_id, action_taken)."""
-        normalized_new = self._normalize_json(content)
-
-        if name in existing_scps:
-            pol_id = existing_scps[name]["Id"]
-            current_content = self.get_policy_content(pol_id)
-            normalized_current = self._normalize_json(current_content)
-
-            if normalized_new == normalized_current:
-                logger.debug("SCP '%s' (%s) is up-to-date.", name, pol_id)
-                return pol_id, "NOOP"
-
-            self.require_adoptable(name, pol_id, normalized_current, normalized_new)
-
-            if dry_run:
-                audit(
-                    "update",
-                    f"scp:{name}",
-                    Outcome.SUCCEEDED,
-                    f"Would update service control policy '{name}' ({pol_id}); content differs from AWS",
-                    dry_run=True,
-                    policy_id=pol_id,
-                )
-                return pol_id, "SIMULATED_UPDATE"
-
-            try:
-                self.org_client.update_policy(
-                    PolicyId=pol_id,
-                    Name=name,
-                    Description=description,
-                    Content=content,
-                )
-                audit(
-                    "update",
-                    f"scp:{name}",
-                    Outcome.SUCCEEDED,
-                    f"Updated service control policy '{name}' ({pol_id}) to match the policy file",
-                    policy_id=pol_id,
-                )
-                self._ensure_ownership_tag(pol_id)
-                return pol_id, "UPDATED"
-            except ClientError as e:
-                raise GovernanceError(f"Failed to update SCP '{name}'", details=str(e)) from e
-
-        if dry_run:
-            audit(
-                "create",
-                f"scp:{name}",
-                Outcome.SUCCEEDED,
-                f"Would create service control policy '{name}'",
-                dry_run=True,
-            )
-            return "DRY-RUN-POLICY-ID", "SIMULATED_CREATE"
-
-        try:
-            resp = self.org_client.create_policy(
-                Name=name,
-                Description=description,
-                Type="SERVICE_CONTROL_POLICY",
-                Content=content,
-                Tags=[{"Key": TAG_MANAGED_BY, "Value": "tarmac"}],
-            )
-            new_id = resp["Policy"]["PolicySummary"]["Id"]
-            audit(
-                "create",
-                f"scp:{name}",
-                Outcome.SUCCEEDED,
-                f"Created service control policy '{name}' ({new_id})",
-                policy_id=new_id,
-            )
-            return new_id, "CREATED"
-        except ClientError as e:
-            raise GovernanceError(f"Failed to create SCP '{name}'", details=str(e)) from e
-
-    def attach_policy_if_needed(
-        self,
-        policy_id: str,
-        target_id: str,
-        target_name: str,
-        attached_targets: list[str],
-        dry_run: bool = False,
-        retries: int = 5,
-        delay: float = 2.0,
-    ) -> bool:
-        """Attach policy to target if not already attached. Returns True if attached."""
-        if target_id in attached_targets:
-            logger.debug("Policy %s already attached to target '%s' (%s)", policy_id, target_name, target_id)
-            return False
-
-        if dry_run:
-            audit(
-                "attach",
-                f"scp:{policy_id}->{target_id}",
-                Outcome.SUCCEEDED,
-                f"Would attach policy {policy_id} to '{target_name}' ({target_id})",
-                dry_run=True,
-                policy_id=policy_id,
-                target_id=target_id,
-            )
-            return True
-
-        for attempt in range(retries):
-            try:
-                self.org_client.attach_policy(PolicyId=policy_id, TargetId=target_id)
-                audit(
-                    "attach",
-                    f"scp:{policy_id}->{target_id}",
-                    Outcome.SUCCEEDED,
-                    f"Attached policy {policy_id} to '{target_name}' ({target_id})",
-                    policy_id=policy_id,
-                    target_id=target_id,
-                )
-                return True
-            except ClientError as e:
-                code = aws_error_code(e)
-                if code == "PolicyTypeNotEnabledException" and attempt < retries - 1:
-                    logger.warning(
-                        "Policy type not yet active on %s (%s). Retrying in %.1fs... (attempt %d/%d)",
-                        target_name,
-                        target_id,
-                        delay,
-                        attempt + 1,
-                        retries,
-                    )
-                    time.sleep(delay)
-                    continue
-                if code == "DuplicatePolicyAttachmentException":
-                    logger.debug("Policy %s already attached to %s", policy_id, target_name)
-                    return False
-                raise GovernanceError(
-                    f"Failed to attach policy {policy_id} to {target_name} ({target_id})",
-                    details=str(e),
-                ) from e
-        return False
-
     def _resolve_target_id(self, target: str, root_id: str, ou_map: dict[str, str]) -> tuple[str, str] | None:
         """Resolve target string ('root' or OU name) to (target_id, target_name)."""
         if target.lower() in ["root", "organization_root"]:
@@ -313,75 +162,6 @@ class SCPService:
             if k.lower() == target.lower():
                 return v, k
         return None
-
-    def reconcile_scp(
-        self,
-        scp_def: SCPDef,
-        existing_scps: dict[str, dict[str, Any]],
-        root_id: str,
-        ou_map: dict[str, str],
-        project_root: Path,
-        dry_run: bool = False,
-    ) -> SCPReconciliationResult:
-        """Reconcile a single declared SCP and its target attachments."""
-        policy_path = resolve_resource_path(scp_def.policy_file, project_root=project_root)
-        content = policy_path.read_text(encoding="utf-8")
-        policy_id, action = self.sync_policy(
-            scp_def.name, scp_def.description, content, existing_scps, dry_run=dry_run
-        )
-
-        attached_now: list[str] = []
-        newly_attached: list[str] = []
-        unresolved: list[str] = []
-
-        live_targets = self.list_targets_for_policy(policy_id) if policy_id != "DRY-RUN-POLICY-ID" else []
-
-        for target in scp_def.targets:
-            resolved = self._resolve_target_id(target, root_id, ou_map)
-            if not resolved:
-                logger.warning("Target '%s' not found in Root or OUs for policy %s", target, scp_def.name)
-                unresolved.append(target)
-                continue
-            tid, tname = resolved
-            attached_now.append(f"{tname} ({tid})")
-            was_new = self.attach_policy_if_needed(policy_id, tid, tname, live_targets, dry_run=dry_run)
-            if was_new:
-                newly_attached.append(tname)
-
-        return SCPReconciliationResult(
-            name=scp_def.name,
-            policy_id=policy_id,
-            action_taken=action,
-            attached_targets=attached_now,
-            newly_attached_targets=newly_attached,
-            status="FAILED" if unresolved else "SUCCEEDED",
-            unresolved_targets=unresolved,
-        )
-
-    def reconcile_all(
-        self,
-        config: ServiceControlPoliciesConfig,
-        root_id: str,
-        ou_map: dict[str, str],
-        project_root: Path,
-        dry_run: bool = False,
-    ) -> list[SCPReconciliationResult]:
-        """Reconcile all declared SCPs in order."""
-        if not config.enabled:
-            logger.info("Service Control Policies are disabled in configuration.")
-            return []
-
-        if not dry_run:
-            self.ensure_scp_enabled(root_id)
-
-        existing_scps = self.list_existing_scps()
-        results: list[SCPReconciliationResult] = []
-
-        for scp_def in config.policies:
-            res = self.reconcile_scp(scp_def, existing_scps, root_id, ou_map, project_root, dry_run=dry_run)
-            results.append(res)
-
-        return results
 
     @staticmethod
     def _logical_ids_for_policies(policies: list[SCPDef]) -> dict[str, str]:
@@ -483,110 +263,65 @@ class SCPService:
         org_name: str = "organization",
         org_tags: dict[str, str] | None = None,
         tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> list[SCPReconciliationResult]:
         """Reconcile all declared SCPs natively via a single CloudFormation stack."""
         if not config.enabled or not config.policies:
             logger.info("No Service Control Policies declared or enabled.")
             return []
 
-        if not dry_run:
-            self.ensure_scp_enabled(root_id)
+        self.ensure_scp_enabled(root_id)
 
         logical_ids = self._logical_ids_for_policies(config.policies)
         template_dict = self.synthesize_template(config, root_id, ou_map, project_root)
         template_body = yaml.dump(template_dict, sort_keys=False)
 
         outputs_dir = project_root / "outputs"
-        if not dry_run:
-            outputs_dir.mkdir(parents=True, exist_ok=True)
-            (outputs_dir / "managed-scps.yaml").write_text(template_body, encoding="utf-8")
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        (outputs_dir / "managed-scps.yaml").write_text(template_body, encoding="utf-8")
 
-        stack_name = f"{org_name}-organization-scps"
+        stack_name = Stack.ORGANIZATION_SCPS.for_org(org_name)
         cfn_client = self.session_mgr.get_client("cloudformation")
         cfn_service = CloudFormationService(self.session_mgr)
 
-        if not dry_run:
-            existing_scps = self.list_existing_scps()
-            declared_names = {p.name for p in config.policies}
-            pre_existing = declared_names.intersection(existing_scps.keys())
+        existing_scps = self.list_existing_scps()
+        declared_names = {p.name for p in config.policies}
+        pre_existing = declared_names.intersection(existing_scps.keys())
 
-            if pre_existing:
-                stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
-                if (
-                    stack_status is None
-                    or stack_status == "DELETE_COMPLETE"
-                    or stack_status in UNUSABLE_STACK_STATES
-                ):
-                    self._require_declared_policies_adoptable(config, existing_scps, project_root)
-                    resources_to_import: list[dict[str, Any]] = []
-                    for scp_def in config.policies:
-                        if scp_def.name in existing_scps:
-                            logical_id = logical_ids[scp_def.name]
-                            policy_id = existing_scps[scp_def.name]["Id"]
-                            resources_to_import.append(
-                                {
-                                    "ResourceType": "AWS::Organizations::Policy",
-                                    "LogicalResourceId": logical_id,
-                                    "ResourceIdentifier": {"Id": policy_id},
-                                }
-                            )
-
-                    logger.debug(
-                        "Importing pre-existing SCPs %s into CloudFormation stack '%s'...",
-                        sorted(pre_existing),
-                        stack_name,
-                    )
-                    import_template_dict = self.synthesize_template(
-                        config, root_id, ou_map, project_root, include_ownership_tag=False
-                    )
-                    import_template_dict["Resources"] = {
-                        logical_ids[p.name]: import_template_dict["Resources"][logical_ids[p.name]]
-                        for p in config.policies
-                        if p.name in existing_scps
+        in_stack = (
+            cfn_service.resource_ids(cfn_client, stack_name)
+            if pre_existing and cfn_service.is_usable(cfn_client, stack_name)
+            else set()
+        )
+        to_adopt = [
+            p for p in config.policies if p.name in pre_existing and logical_ids[p.name] not in in_stack
+        ]
+        if to_adopt:
+            adopting = {p.name: existing_scps[p.name] for p in to_adopt}
+            self._require_declared_policies_adoptable(config, adopting, project_root)
+            logger.debug("Importing pre-existing SCPs %s into stack '%s'...", sorted(adopting), stack_name)
+            import_template_dict = self.synthesize_template(
+                config, root_id, ou_map, project_root, include_ownership_tag=False
+            )
+            adopted = {
+                logical_ids[p.name]: import_template_dict["Resources"][logical_ids[p.name]] for p in to_adopt
+            }
+            cfn_service.import_resources_and_deploy_stack(
+                cfn_client=cfn_client,
+                stack_name=stack_name,
+                template_body=cfn_service.import_template(
+                    cfn_client, stack_name, import_template_dict, adopted
+                ),
+                resources_to_import=[
+                    {
+                        "ResourceType": "AWS::Organizations::Policy",
+                        "LogicalResourceId": logical_ids[p.name],
+                        "ResourceIdentifier": {"Id": existing_scps[p.name]["Id"]},
                     }
-                    import_template_body = yaml.dump(import_template_dict, sort_keys=False)
-                    cfn_report = cfn_service.import_resources_and_deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        template_body=import_template_body,
-                        resources_to_import=resources_to_import,
-                        tags=tags,
-                        org_tags=org_tags,
-                        dry_run=dry_run,
-                    )
-                    # The policies are stack-managed now: apply the full template (adds ownership tags and any new SCPs).
-                    cfn_service.deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        parameters={},
-                        tags=tags,
-                        org_tags=org_tags,
-                        dry_run=dry_run,
-                        template_body=template_body,
-                    )
-                    import_results: list[SCPReconciliationResult] = []
-                    for scp_def in config.policies:
-                        targets_for_policy: list[str] = []
-                        unresolved: list[str] = []
-                        for target in scp_def.targets:
-                            resolved = self._resolve_target_id(target, root_id, ou_map)
-                            if resolved:
-                                targets_for_policy.append(f"{resolved[1]} ({resolved[0]})")
-                            else:
-                                unresolved.append(target)
-                        import_results.append(
-                            SCPReconciliationResult(
-                                name=scp_def.name,
-                                policy_id=existing_scps.get(scp_def.name, {}).get("Id"),
-                                action_taken=cfn_report.action,
-                                attached_targets=targets_for_policy,
-                                newly_attached_targets=[],
-                                status="FAILED" if unresolved else "SUCCEEDED",
-                                unresolved_targets=unresolved,
-                            )
-                        )
-                    return import_results
+                    for p in to_adopt
+                ],
+                tags=tags,
+                org_tags=org_tags,
+            )
 
         cfn_report = cfn_service.deploy_stack(
             cfn_client=cfn_client,
@@ -594,28 +329,19 @@ class SCPService:
             parameters={},
             tags=tags,
             org_tags=org_tags,
-            dry_run=dry_run,
             template_body=template_body,
         )
 
         results: list[SCPReconciliationResult] = []
-        action = cfn_report.action
+        action = "IMPORTED" if to_adopt else cfn_report.action
         for scp_def in config.policies:
-            attached_targets: list[str] = []
-            unresolved_targets: list[str] = []
-            for target in scp_def.targets:
-                resolved = self._resolve_target_id(target, root_id, ou_map)
-                if resolved:
-                    attached_targets.append(f"{resolved[1]} ({resolved[0]})")
-                else:
-                    unresolved_targets.append(target)
+            unresolved_targets = [
+                t for t in scp_def.targets if not self._resolve_target_id(t, root_id, ou_map)
+            ]
             results.append(
                 SCPReconciliationResult(
                     name=scp_def.name,
-                    policy_id=None,
                     action_taken=action,
-                    attached_targets=attached_targets,
-                    newly_attached_targets=attached_targets if action == "CREATED" else [],
                     status="FAILED" if unresolved_targets else "SUCCEEDED",
                     unresolved_targets=unresolved_targets,
                 )

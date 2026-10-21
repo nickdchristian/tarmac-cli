@@ -18,6 +18,8 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
 from ..core.models import TAG_MANAGED_BY, StackDeployReport
+from ..core.org_accounts import is_active, iter_accounts
+from ..core.stack_names import Stack
 from ..core.tagging import merge_tags, to_cfn_tags
 from .cloudformation import CloudFormationService
 
@@ -32,18 +34,19 @@ OPERATION_PREFERENCES = {
 }
 
 
-def stack_set_name(org_name: str) -> str:
-    return f"{org_name}-config-recorder"
-
-
-def management_stack_name(org_name: str) -> str:
-    return f"{org_name}-config-recorder"
+def service_linked_role_arn(session_mgr: AwsSessionManager, management_account_id: str) -> str:
+    """The ARN of AWSServiceRoleForConfig in the management account, in the caller's partition."""
+    arn = str(session_mgr.get_caller_identity().get("Arn", ""))
+    partition = arn.split(":")[1] if arn.startswith("arn:") else "aws"
+    return (
+        f"arn:{partition}:iam::{management_account_id}:role/aws-service-role/"
+        "config.amazonaws.com/AWSServiceRoleForConfig"
+    )
 
 
 @dataclass
 class ConfigRecorderReport:
     stack_set_action: str = "UNCHANGED"
-    regions: list[str] = field(default_factory=list)
     management_stacks: list[StackDeployReport] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
 
@@ -65,8 +68,6 @@ class ConfigRecorderService:
         self._poll_seconds = poll_seconds
         self._timeout_seconds = timeout_seconds
 
-    # ------------------------------------------------------------------ deploy
-
     def deploy(
         self,
         *,
@@ -78,28 +79,16 @@ class ConfigRecorderService:
         management_account_id: str,
         tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> ConfigRecorderReport:
         """Create or update the StackSet, its instances, and the management account stacks."""
-        name = stack_set_name(org_name)
-        report = ConfigRecorderReport(regions=list(regions))
-        if dry_run:
-            audit(
-                "create",
-                f"stackset:{name}",
-                Outcome.SUCCEEDED,
-                f"Would deploy AWS Config recorders to {len(regions)} Region(s) of every member account "
-                f"through StackSet '{name}' and to the management account",
-                dry_run=True,
-                regions=regions,
-            )
-            return report
+        name = Stack.CONFIG_RECORDER.for_org(org_name)
+        report = ConfigRecorderReport()
 
         template_body = template_file.read_text(encoding="utf-8")
         cfn_tags = merge_tags(org_tags, tags, {TAG_MANAGED_BY: "tarmac"})
         cf = self.session_mgr.get_client("cloudformation", region_name=primary_region)
         try:
-            self._activate_organizations_access(cf)
+            cf.activate_organizations_access()
             root_id = self._root_id()
             targets = self._targets(root_id, management_account_id)
             report.stack_set_action = self._ensure_stack_set(cf, name, template_body, parameters, cfn_tags)
@@ -139,16 +128,7 @@ class ConfigRecorderService:
                 raise GovernanceError(
                     "Could not create the AWS Config service-linked role", details=aws_error_message(e)
                 ) from e  # InvalidInput is IAM's answer when the service-linked role already exists
-        arn = str(self.session_mgr.get_caller_identity().get("Arn", ""))
-        partition = arn.split(":")[1] if arn.startswith("arn:") else "aws"
-        return (
-            f"arn:{partition}:iam::{management_account_id}:role/aws-service-role/"
-            "config.amazonaws.com/AWSServiceRoleForConfig"
-        )
-
-    def _activate_organizations_access(self, cf: Any) -> None:
-        """Trusted access for service-managed StackSets; safe to repeat."""
-        cf.activate_organizations_access()
+        return service_linked_role_arn(self.session_mgr, management_account_id)
 
     def _root_id(self) -> str:
         roots = self.session_mgr.get_client("organizations").list_roots().get("Roots", [])
@@ -160,11 +140,9 @@ class ConfigRecorderService:
         """The organization root without the management account (StackSets cannot deploy there) and without
         suspended accounts (their roles cannot be assumed)."""
         excluded = {management_account_id}
-        paginator = self.session_mgr.get_client("organizations").get_paginator("list_accounts")
-        for page in paginator.paginate():
-            for account in page.get("Accounts", []):
-                if account.get("Status") not in (None, "ACTIVE"):
-                    excluded.add(str(account["Id"]))
+        for account in iter_accounts(self.session_mgr.get_client("organizations")):
+            if not is_active(account):
+                excluded.add(str(account["Id"]))
         return {
             "OrganizationalUnitIds": [root_id],
             "AccountFilterType": "DIFFERENCE",
@@ -337,14 +315,12 @@ class ConfigRecorderService:
         )
         return self.cfn_service.deploy_stack(
             cfn_client,
-            management_stack_name(org_name),
+            Stack.CONFIG_RECORDER.for_org(org_name),
             template_file,
             parameters,
             tags=tags,
             org_tags=org_tags,
         )
-
-    # ---------------------------------------------------------------- teardown
 
     def remove(
         self,
@@ -367,7 +343,7 @@ class ConfigRecorderService:
     def _remove_stack_set(
         self, org_name: str, primary_region: str, management_account_id: str, dry_run: bool
     ) -> list[tuple[str, str, str]]:
-        name = stack_set_name(org_name)
+        name = Stack.CONFIG_RECORDER.for_org(org_name)
         resource = f"StackSet {name}"
         cf = self.session_mgr.get_client("cloudformation", region_name=primary_region)
         try:
@@ -402,7 +378,7 @@ class ConfigRecorderService:
     def _remove_management_stack(
         self, org_name: str, region: str, management_account_id: str, dry_run: bool
     ) -> tuple[str, str, str]:
-        stack = management_stack_name(org_name)
+        stack = Stack.CONFIG_RECORDER.for_org(org_name)
         resource = f"Stack {stack} ({region})"
         try:
             cfn_client = self.session_mgr.get_member_client(

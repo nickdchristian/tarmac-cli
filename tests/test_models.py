@@ -111,26 +111,20 @@ def test_scp_reconciliation_result():
     """Verify SCPReconciliationResult fields and defaults."""
     res = SCPReconciliationResult(
         name="FoundationalGuardrails",
-        policy_id="p-12345",
         action_taken="ATTACHED",
-        attached_targets=["r-root"],
-        newly_attached_targets=["r-root"],
     )
     assert res.name == "FoundationalGuardrails"
     assert res.action_taken == "ATTACHED"
     assert res.status == "SUCCEEDED"
-    assert res.attached_targets == ["r-root"]
 
 
 def test_stack_deploy_report():
     """Verify StackDeployReport outputs and actions."""
     rep = StackDeployReport(
-        stack_name="myorg-cloudtrail",
         action="UPDATED",
         outputs={"BucketArn": "arn:aws:s3:::myorg-logs"},
         status="SUCCEEDED",
     )
-    assert rep.stack_name == "myorg-cloudtrail"
     assert rep.action == "UPDATED"
     assert rep.outputs["BucketArn"] == "arn:aws:s3:::myorg-logs"
     assert rep.status == "SUCCEEDED"

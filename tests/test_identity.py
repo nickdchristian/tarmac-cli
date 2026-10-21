@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from botocore.exceptions import ClientError
 
 from tarmac.core.config_schema import (
@@ -125,12 +126,8 @@ def test_identity_add_user_to_group():
 
     service = IdentityService(mock_session_mgr)
 
-    # Dry run
-    assert service.add_user_to_group("g-123", "u-456", "flumen-admin", "admin", dry_run=True) is True
-    mock_idstore.create_group_membership.assert_not_called()
-
     # Success (newly added)
-    assert service.add_user_to_group("g-123", "u-456", "flumen-admin", "admin") is True
+    assert service.add_user_to_group("g-123", "u-456", "app-admin", "admin") is True
     mock_idstore.create_group_membership.assert_called_once_with(
         IdentityStoreId="d-1234567890",
         GroupId="g-123",
@@ -142,7 +139,7 @@ def test_identity_add_user_to_group():
         {"Error": {"Code": "ConflictException", "Message": "Conflict"}}, "CreateGroupMembership"
     )
     mock_idstore.create_group_membership.side_effect = conflict_err
-    assert service.add_user_to_group("g-123", "u-456", "flumen-admin", "admin") is False
+    assert service.add_user_to_group("g-123", "u-456", "app-admin", "admin") is False
 
 
 def test_identity_assign_group_to_accounts_polling_and_success():
@@ -166,7 +163,7 @@ def test_identity_assign_group_to_accounts_polling_and_success():
     service = IdentityService(mock_session_mgr)
     count = service.assign_group_to_accounts(
         group_id="g-123",
-        group_name="flumen-admin",
+        group_name="app-admin",
         permission_set_arn="arn:aws:sso:::permissionSet/ssoins-123/ps-456",
         account_ids=["111122223333"],
     )
@@ -193,7 +190,7 @@ def test_identity_assign_group_to_accounts_conflict():
     service = IdentityService(mock_session_mgr)
     count = service.assign_group_to_accounts(
         group_id="g-123",
-        group_name="flumen-admin",
+        group_name="app-admin",
         permission_set_arn="arn:aws:sso:::permissionSet/ssoins-123/ps-456",
         account_ids=["111122223333"],
     )
@@ -221,7 +218,7 @@ def test_identity_assign_group_to_accounts_failure():
     with pytest.raises(IdentityCenterError) as exc_info:
         service.assign_group_to_accounts(
             group_id="g-123",
-            group_name="flumen-admin",
+            group_name="app-admin",
             permission_set_arn="arn:aws:sso:::permissionSet/ssoins-123/ps-456",
             account_ids=["111122223333"],
         )
@@ -238,6 +235,9 @@ def test_identity_sync_identity():
     mock_cfn.describe_stacks.return_value = {
         "Stacks": [{"StackName": "organization-sso-permission-sets", "StackStatus": "CREATE_COMPLETE"}]
     }
+    mock_cfn.get_paginator.return_value.paginate.return_value = [
+        {"StackResourceSummaries": [{"LogicalResourceId": "PermissionSetAdministratorAccess"}]}
+    ]
 
     def client_side_effect(service_name: str, **kwargs: Any) -> MagicMock:
         if service_name == "sso-admin":
@@ -349,22 +349,6 @@ def test_identity_synthesize_permission_sets_template(tmp_path: Path):
     assert cloud_ops["Properties"]["InlinePolicy"]["Statement"][0]["Effect"] == "Allow"
 
 
-def test_identity_sync_permission_sets_via_cfn_dry_run():
-    mock_session_mgr = MagicMock()
-    mock_sso = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_sso
-    mock_sso.list_instances.return_value = {
-        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-dry", "IdentityStoreId": "d-dry"}]
-    }
-
-    service = IdentityService(mock_session_mgr)
-    defs = [PermissionSetDef(name="DryRole")]
-    res = service.sync_permission_sets_via_cloudformation(defs, dry_run=True)
-
-    assert "DryRole" in res
-    assert "simulated" in res["DryRole"]
-
-
 def test_identity_sync_permission_sets_via_cfn_deploy(tmp_path: Path):
     mock_session_mgr = MagicMock()
     mock_sso = MagicMock()
@@ -408,7 +392,6 @@ def test_identity_sync_permission_sets_via_cfn_deploy(tmp_path: Path):
         permission_sets=defs,
         project_root=tmp_path,
         org_name="myorg",
-        dry_run=False,
         org_tags={"CostCenter": "CC-Global"},
     )
 
@@ -465,7 +448,6 @@ def test_identity_sync_permission_sets_via_cfn_imports_when_preexisting(tmp_path
         permission_sets=defs,
         project_root=tmp_path,
         org_name="myorg",
-        dry_run=False,
     )
 
     assert res == {"DeployRole": "arn:aws:sso:::permissionSet/ssoins-live/ps-live"}
@@ -535,7 +517,6 @@ def test_identity_sync_permission_sets_import_failure_raises_without_deleting(tm
             permission_sets=defs,
             project_root=tmp_path,
             org_name="myorg",
-            dry_run=False,
         )
 
     mock_sso.delete_permission_set.assert_not_called()
@@ -645,74 +626,6 @@ def test_identity_poll_assignment_status_timeout_logs_warning(caplog):
     assert any(r.levelname == "WARNING" and "111122223333" in r.getMessage() for r in caplog.records), (
         "timeout must be surfaced as a warning that names the account"
     )
-
-
-def test_identity_sync_dry_run_counts_assignments_and_memberships():
-    """Verify sync_identity in dry_run mode simulates group assignments and memberships."""
-    from tarmac.core.config_schema import (
-        AssignmentDef,
-        GroupDef,
-        IdentityCenterConfig,
-        PermissionSetDef,
-        UserDef,
-    )
-
-    mock_session_mgr = MagicMock()
-    mock_sso = MagicMock()
-    mock_idstore = MagicMock()
-    mock_org = MagicMock()
-
-    def client_side_effect(service_name: str, **kwargs: Any) -> MagicMock:
-        if service_name == "sso-admin":
-            return mock_sso
-        if service_name == "identitystore":
-            return mock_idstore
-        if service_name == "organizations":
-            return mock_org
-        return MagicMock()
-
-    mock_session_mgr.get_client.side_effect = client_side_effect
-    mock_sso.list_instances.return_value = {
-        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-123", "IdentityStoreId": "d-1234567890"}]
-    }
-    mock_idstore.list_users.return_value = {"Users": []}
-    mock_idstore.list_groups.return_value = {"Groups": []}
-    org_paginator = MagicMock()
-    org_paginator.paginate.return_value = [
-        {"Accounts": [{"Id": "111122223333", "Name": "audit", "Status": "ACTIVE"}]}
-    ]
-    mock_org.get_paginator.return_value = org_paginator
-
-    cfg = IdentityCenterConfig(
-        admin_user=UserDef(username="admin", email="admin@example.com", first_name="Admin", last_name="User"),
-        breakglass_user=UserDef(
-            username="breakglass", email="bg@example.com", first_name="Break", last_name="Glass"
-        ),
-        permission_sets=[
-            PermissionSetDef(
-                name="AdminAccess",
-                managed_policies=["arn:aws:iam::aws:policy/AdministratorAccess"],
-            )
-        ],
-        groups=[
-            GroupDef(
-                name="Admins",
-                members=["admin"],
-                assignments=[AssignmentDef(permission_set="AdminAccess", accounts=["audit"])],
-            )
-        ],
-    )
-
-    service = IdentityService(mock_session_mgr)
-    report = service.sync_identity(cfg, dry_run=True)
-
-    assert len(report.users_synced) == 2
-    assert report.groups_synced == ["Admins"]
-    assert report.assignments_created == 1
-    assert report.memberships_added == 1
-    mock_idstore.create_user.assert_not_called()
-    mock_idstore.create_group.assert_not_called()
-    mock_sso.create_account_assignment.assert_not_called()
 
 
 def _identity_service(mock_sso: MagicMock, mock_cfn: MagicMock) -> IdentityService:
@@ -840,3 +753,48 @@ def test_identity_delete_permission_set_returns_false_on_client_error():
         {"Error": {"Code": "ConflictException", "Message": "Still assigned"}}, "DeletePermissionSet"
     )
     assert service.delete_permission_set("arn:inst", "arn:ps") is False
+
+
+def test_existing_sets_missing_from_an_existing_stack_are_imported_into_it(tmp_path: Path):
+    """A stack that manages some sets imports the other pre-existing ones, keeping its live template."""
+    session_mgr, sso, cfn = MagicMock(), MagicMock(), MagicMock()
+    session_mgr.get_client.side_effect = lambda name, **kw: {"sso-admin": sso, "cloudformation": cfn}.get(
+        name, MagicMock()
+    )
+    sso.list_instances.return_value = {
+        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-live", "IdentityStoreId": "d-live"}]
+    }
+    arns = {
+        "Admin": "arn:aws:sso:::permissionSet/ssoins-live/ps-1",
+        "Deploy": "arn:aws:sso:::permissionSet/ssoins-live/ps-2",
+    }
+    sso.get_paginator.return_value.paginate.return_value = [{"PermissionSets": list(arns.values())}]
+    sso.describe_permission_set.side_effect = lambda **kw: {
+        "PermissionSet": {
+            "Name": next(n for n, a in arns.items() if a == kw["PermissionSetArn"]),
+            "PermissionSetArn": kw["PermissionSetArn"],
+        }
+    }
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "UPDATE_ROLLBACK_COMPLETE"}]}
+    cfn.get_paginator.return_value.paginate.return_value = [
+        {"StackResourceSummaries": [{"LogicalResourceId": "PermissionSetAdmin"}]}
+    ]
+    live = "Resources:\n  PermissionSetAdmin:\n    Type: AWS::SSO::PermissionSet\n    Properties: {Name: Admin}\n"
+    cfn.get_template.return_value = {"TemplateBody": live}
+
+    IdentityService(session_mgr).sync_permission_sets_via_cloudformation(
+        permission_sets=[PermissionSetDef(name="Admin"), PermissionSetDef(name="Deploy")],
+        project_root=tmp_path,
+        org_name="myorg",
+    )
+
+    change_set = cfn.create_change_set.call_args.kwargs
+    assert change_set["ChangeSetType"] == "IMPORT"
+    assert [r["LogicalResourceId"] for r in change_set["ResourcesToImport"]] == ["PermissionSetDeploy"]
+    resources = yaml.safe_load(change_set["TemplateBody"])["Resources"]
+    assert resources["PermissionSetAdmin"] == {
+        "Type": "AWS::SSO::PermissionSet",
+        "Properties": {"Name": "Admin"},
+    }
+    assert resources["PermissionSetDeploy"]["Properties"]["Name"] == "Deploy"
+    cfn.update_stack.assert_called()

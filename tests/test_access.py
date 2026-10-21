@@ -73,6 +73,7 @@ def test_deploy_refuses_root_but_allows_roles() -> None:
     unauth = MagicMock(spec=AwsSessionManager)
     unauth.is_root_identity.side_effect = RuntimeError("no creds")
     _refuse_root_identity(unauth)  # must not raise: phases report auth problems themselves
+    _refuse_root_identity(_mgr(ROOT), allow_root=True)  # phase 1 alone may run as root
 
 
 def test_access_template_prints_and_writes(tmp_path: Path) -> None:
@@ -86,17 +87,29 @@ def test_access_template_prints_and_writes(tmp_path: Path) -> None:
     assert "TarmacRole" in out.read_text(encoding="utf-8")
 
 
-def test_access_check_reports_root_and_role() -> None:
-    with patch("tarmac.cli.access.AwsSessionManager", return_value=_mgr(ROOT)):
-        assert runner.invoke(app, ["access", "check"]).exit_code == 1
-    ok = _mgr(ROLE)
-    with patch("tarmac.cli.access.AwsSessionManager", return_value=ok):
-        assert runner.invoke(app, ["access", "check"]).exit_code == 0
+def test_info_strict_reports_root_and_role() -> None:
+    """`tarmac info --strict` exits 1 unless the credentials are non-root and can read the organization."""
+
+    def info_mgr(identity: dict[str, str]) -> AwsSessionManager:
+        mgr = _mgr(identity)
+        mgr.default_region = "us-east-1"
+        return mgr
+
+    with patch("tarmac.cli.main.AwsSessionManager", return_value=info_mgr(ROOT)):
+        root = runner.invoke(app, ["info", "--strict"])
+    assert root.exit_code == 1
+    assert "Root credentials" in root.output
+
+    ok = info_mgr(ROLE)
+    with patch("tarmac.cli.main.AwsSessionManager", return_value=ok):
+        assert runner.invoke(app, ["info", "--strict"]).exit_code == 0
+
     cast(MagicMock, ok.get_client).return_value.describe_organization.side_effect = ClientError(
         {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "DescribeOrganization"
     )
-    with patch("tarmac.cli.access.AwsSessionManager", return_value=ok):
-        assert runner.invoke(app, ["access", "check"]).exit_code == 1
+    with patch("tarmac.cli.main.AwsSessionManager", return_value=ok):
+        assert runner.invoke(app, ["info", "--strict"]).exit_code == 1
+        assert runner.invoke(app, ["info"]).exit_code == 0
 
 
 def test_access_template_is_least_surprising() -> None:
@@ -106,7 +119,9 @@ def test_access_template_is_least_surprising() -> None:
         pass
 
     Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
-    path = Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml"
+    path = (
+        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
+    )
     t = yaml.load(path.read_text(encoding="utf-8"), Loader=Loader)
     assert t["Parameters"]["RequireMfa"]["Default"] == "true"
     assert t["Parameters"]["MaxSessionDurationSeconds"]["Default"] >= 14400
@@ -115,9 +130,9 @@ def test_access_template_is_least_surprising() -> None:
 
 
 def test_template_defaults_and_mfa_condition() -> None:
-    text = (Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml").read_text(
-        encoding="utf-8"
-    )
+    text = (
+        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
+    ).read_text(encoding="utf-8")
     assert "BoolIfExists" in text  # SSO sessions carry no MFA flag
     assert "CreateBootstrapUser:\n    Type: String\n    Default: 'false'" in text
 
@@ -194,8 +209,11 @@ def test_bootstrap_dry_run_and_failure() -> None:
         patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
         patch("tarmac.cli.access.CloudFormationService") as svc,
     ):
-        svc.return_value.deploy_stack.return_value = MagicMock(action="SIMULATED", outputs={})
-        assert runner.invoke(app, ["access", "bootstrap", "--dry-run"]).exit_code == 0
+        svc.return_value.preview_stack.return_value = ("UPDATE", "RoleName: old -> TarmacDeploymentRole")
+        dry = runner.invoke(app, ["access", "bootstrap", "--dry-run"])
+        assert dry.exit_code == 0
+        assert "UPDATE" in dry.output
+        svc.return_value.deploy_stack.assert_not_called()
         svc.return_value.deploy_stack.side_effect = DeploymentError("boom")
         assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1
 
@@ -211,7 +229,9 @@ _NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups"}
 
 
 def _policy_statements() -> list[dict[str, object]]:
-    path = Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml"
+    path = (
+        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
+    )
     template = yaml.load(path.read_text(encoding="utf-8"), Loader=CfnLoader)
     return template["Resources"]["TarmacPolicy"]["Properties"]["PolicyDocument"]["Statement"]
 

@@ -37,7 +37,6 @@ class AccountSuspensionResult:
 
     name: str
     account_id: str
-    moved_to_ou: str | None
     tags_updated: bool
     closed: bool = False
     status: str = "SUCCEEDED"
@@ -77,8 +76,6 @@ class BudgetReport:
 
     account_name: str
     account_id: str
-    budget_name: str
-    limit_usd: float
     alert_threshold_percent: float
     status: str  # CREATED, UPDATED, SKIPPED, FAILED
     message: str = ""
@@ -90,7 +87,6 @@ class AnomalyReport:
 
     account_name: str
     account_id: str
-    monitor_name: str
     threshold_usd: float
     status: str
     message: str = ""
@@ -120,7 +116,6 @@ class OUSyncReport:
 class StackDeployReport:
     """Report on CloudFormation stack deployment."""
 
-    stack_name: str
     action: Literal["CREATED", "UPDATED", "NO_CHANGES", "SIMULATED", "IMPORTED"]
     outputs: dict[str, str] = field(default_factory=dict)
     status: str = "SUCCEEDED"
@@ -142,10 +137,7 @@ class SCPReconciliationResult:
     """Result of reconciling a single Service Control Policy."""
 
     name: str
-    policy_id: str | None
     action_taken: str
-    attached_targets: list[str] = field(default_factory=list)
-    newly_attached_targets: list[str] = field(default_factory=list)
     status: str = "SUCCEEDED"
     unresolved_targets: list[str] = field(default_factory=list)
 

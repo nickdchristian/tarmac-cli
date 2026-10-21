@@ -7,8 +7,8 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from tarmac.cli.common import log_archive_parameters, warn_if_object_lock_unset
 from tarmac.core.config_schema import CloudTrailConfig, SecurityServicesConfig
+from tarmac.services.stack_parameters import log_archive_parameters, object_lock_advice
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -76,41 +76,13 @@ def test_lock_equal_to_log_retention_is_accepted():
         ({"object_lock": {"mode": "GOVERNANCE", "retention_days": 365}}, False),
     ],
 )
-def test_warns_to_enable_object_lock_only_while_it_is_unset(monkeypatch, config, warns):
-    messages: list[str] = []
-    monkeypatch.setattr("tarmac.cli.common.print_warning", messages.append)
+def test_warns_to_enable_object_lock_only_while_it_is_unset(config, warns):
+    advice = object_lock_advice(_bundle(**config))  # type: ignore[arg-type]
 
-    warn_if_object_lock_unset(_bundle(**config))  # type: ignore[arg-type]
-
-    assert bool(messages) is warns
-    if warns:
-        assert "GOVERNANCE" in messages[0]
-        assert "object_lock: null" in messages[0]
-
-
-def test_dry_run_plan_shows_object_lock_state(monkeypatch):
-    from io import StringIO
-
-    from rich.console import Console
-
-    from tarmac.cli import deploy_dry_run
-
-    def plan(**cloudtrail) -> str:
-        buffer = StringIO()
-        monkeypatch.setattr(deploy_dry_run, "console", Console(file=buffer, width=200))
-        bundle = SimpleNamespace(
-            org=SimpleNamespace(
-                organization=SimpleNamespace(name="acme"),
-                security_services=SecurityServicesConfig(),
-                cloudtrail=CloudTrailConfig(**cloudtrail),
-            ),
-            get_log_archive_account_name=lambda: "log-archive",
-        )
-        deploy_dry_run._render_phase_3_dry_run(bundle, "eu-west-1")  # type: ignore[arg-type]
-        return buffer.getvalue()
-
-    assert "RECOMMENDED: GOVERNANCE" in plan()
-    assert "GOVERNANCE, 365 days" in plan(object_lock={"mode": "GOVERNANCE", "retention_days": 365})
+    assert bool(advice) is warns
+    if advice:
+        assert "GOVERNANCE" in advice
+        assert "object_lock: null" in advice
 
 
 @pytest.mark.parametrize(
@@ -128,7 +100,10 @@ def test_invalid_object_lock_is_rejected(lock):
 
 def test_template_locks_the_bucket_only_when_asked():
     template = yaml.load(
-        (ROOT / "cloudformation" / "log-archive-hardening.yaml").read_text(encoding="utf-8"), Loader=CfnLoader
+        (ROOT / "src/tarmac/templates/cloudformation" / "log-archive-hardening.yaml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=CfnLoader,
     )
     assert template["Parameters"]["ObjectLockMode"]["Default"] == ""
     assert template["Parameters"]["ObjectLockMode"]["AllowedValues"] == ["", "GOVERNANCE", "COMPLIANCE"]

@@ -8,7 +8,7 @@ run), it is written here. A teardown then deletes only what is listed, so an OU 
 Tarmac is never touched.
 
 The file sits beside the configuration (``<config dir>/.tarmac/inventory.json``) and can be rebuilt from a
-Tarmac run log with ``tarmac deploy inventory --from-log``.
+Tarmac run log with ``tarmac inventory --from-log``.
 """
 
 import json

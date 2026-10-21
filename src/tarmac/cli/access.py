@@ -2,15 +2,16 @@
 
 import shutil
 from pathlib import Path
+from typing import Annotated
 
 import typer
-from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import AWSAuthenticationError, GovernanceError
+from ..core.exceptions import GovernanceError
+from ..core.stack_names import ACCESS_STACK
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
-from .ui import console, error_console, print_header, print_info, print_success, print_warning
+from .ui import console, error_console, print_header, print_info, print_success
 
 app = typer.Typer(help="Bootstrap the non-root role tarmac runs as", no_args_is_help=True)
 
@@ -42,21 +43,29 @@ def _write_role_profile(
 
 @app.command("bootstrap")
 def access_bootstrap(
-    stack_name: str = typer.Option("tarmac-access", "--stack-name", help="CloudFormation stack name"),
-    role_name: str = typer.Option("TarmacDeploymentRole", "--role-name", help="Name of the tarmac role"),
-    region: str = typer.Option("us-east-1", "--region", "-r", help="Region to deploy the stack in"),
-    with_bootstrap_user: bool = typer.Option(
-        False,
-        "--with-bootstrap-user",
-        help="Also create an assume-only IAM user (for use before IAM Identity Center exists)",
-    ),
-    profile: str = typer.Option(
-        "tarmac", "--profile-name", help="AWS CLI profile to write (with the bootstrap user)"
-    ),
-    aws_config: Path = typer.Option(
-        Path("~/.aws/config"), "--aws-config", help="AWS config file to add the role profile to"
-    ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deployed"),
+    stack_name: Annotated[str, typer.Option("--stack-name", help="CloudFormation stack name")] = ACCESS_STACK,
+    role_name: Annotated[
+        str, typer.Option("--role-name", help="Name of the tarmac role")
+    ] = "TarmacDeploymentRole",
+    region: Annotated[
+        str, typer.Option("--region", "-r", help="Region to deploy the stack in")
+    ] = "us-east-1",
+    with_bootstrap_user: Annotated[
+        bool,
+        typer.Option(
+            "--with-bootstrap-user",
+            help="Also create an assume-only IAM user (for use before IAM Identity Center exists)",
+        ),
+    ] = False,
+    profile: Annotated[
+        str, typer.Option("--profile-name", help="AWS CLI profile to write (with the bootstrap user)")
+    ] = "tarmac",
+    aws_config: Annotated[
+        Path, typer.Option("--aws-config", help="AWS config file to add the role profile to")
+    ] = Path("~/.aws/config"),
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show whether the stack would be created or updated")
+    ] = False,
 ) -> None:
     """Create the tarmac role (and optionally a bootstrap user) in the management account.
 
@@ -64,29 +73,32 @@ def access_bootstrap(
     session, so no root access keys are ever created.
     """
     print_header("Tarmac Access Bootstrap")
+    parameters = {
+        "RoleName": role_name,
+        "CreateBootstrapUser": "true" if with_bootstrap_user else "false",
+        "BootstrapUserName": BOOTSTRAP_USER,
+    }
     try:
         session_mgr = AwsSessionManager(region_name=region)
         account_id = session_mgr.get_caller_identity().get("Account", "")
         service = CloudFormationService(session_mgr)
+        cfn_client = session_mgr.get_client("cloudformation", region_name=region)
+        if dry_run:
+            action, detail = service.preview_stack(
+                cfn_client, stack_name, resolve_resource_path(TEMPLATE_PATH), parameters
+            )
+            print_info(f"[dry-run] Stack '{stack_name}': {action}" + (f" ({detail})" if detail else ""))
+            return
         report = service.deploy_stack(
-            session_mgr.get_client("cloudformation", region_name=region),
+            cfn_client,
             stack_name,
             resolve_resource_path(TEMPLATE_PATH),
-            {
-                "RoleName": role_name,
-                "CreateBootstrapUser": "true" if with_bootstrap_user else "false",
-                "BootstrapUserName": BOOTSTRAP_USER,
-            },
-            dry_run=dry_run,
+            parameters,
             termination_protection=True,
         )
     except GovernanceError as e:
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")
         raise typer.Exit(code=1)
-
-    if dry_run:
-        print_info(f"[dry-run] Would deploy stack '{stack_name}' ({report.action}).")
-        return
 
     role_arn = report.outputs.get("TarmacRoleArn") or f"arn:aws:iam::{account_id}:role/{role_name}"
     print_success(f"Role ready: {role_arn}")
@@ -98,20 +110,20 @@ def access_bootstrap(
         print_info(
             f"{'Added' if added else 'Kept existing'} profile '{profile}' in {aws_config}. Next: in the IAM console "
             f"create an access key and an MFA device for '{BOOTSTRAP_USER}', add them to a '{BOOTSTRAP_USER}' "
-            f"profile, then run: AWS_PROFILE={profile} tarmac access check"
+            f"profile, then run: AWS_PROFILE={profile} tarmac info --strict"
         )
     else:
         print_info(
             "Next: enable IAM Identity Center (pick its Region deliberately: it can only be moved by deleting the "
-            "instance), create an administrator user, sign in with 'aws sso login', then run: tarmac access check"
+            "instance), create an administrator user, sign in with 'aws sso login', then run: tarmac info --strict"
         )
 
 
 @app.command("template")
 def access_template(
-    output: Path | None = typer.Option(
-        None, "--output", "-o", help="Write the template here instead of stdout"
-    ),
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write the template here instead of stdout")
+    ] = None,
 ) -> None:
     """Print (or save) the CloudFormation template that creates the tarmac role and bootstrap user."""
     source = resolve_resource_path(TEMPLATE_PATH)
@@ -125,35 +137,3 @@ def access_template(
         "Deploy it in the management account (CloudFormation console, signed in as root or an admin, "
         "capability CAPABILITY_NAMED_IAM), then follow README: Bootstrap access."
     )
-
-
-@app.command("check")
-def access_check() -> None:
-    """Verify the current credentials can run tarmac (non-root, management account)."""
-    print_header("Tarmac Access Check")
-    try:
-        session_mgr = AwsSessionManager()
-        identity = session_mgr.get_caller_identity()
-        is_root = session_mgr.is_root_identity()
-    except AWSAuthenticationError as e:
-        error_console.print(f"[red]Not authenticated:[/red] {e}")
-        error_console.print("Hint: run 'aws sso login' or set AWS_PROFILE to your tarmac profile.")
-        raise typer.Exit(code=1)
-
-    print_info(f"Authenticated as {identity.get('Arn', 'unknown')} (account {identity.get('Account', '?')})")
-    if is_root:
-        error_console.print(
-            "[red]Root credentials cannot assume roles in member accounts.[/red] "
-            "Run 'tarmac access bootstrap' from CloudShell, then use the tarmac role or an SSO admin."
-        )
-        raise typer.Exit(code=1)
-    try:
-        session_mgr.get_client("organizations").describe_organization()
-    except (ClientError, BotoCoreError) as e:
-        print_warning(f"Could not describe the organization: {e}")
-        print_info(
-            "Hint: use credentials for the management account, make sure the organization exists "
-            "('tarmac org bootstrap'), and that this principal has Organizations read access."
-        )
-        raise typer.Exit(code=1)
-    print_success("Credentials are non-root and can read the organization.")

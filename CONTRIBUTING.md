@@ -30,7 +30,7 @@ uv run ruff format --check .
 uv run basedpyright
 
 # 3. CloudFormation Template Linting (cfn-lint)
-uv run cfn-lint cloudformation/*.yaml src/tarmac/templates/cloudformation/*.yaml
+uv run cfn-lint src/tarmac/templates/cloudformation/*.yaml
 
 # 4. Validate Example Governance Manifests
 uv run tarmac validate --config-dir examples/config
@@ -43,5 +43,5 @@ uv run pytest
 
 - **Conventional Commits:** All Pull Request titles are validated in CI using [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `refactor:`, `test:`, `perf:`, `build:`, `style:`, `revert:`).
 - **Release Automation:** Versioning and `CHANGELOG.md` generation are managed automatically by **Release Please** on merge to `main` (`feat:` bumps minor/patch, `fix:` bumps patch). Do not manually bump versions in `pyproject.toml` or `CHANGELOG.md`.
-- **Template Parity:** If you modify CloudFormation templates in `cloudformation/` or SCP policies in `policies/scp/`, ensure the corresponding packaged templates under `src/tarmac/templates/` are kept in sync (`tests/test_templates.py` enforces byte-for-byte parity).
+- **Templates:** CloudFormation templates and SCP policies live only under `src/tarmac/templates/` (they ship in the package; `tarmac init --with-templates` exports copies for local overrides).
 - **No Live AWS Calls in Unit Tests:** All tests under `tests/` are isolated from host AWS credentials and must mock `AwsSessionManager` or boto3 clients.

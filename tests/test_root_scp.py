@@ -12,8 +12,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 FILES = [
-    "policies/scp/deny-member-root.json",
-    "policies/scp/foundational-guardrails.json",
     "src/tarmac/templates/policies/scp/deny-member-root.json",
     "src/tarmac/templates/policies/scp/foundational-guardrails.json",
 ]

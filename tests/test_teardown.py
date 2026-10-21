@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 from helpers import make_config
 from typer.testing import CliRunner
 
-from tarmac.cli.deploy import app
+from tarmac.cli.main import app
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_loader import load_all_configs
 from tarmac.core.exceptions import AWSAuthenticationError, GovernanceError
@@ -22,7 +22,6 @@ from tarmac.services.teardown import (
     empty_s3_bucket,
     is_s3_bucket_empty,
     normalize_bucket_name,
-    teardown_deployment,
 )
 
 runner = CliRunner()
@@ -302,19 +301,9 @@ def test_teardown_all_orchestration(test_bundle):
     assert report.failed_count == 0
 
 
-def test_teardown_deployment_helper(test_bundle):
-    mock_session_mgr = MagicMock(spec=AwsSessionManager)
-    mock_session_mgr.default_region = "us-east-1"
-    mock_session_mgr.get_caller_identity.return_value = {"Account": "111122223333"}
-
-    report = teardown_deployment(test_bundle, session_mgr=mock_session_mgr, dry_run=True)
-    assert isinstance(report, TeardownReport)
-    assert report.status == "SIMULATED"
-
-
 def test_cli_teardown_dry_run(monkeypatch, teardown_config_dir: Path):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    res = runner.invoke(app, ["teardown", "--dry-run", "-c", str(teardown_config_dir), "-y"])
+    res = runner.invoke(app, ["destroy", "--dry-run", "-c", str(teardown_config_dir), "-y"])
     assert res.exit_code == 0
     assert "Teardown Summary" in res.stdout
     assert "Teardown dry-run simulation complete" in res.stdout
@@ -395,7 +384,6 @@ def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path:
 
         reports = service.teardown_identity(mock_bundle, "us-east-1", dry_run=False)
 
-        # First stack checked is myorg-sso-permission-sets
         assert mock_del_stack.call_count == 2
         mock_id_inst.delete_permission_set.assert_called_once_with(
             "arn:aws:sso:::instance/ssoins-1",
@@ -441,7 +429,6 @@ def test_teardown_service_callbacks(test_bundle):
     item1 = TeardownItemReport("CloudFormation Stack", "ct", "Mgmt", "111", "DELETED")
     item2 = TeardownItemReport("S3 Bucket", "logs", "Log", "222", "EMPTY")
 
-    # Use _new_results_list to verify item reporting
     def fake_teardown_cloudtrail(*args, **kwargs):
         res = service._new_results_list()
         service._notify_progress("Deleting cloudtrail stack...")
@@ -810,18 +797,21 @@ def test_teardown_scps_removes_tagged_legacy_policy(test_bundle):
     clients["organizations"].delete_policy.assert_called_once_with(PolicyId="p-legacy")
 
 
-def test_scp_create_and_template_carry_ownership_tag(tmp_path):
+def test_scp_template_carries_ownership_tag(tmp_path):
+    from tarmac.core.config_schema import SCPDef, ServiceControlPoliciesConfig
     from tarmac.services.scp import SCPService
 
-    mgr = MagicMock(spec=AwsSessionManager)
-    org = MagicMock()
-    org.create_policy.return_value = {"Policy": {"PolicySummary": {"Id": "p-new"}}}
-    mgr.get_client.return_value = org
-    scp = SCPService(mgr)
+    (tmp_path / "p.json").write_text('{"Version": "2012-10-17", "Statement": []}')
+    config = ServiceControlPoliciesConfig(
+        enabled=True, policies=[SCPDef(name="N", policy_file=str(tmp_path / "p.json"), targets=["root"])]
+    )
 
-    scp.sync_policy("N", "d", "{}", {}, dry_run=False)
+    resources = SCPService(MagicMock(spec=AwsSessionManager)).synthesize_template(
+        config, "r-1", {}, tmp_path
+    )["Resources"]
 
-    assert org.create_policy.call_args.kwargs["Tags"] == [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
+    (policy,) = resources.values()
+    assert policy["Properties"]["Tags"] == [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
 
 
 # --- previously untested destructive paths: audit stack, milestone reset, phase dispatch ---------
@@ -923,46 +913,6 @@ def test_reset_milestones_dry_run_and_empty_account_make_no_calls():
     assert [r.action for r in svc.reset_milestones("111122223333", dry_run=True)] == ["SIMULATED"]
     assert svc.reset_milestones("") == []
     mgr.get_client.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("phase", "method"),
-    [
-        (2, "teardown_scps"),
-        (3, "teardown_cloudtrail"),
-        (3, "teardown_log_archive"),
-        (4, "teardown_budgets"),
-        (5, "teardown_backend"),
-        (5, "teardown_audit"),
-        (6, "teardown_identity"),
-    ],
-)
-def test_teardown_phase_dispatches_each_phase_to_its_handlers(test_bundle, phase, method):
-    svc = _audit_service(MagicMock())
-    handlers = [
-        "teardown_scps",
-        "teardown_cloudtrail",
-        "teardown_log_archive",
-        "teardown_budgets",
-        "teardown_backend",
-        "teardown_audit",
-        "teardown_identity",
-    ]
-    for h in handlers:
-        setattr(svc, h, MagicMock(return_value=[]))
-
-    svc.teardown_phase(phase, test_bundle, "us-east-1", dry_run=True, account_id_map={"x": "1"})
-
-    assert getattr(svc, method).call_count == 1
-    called = {h for h in handlers if getattr(svc, h).called}
-    # Phase 5 must not touch log-archive buckets: only its own handlers run.
-    if phase == 5:
-        assert called == {"teardown_backend", "teardown_audit"}
-
-
-def test_teardown_phase_unknown_phase_does_nothing(test_bundle):
-    svc = _audit_service(MagicMock())
-    assert svc.teardown_phase(9, test_bundle, "us-east-1", account_id_map={"x": "1"}) == []
 
 
 def test_teardown_skips_permission_sets_not_owned_by_tarmac(tmp_path: Path):

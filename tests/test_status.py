@@ -23,7 +23,6 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
     mock_org.describe_organization.return_value = {"Organization": {"Id": "o-live123", "FeatureSet": "ALL"}}
     mock_org.list_roots.return_value = {"Roots": [{"Id": "r-root-live"}]}
 
-    # Paginator for list_accounts
     accts_paginator = MagicMock()
     accts_paginator.paginate.return_value = [
         {
@@ -48,10 +47,10 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
 
     # CFN Stacks: CloudTrail on mgmt, Backend on deployment
     mock_cfn_mgmt.describe_stacks.return_value = {
-        "Stacks": [{"StackName": "flumen-organization-cloudtrail", "StackStatus": "CREATE_COMPLETE"}]
+        "Stacks": [{"StackName": "myorg-organization-cloudtrail", "StackStatus": "CREATE_COMPLETE"}]
     }
     mock_cfn_dep.describe_stacks.return_value = {
-        "Stacks": [{"StackName": "flumen-terraform-backend", "StackStatus": "CREATE_COMPLETE"}]
+        "Stacks": [{"StackName": "myorg-terraform-backend", "StackStatus": "CREATE_COMPLETE"}]
     }
 
     mock_sso.list_instances.return_value = {
@@ -272,7 +271,7 @@ def test_drift_service_handles_import_complete_sso_region_and_remediation_comman
     # Missing OU and SCP remediation commands match real CLI subcommands
     missing_ous = [i for i in report.items if i.category == "OU" and i.status == "MISSING"]
     assert missing_ous
-    assert all(i.remediation == "tarmac ou sync" for i in missing_ous)
+    assert all(i.remediation == "tarmac deploy --phase 2" for i in missing_ous)
     missing_scps = [i for i in report.items if i.category == "SCP" and i.status == "MISSING"]
     assert missing_scps
-    assert all(i.remediation == "tarmac org scp apply" for i in missing_scps)
+    assert all(i.remediation == "tarmac deploy --phase 2" for i in missing_scps)

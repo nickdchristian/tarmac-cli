@@ -1,4 +1,4 @@
-"""Teardown of what ``tarmac deploy destroy`` normally keeps, used by ``--everything``.
+"""Teardown of what ``tarmac destroy`` normally keeps, used by ``--everything``.
 
 Only things recorded in the inventory (see ``core/inventory.py``) or tagged as Tarmac's are removed. Member
 accounts are never closed here: ``tarmac account suspend --close`` does that one account at a time.
@@ -12,16 +12,16 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.audit import Outcome, audit
-from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
 from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
+from ..core.org_accounts import is_active, iter_accounts
+from ..core.stack_names import ACCESS_STACK
 from .identity import IdentityService
 from .teardown_base import TeardownBase
 
 logger = logging.getLogger(__name__)
 
-ACCESS_STACK = "tarmac-access"
 BOOTSTRAP_USER = "tarmac-bootstrap"
 ACCESS_ROLE = "TarmacDeploymentRole"
 # Disabling this would delete the Identity Center instance created through Organizations.
@@ -50,10 +50,8 @@ def _item(
 class EverythingTeardown(TeardownBase):
     """Identity principals, OUs, organization settings and the access role that Tarmac created."""
 
-    # ------------------------------------------------------------------ Identity Center users and groups
-
     def teardown_identity_principals(
-        self, bundle: ConfigBundle, target_region: str, inventory: Inventory, dry_run: bool = False
+        self, target_region: str, inventory: Inventory, dry_run: bool = False
     ) -> list[TeardownItemReport]:
         results: list[TeardownItemReport] = self._new_results_list()
         users, groups = inventory.get("identity-user"), inventory.get("identity-group")
@@ -167,8 +165,6 @@ class EverythingTeardown(TeardownBase):
                     instance_arn, a["AccountId"], a["PermissionSetArn"], principal_type, principal_id
                 )
 
-    # ------------------------------------------------------------------ OUs
-
     def teardown_ous(self, inventory: Inventory, dry_run: bool = False) -> list[TeardownItemReport]:
         """Delete OUs Tarmac created, deepest first, and only while they hold no accounts or OUs."""
         results: list[TeardownItemReport] = self._new_results_list()
@@ -267,11 +263,7 @@ class EverythingTeardown(TeardownBase):
                 names.extend(c["Id"] for c in page.get("Children", []))
         return names
 
-    # ------------------------------------------------------------------ organization settings (phase 1)
-
-    def teardown_org_settings(
-        self, bundle: ConfigBundle, inventory: Inventory, dry_run: bool = False
-    ) -> list[TeardownItemReport]:
+    def teardown_org_settings(self, inventory: Inventory, dry_run: bool = False) -> list[TeardownItemReport]:
         """Undo phase 1: delegation, root-access features, trusted access, contacts and cost tags."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
@@ -420,31 +412,28 @@ class EverythingTeardown(TeardownBase):
         inventory.forget(kind, key)
         return _item(label, name, "DELETED", "Reverted a setting tarmac enabled", account_id=mgmt_id)
 
-    # ------------------------------------------------------------------ accounts (never closed)
-
-    def report_accounts_kept(self, dry_run: bool = False) -> list[TeardownItemReport]:
+    def report_accounts_kept(self) -> list[TeardownItemReport]:
         """List the member accounts tarmac manages; closing them stays a deliberate, per-account step."""
         results: list[TeardownItemReport] = self._new_results_list()
         if not self._has_credentials():
             return results
         org: Any = self.session_mgr.get_client("organizations")
         try:
-            for page in org.get_paginator("list_accounts").paginate():
-                for acct in page.get("Accounts", []):
-                    if acct.get("Status") != "ACTIVE" or acct["Id"] == self._get_management_account_id():
-                        continue
-                    if not self._has_tag(org, acct["Id"]):
-                        continue
-                    results.append(
-                        _item(
-                            "Member Account",
-                            acct["Name"],
-                            "SKIPPED",
-                            f"Never closed automatically. To close: tarmac account suspend {shlex.quote(acct['Id'])} --close",
-                            account=acct["Name"],
-                            account_id=acct["Id"],
-                        )
+            for acct in iter_accounts(org):
+                if not is_active(acct) or acct["Id"] == self._get_management_account_id():
+                    continue
+                if not self._has_tag(org, acct["Id"]):
+                    continue
+                results.append(
+                    _item(
+                        "Member Account",
+                        acct["Name"],
+                        "SKIPPED",
+                        f"Never closed automatically. To close: tarmac account suspend {shlex.quote(acct['Id'])} --close",
+                        account=acct["Name"],
+                        account_id=acct["Id"],
                     )
+                )
         except AWS_ERRORS as exc:
             logger.debug("Could not list managed accounts: %s", exc)
         return results
@@ -461,8 +450,6 @@ class EverythingTeardown(TeardownBase):
         except (ClientError, BotoCoreError):
             return False
         return False
-
-    # ------------------------------------------------------------------ access role and bootstrap user
 
     def teardown_access(self, region: str, dry_run: bool = False) -> list[TeardownItemReport]:
         """Remove the access stack (role, policy, bootstrap user) from `tarmac access bootstrap`.

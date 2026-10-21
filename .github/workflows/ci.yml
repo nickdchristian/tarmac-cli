@@ -47,7 +47,7 @@ jobs:
         run: uv run basedpyright
 
       - name: Lint CloudFormation Templates
-        run: uv run cfn-lint cloudformation/*.yaml src/tarmac/templates/cloudformation/*.yaml
+        run: uv run cfn-lint src/tarmac/templates/cloudformation/*.yaml
 
       - name: Lint GitHub Actions workflows
         env:

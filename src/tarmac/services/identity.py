@@ -15,8 +15,10 @@ from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GroupDef, IdentityCenterConfig, PermissionSetDef, UserDef
 from ..core.exceptions import DeploymentError, IdentityCenterError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, IdentitySyncReport
+from ..core.org_accounts import active_account_ids
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
-from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
+from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,7 @@ def _probe_region_for_instance(session_mgr: AwsSessionManager, region: str) -> t
             store_id = instances[0].get("IdentityStoreId")
             if arn and store_id:
                 return str(arn), str(store_id)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.debug("Could not probe sso-admin in region %s: %s", region, e)
     return None
 
@@ -224,15 +226,9 @@ class IdentityService:
             "Resources": resources,
         }
 
-    def _poll_assignment_deletion_status(
-        self,
-        instance_arn: str,
-        request_id: str,
-        max_attempts: int = 30,
-        poll_interval: float = 2.0,
-    ) -> bool:
+    def _poll_assignment_deletion_status(self, instance_arn: str, request_id: str) -> bool:
         """Poll AccountAssignmentDeletionStatus. Returns True on SUCCEEDED, False on FAILED or timeout."""
-        for _ in range(max_attempts):
+        for _ in range(30):
             try:
                 resp = self.sso_client.describe_account_assignment_deletion_status(
                     InstanceArn=instance_arn,
@@ -248,7 +244,7 @@ class IdentityService:
                     return False
             except ClientError as e:
                 logger.warning("Error checking deletion status: %s", e)
-            time.sleep(poll_interval)
+            time.sleep(2)
         return False
 
     def delete_account_assignment(
@@ -352,7 +348,6 @@ class IdentityService:
         permission_sets: list[PermissionSetDef],
         project_root: Path | None = None,
         org_name: str = "organization",
-        dry_run: bool = False,
         org_tags: dict[str, str] | None = None,
         tags: dict[str, str] | None = None,
     ) -> dict[str, str]:
@@ -361,20 +356,6 @@ class IdentityService:
             return {}
 
         instance_arn, _ = self.get_instance_details()
-        if dry_run:
-            for ps_def in permission_sets:
-                audit(
-                    "deploy",
-                    f"permission-set:{ps_def.name}",
-                    Outcome.SUCCEEDED,
-                    f"Would deploy permission set '{ps_def.name}' via CloudFormation",
-                    dry_run=True,
-                )
-            return {
-                ps_def.name: f"arn:aws:sso:::permissionSet/simulated/{ps_def.name}"
-                for ps_def in permission_sets
-            }
-
         logical_ids = self._logical_ids_for_permission_sets(permission_sets)
         template_dict = self.synthesize_permission_sets_template(
             instance_arn, permission_sets, project_root=project_root
@@ -386,7 +367,7 @@ class IdentityService:
             outputs_dir.mkdir(parents=True, exist_ok=True)
             (outputs_dir / "sso-permission-sets.yaml").write_text(template_body, encoding="utf-8")
 
-        stack_name = f"{org_name}-sso-permission-sets"
+        stack_name = Stack.PERMISSION_SETS.for_org(org_name)
         cfn_client = self.session_mgr.get_client("cloudformation", region_name=self.region)
         cfn_service = CloudFormationService(self.session_mgr)
 
@@ -394,89 +375,70 @@ class IdentityService:
         declared_names = {ps_def.name for ps_def in permission_sets}
         pre_existing = declared_names.intersection(existing_ps.keys())
 
-        if pre_existing:
-            stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
-            if (
-                stack_status is None
-                or stack_status in ("DELETE_COMPLETE", "REVIEW_IN_PROGRESS")
-                or stack_status in UNUSABLE_STACK_STATES
-            ):
-                resources_to_import: list[dict[str, Any]] = []
-                for ps_def in permission_sets:
-                    if ps_def.name in existing_ps:
-                        logical_id = logical_ids[ps_def.name]
-                        resources_to_import.append(
-                            {
-                                "ResourceType": "AWS::SSO::PermissionSet",
-                                "LogicalResourceId": logical_id,
-                                "ResourceIdentifier": {
-                                    "InstanceArn": instance_arn,
-                                    "PermissionSetArn": existing_ps[ps_def.name],
-                                },
-                            }
-                        )
-
-                import_template_dict = self.synthesize_permission_sets_template(
-                    instance_arn, permission_sets, project_root=project_root, include_ownership_tag=False
-                )
-                import_template_dict["Resources"] = {
-                    logical_ids[ps.name]: import_template_dict["Resources"][logical_ids[ps.name]]
-                    for ps in permission_sets
-                    if ps.name in existing_ps
+        in_stack = (
+            cfn_service.resource_ids(cfn_client, stack_name)
+            if pre_existing and cfn_service.is_usable(cfn_client, stack_name)
+            else set()
+        )
+        to_adopt = [
+            ps for ps in permission_sets if ps.name in pre_existing and logical_ids[ps.name] not in in_stack
+        ]
+        if to_adopt:
+            adopting = sorted(ps.name for ps in to_adopt)
+            resources_to_import: list[dict[str, Any]] = [
+                {
+                    "ResourceType": "AWS::SSO::PermissionSet",
+                    "LogicalResourceId": logical_ids[ps.name],
+                    "ResourceIdentifier": {
+                        "InstanceArn": instance_arn,
+                        "PermissionSetArn": existing_ps[ps.name],
+                    },
                 }
-                import_template_body = yaml.dump(import_template_dict, sort_keys=False)
-                logger.debug(
-                    "Importing pre-existing Permission Sets %s into CloudFormation stack '%s'...",
-                    sorted(pre_existing),
-                    stack_name,
+                for ps in to_adopt
+            ]
+            import_template_dict = self.synthesize_permission_sets_template(
+                instance_arn, permission_sets, project_root=project_root, include_ownership_tag=False
+            )
+            adopted = {
+                logical_ids[ps.name]: import_template_dict["Resources"][logical_ids[ps.name]]
+                for ps in to_adopt
+            }
+            logger.debug("Importing pre-existing Permission Sets %s into stack '%s'...", adopting, stack_name)
+            try:
+                cfn_service.import_resources_and_deploy_stack(
+                    cfn_client=cfn_client,
+                    stack_name=stack_name,
+                    template_body=cfn_service.import_template(
+                        cfn_client, stack_name, import_template_dict, adopted
+                    ),
+                    resources_to_import=resources_to_import,
+                    tags=tags,
+                    org_tags=org_tags,
                 )
-                try:
-                    cfn_service.import_resources_and_deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        template_body=import_template_body,
-                        resources_to_import=resources_to_import,
-                        tags=tags,
-                        org_tags=org_tags,
-                        dry_run=dry_run,
-                    )
-                    # Now that the sets are stack-managed, apply the full template (adds ownership tags and any new sets).
-                    cfn_service.deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        parameters={},
-                        tags=tags,
-                        dry_run=dry_run,
-                        template_body=template_body,
-                        org_tags=org_tags,
-                    )
-                    return self.list_permission_sets(instance_arn)
-                except (DeploymentError, ClientError) as e:
-                    # Never delete permission sets we did not create: removing one also removes every
-                    # account assignment on it, which can lock people out of AWS accounts.
-                    raise IdentityCenterError(
-                        f"Could not adopt pre-existing permission set(s) {sorted(pre_existing)} into "
-                        f"stack '{stack_name}'.",
-                        details=(
-                            f"{e}\nNo permission sets were deleted. Resolve the CloudFormation import "
-                            "error, or rename the permission set(s) in identity.yaml so tarmac creates "
-                            "new ones alongside the existing ones."
-                        ),
-                    ) from e
+            except (DeploymentError, ClientError) as e:
+                # Never delete permission sets we did not create: removing one also removes every
+                # account assignment on it, which can lock people out of AWS accounts.
+                raise IdentityCenterError(
+                    f"Could not adopt pre-existing permission set(s) {adopting} into stack '{stack_name}'.",
+                    details=(
+                        f"{e}\nNo permission sets were deleted. Resolve the CloudFormation import "
+                        "error, or rename the permission set(s) in identity.yaml so tarmac creates "
+                        "new ones alongside the existing ones."
+                    ),
+                ) from e
 
         cfn_service.deploy_stack(
             cfn_client=cfn_client,
             stack_name=stack_name,
             parameters={},
             tags=tags,
-            dry_run=dry_run,
             template_body=template_body,
             org_tags=org_tags,
         )
 
         return self.list_permission_sets(instance_arn)
 
-    def get_or_create_user(self, user_def: UserDef, dry_run: bool = False) -> str | None:
+    def get_or_create_user(self, user_def: UserDef) -> str | None:
         """Fetch or create a user in Identity Store. Returns UserId."""
         _, store_id = self.get_instance_details()
 
@@ -493,21 +455,10 @@ class IdentityService:
                     f"identity-user:{user_def.username}",
                     Outcome.UNCHANGED,
                     f"Identity Center user '{user_def.username}' already exists",
-                    dry_run=dry_run,
                 )
                 return users[0]["UserId"]
         except ClientError as e:
             logger.warning("Error checking user '%s': %s", user_def.username, e)
-
-        if dry_run:
-            audit(
-                "create",
-                f"identity-user:{user_def.username}",
-                Outcome.SUCCEEDED,
-                f"Would create Identity Center user '{user_def.username}' ({user_def.email})",
-                dry_run=True,
-            )
-            return f"dry-run-user-{user_def.username}"
 
         try:
             resp = self.identitystore_client.create_user(
@@ -535,7 +486,7 @@ class IdentityService:
             )
             raise IdentityCenterError(f"Failed to create user '{user_def.username}'", details=str(e)) from e
 
-    def get_or_create_group(self, group_def: GroupDef, dry_run: bool = False) -> str | None:
+    def get_or_create_group(self, group_def: GroupDef) -> str | None:
         """Fetch or create a group in Identity Store. Returns GroupId."""
         _, store_id = self.get_instance_details()
 
@@ -552,21 +503,10 @@ class IdentityService:
                     f"identity-group:{group_def.name}",
                     Outcome.UNCHANGED,
                     f"Identity Center group '{group_def.name}' already exists",
-                    dry_run=dry_run,
                 )
                 return groups[0]["GroupId"]
         except ClientError as e:
             logger.warning("Error checking group '%s': %s", group_def.name, e)
-
-        if dry_run:
-            audit(
-                "create",
-                f"identity-group:{group_def.name}",
-                Outcome.SUCCEEDED,
-                f"Would create Identity Center group '{group_def.name}'",
-                dry_run=True,
-            )
-            return f"dry-run-group-{group_def.name}"
 
         try:
             resp = self.identitystore_client.create_group(
@@ -592,6 +532,27 @@ class IdentityService:
             )
             raise IdentityCenterError(f"Failed to create group '{group_def.name}'", details=str(e)) from e
 
+    def get_group_id_by_name(self, name: str) -> str | None:
+        """Fetch GroupId for a group display name from Identity Store (None when absent). AWS errors propagate."""
+        _, store_id = self.get_instance_details()
+        groups = self.identitystore_client.list_groups(
+            IdentityStoreId=store_id, Filters=[{"AttributePath": "DisplayName", "AttributeValue": name}]
+        ).get("Groups", [])
+        return str(groups[0]["GroupId"]) if groups else None
+
+    def is_group_member(self, group_id: str, user_id: str) -> bool:
+        """Whether the user is already in the group. AWS errors other than not-found propagate."""
+        _, store_id = self.get_instance_details()
+        try:
+            self.identitystore_client.get_group_membership_id(
+                IdentityStoreId=store_id, GroupId=group_id, MemberId={"UserId": user_id}
+            )
+        except ClientError as e:
+            if aws_error_code(e) == "ResourceNotFoundException":
+                return False
+            raise
+        return True
+
     def get_user_id_by_username(self, username: str) -> str | None:
         """Fetch UserId for a given username from Identity Store."""
         _, store_id = self.get_instance_details()
@@ -614,22 +575,11 @@ class IdentityService:
         user_id: str,
         group_name: str = "",
         username: str = "",
-        dry_run: bool = False,
     ) -> bool:
         """Add a user to a group in Identity Store. Returns True if newly added, False if already a member."""
         _, store_id = self.get_instance_details()
         u_label = username or user_id
         g_label = group_name or group_id
-
-        if dry_run:
-            audit(
-                "add-member",
-                f"identity-group:{g_label}",
-                Outcome.SUCCEEDED,
-                f"Would add user '{u_label}' to group '{g_label}'",
-                dry_run=True,
-            )
-            return True
 
         try:
             self.identitystore_client.create_group_membership(
@@ -724,25 +674,12 @@ class IdentityService:
         group_name: str,
         permission_set_arn: str,
         account_ids: list[str],
-        dry_run: bool = False,
     ) -> int:
         """Assign a group to specific accounts with a given permission set. Returns count of assignments."""
         instance_arn, _ = self.get_instance_details()
         count = 0
 
         for acct_id in account_ids:
-            if dry_run:
-                audit(
-                    "assign",
-                    f"sso-assignment:{acct_id}:{group_name}",
-                    Outcome.SUCCEEDED,
-                    f"Would assign group '{group_name}' to account {acct_id}",
-                    dry_run=True,
-                    permission_set_arn=permission_set_arn,
-                )
-                count += 1
-                continue
-
             if self._assignment_exists(instance_arn, acct_id, permission_set_arn, group_id):
                 audit(
                     "assign",
@@ -826,7 +763,6 @@ class IdentityService:
         groups: list[GroupDef],
         ps_map: dict[str, str],
         active_accts: dict[str, str],
-        dry_run: bool = False,
     ) -> tuple[int, dict[str, str], list[str]]:
         """Synchronize declared groups and their multi-account permission set assignments."""
         all_acct_ids = list(active_accts.values())
@@ -835,7 +771,7 @@ class IdentityService:
         synced_groups: list[str] = []
 
         for grp_def in groups:
-            group_id = self.get_or_create_group(grp_def, dry_run=dry_run)
+            group_id = self.get_or_create_group(grp_def)
             if not group_id:
                 continue
             group_map[grp_def.name] = group_id
@@ -851,7 +787,6 @@ class IdentityService:
                     group_name=grp_def.name,
                     permission_set_arn=ps_arn,
                     account_ids=target_ids,
-                    dry_run=dry_run,
                 )
 
         return total_assignments, group_map, synced_groups
@@ -861,7 +796,6 @@ class IdentityService:
         groups: list[GroupDef],
         user_map: dict[str, str],
         group_map: dict[str, str],
-        dry_run: bool = False,
     ) -> int:
         """Synchronize declared user memberships into groups."""
         added_count = 0
@@ -885,21 +819,10 @@ class IdentityService:
                     user_id=user_id,
                     group_name=grp_def.name,
                     username=member_name,
-                    dry_run=dry_run,
                 ):
                     added_count += 1
 
         return added_count
-
-    def _fetch_active_accounts(self) -> dict[str, str]:
-        """Fetch all ACTIVE AWS accounts from Organizations as {Name: Id}."""
-        org_client: Any = self.session_mgr.get_client("organizations")
-        active_accts: dict[str, str] = {}
-        for page in org_client.get_paginator("list_accounts").paginate():
-            for a in page.get("Accounts", []):
-                if a.get("Status") == "ACTIVE":
-                    active_accts[a["Name"]] = str(a["Id"])
-        return active_accts
 
     def sync_identity(
         self,
@@ -907,7 +830,6 @@ class IdentityService:
         project_root: Path | None = None,
         active_accounts: dict[str, str] | None = None,
         org_name: str = "organization",
-        dry_run: bool = False,
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
     ) -> IdentitySyncReport:
@@ -918,7 +840,6 @@ class IdentityService:
             id_cfg.permission_sets,
             project_root=project_root,
             org_name=org_name,
-            dry_run=dry_run,
             org_tags=org_tags,
             tags=custom_tags,
         )
@@ -928,21 +849,23 @@ class IdentityService:
         users = [id_cfg.admin_user, id_cfg.breakglass_user, *id_cfg.additional_users]
         user_map: dict[str, str] = {}
         for u in users:
-            uid = self.get_or_create_user(u, dry_run=dry_run)
+            uid = self.get_or_create_user(u)
             if uid:
                 user_map[u.username] = uid
                 report.users_synced.append(u.username)
 
-        accts = active_accounts if active_accounts is not None else self._fetch_active_accounts()
+        accts = (
+            active_accounts
+            if active_accounts is not None
+            else active_account_ids(self.session_mgr.get_client("organizations"))
+        )
 
         total_assignments, group_map, synced_groups = self.sync_groups_and_assignments(
-            id_cfg.groups, ps_map, accts, dry_run=dry_run
+            id_cfg.groups, ps_map, accts
         )
         report.groups_synced = synced_groups
         report.assignments_created = total_assignments
 
-        report.memberships_added = self.sync_group_memberships(
-            id_cfg.groups, user_map, group_map, dry_run=dry_run
-        )
+        report.memberships_added = self.sync_group_memberships(id_cfg.groups, user_map, group_map)
 
         return report

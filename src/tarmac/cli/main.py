@@ -6,30 +6,46 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
-from rich import box
 from rich.panel import Panel
-from rich.table import Table
 
 from .. import __version__
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
-from ..core.exceptions import GovernanceError
 from ..core.logging import setup_logging, start_run
 from ..core.placeholders import find_placeholder_values
+from ..core.stack_names import Stack
+from ..services.baseline import BaselineService
 from ..services.drift import DriftService
 from ..services.identity import SUPPORTED_SSO_REGIONS, _probe_region_for_instance
+from ..services.ou import OUService
 from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
-from . import access, account, baseline, deploy, identity, org, ou
-from .account import apply_accounts
-from .common import load_configs_or_exit, warn_if_example_newer
+from . import access, account
+from .common import (
+    ConfigDirOption,
+    JsonOption,
+    RegionOption,
+    exit_on_error,
+    load_configs_or_exit,
+    warn_if_example_newer,
+)
+from .deploy import deploy_command, destroy_command, inventory_command
 from .importer import import_command
 from .logs import logs_command
 from .preflight import run_preflight_checks
-from .ui import console, create_table, error_console, print_header, print_info, print_success, print_warning
+from .ui import (
+    console,
+    create_table,
+    error_console,
+    print_action_panel,
+    print_header,
+    print_info,
+    print_success,
+    print_warning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +56,14 @@ app = typer.Typer(
 )
 
 app.add_typer(access.app, name="access")
-app.add_typer(org.app, name="org")
-app.add_typer(ou.app, name="ou")
 app.add_typer(account.app, name="account")
-app.add_typer(identity.app, name="identity")
-app.add_typer(baseline.app, name="baseline")
-app.add_typer(deploy.app, name="deploy")
+app.command("deploy")(deploy_command)
+app.command("destroy")(destroy_command)
+app.command("inventory")(inventory_command)
 
 app.command(
     "preflight",
     help="Audit management account manual prerequisites and operational readiness.",
-)(run_preflight_checks)
-app.command(
-    "doctor",
-    help="Alias for 'tarmac preflight': diagnose environment health and prerequisites.",
 )(run_preflight_checks)
 
 
@@ -72,27 +82,29 @@ def version_callback(value: bool) -> None:
 @app.callback()
 def main_callback(
     ctx: typer.Context,
-    version: bool | None = typer.Option(
-        None,
-        "--version",
-        "-V",
-        help="Show tarmac version and exit",
-        callback=version_callback,
-        is_eager=True,
-    ),
-    profile: str | None = typer.Option(None, "--profile", "-p", help="AWS CLI profile name to use"),
-    debug: bool = typer.Option(
-        False, "--debug", "-d", help="Enable verbose debug logging and full tracebacks"
-    ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Print every recorded action (INFO) to the terminal"
-    ),
-    log_file: Path | None = typer.Option(
-        None,
-        "--log-file",
-        envvar="TARMAC_LOG_FILE",
-        help="Append a JSON-lines record of this run (actions, outcomes, errors) to this file",
-    ),
+    version: Annotated[
+        bool | None,
+        typer.Option(
+            "--version", "-V", help="Show tarmac version and exit", callback=version_callback, is_eager=True
+        ),
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", "-p", help="AWS CLI profile name to use")
+    ] = None,
+    debug: Annotated[
+        bool, typer.Option("--debug", "-d", help="Enable verbose debug logging and full tracebacks")
+    ] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Print every recorded action (INFO) to the terminal")
+    ] = False,
+    log_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--log-file",
+            envvar="TARMAC_LOG_FILE",
+            help="Append a JSON-lines record of this run (actions, outcomes, errors) to this file",
+        ),
+    ] = None,
 ) -> None:
     """Global CLI configuration callback."""
     if profile:
@@ -111,21 +123,25 @@ app.command("import")(import_command)
 
 @app.command("init")
 def init_project(
-    directory: Path | None = typer.Argument(
-        None,
-        help="Directory to scaffold configuration files [default: config]",
-        show_default=False,
-    ),
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Directory to scaffold configuration files"
-    ),
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing configuration files"),
-    with_templates: bool = typer.Option(
-        False,
-        "--with-templates",
-        "-t",
-        help="Also export default CloudFormation templates and SCP policies locally",
-    ),
+    directory: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Directory to scaffold configuration files [default: config]", show_default=False
+        ),
+    ] = None,
+    config_dir: Annotated[
+        Path | None, typer.Option("--config-dir", "-c", help="Directory to scaffold configuration files")
+    ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Overwrite existing configuration files")
+    ] = False,
+    with_templates: Annotated[
+        bool,
+        typer.Option(
+            "--with-templates",
+            help="Also export default CloudFormation templates and SCP policies locally",
+        ),
+    ] = False,
 ) -> None:
     """Scaffold starter YAML configuration files for a new Tarmac project."""
 
@@ -142,7 +158,7 @@ def init_project(
         console.print("\n[bold cyan]Next Steps:[/bold cyan]")
         console.print(f"  1. Customize configuration files in [bold]{target_dir}/[/bold]")
         console.print("  2. Validate configuration with [bold]tarmac validate[/bold]")
-        console.print("  3. Preview deployment with [bold]tarmac deploy run --dry-run[/bold]\n")
+        console.print("  3. Preview deployment with [bold]tarmac deploy --dry-run[/bold]\n")
 
 
 def _build_validation_summary(bundle: Any) -> dict[str, Any]:
@@ -176,10 +192,8 @@ def _print_validation_table(bundle: Any) -> None:
 
 @app.command("validate")
 def validate_config(
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Path to configuration directory"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
+    config_dir: ConfigDirOption = None,
+    json_output: JsonOption = False,
 ) -> None:
     """Validate all YAML configuration files and logical cross-references."""
 
@@ -190,7 +204,7 @@ def validate_config(
             "valid": not bool(errors or bundle is None),
             "summary": _build_validation_summary(bundle),
             "errors": errors or [],
-            "warnings": find_placeholder_values(bundle) if bundle is not None else [],
+            "warnings": [*find_placeholder_values(bundle), *bundle.deprecated_settings()] if bundle else [],
         }
         print(json.dumps(payload, indent=2))
         if errors or bundle is None:
@@ -222,28 +236,8 @@ def validate_config(
         )
         for problem in placeholders:
             console.print(f"  [yellow]•[/yellow] {problem}")
-
-
-@app.command("apply")
-def apply_shortcut(
-    config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
-    region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Simulate provisioning without making changes"),
-    skip_baseline: bool = typer.Option(False, "--skip-baseline", help="Skip running post-creation baselines"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt for automated run"),
-) -> None:
-    """Provision declared accounts (shortcut for 'tarmac account apply').
-
-    To deploy the full end-to-end landing zone, use 'tarmac deploy run'.
-    """
-
-    apply_accounts(
-        config_dir=config_dir,
-        region=region,
-        dry_run=dry_run,
-        skip_baseline=skip_baseline,
-        yes=yes,
-    )
+    for message in bundle.deprecated_settings():
+        print_warning(message)
 
 
 def _fetch_org_details(session_mgr: AwsSessionManager) -> tuple[dict[str, str], str]:
@@ -260,32 +254,17 @@ def _fetch_org_details(session_mgr: AwsSessionManager) -> tuple[dict[str, str], 
         return {}, str(e)
 
 
-def _fetch_sso_instance(session_mgr: AwsSessionManager, region: str) -> str:
-    """Fetch IAM Identity Center instance ARN or empty string."""
-    try:
-        sso_client = session_mgr.get_client("sso-admin", region_name=region)
-        instances = sso_client.list_instances().get("Instances", [])
-        return str(instances[0].get("InstanceArn", "")) if instances else ""
-    except Exception:
-        return ""
-
-
-def _find_sso_instance(session_mgr: AwsSessionManager, region: str) -> tuple[str, str]:
+def _find_sso_instance(session_mgr: AwsSessionManager, region: str) -> tuple[str, str, str]:
     """Find the IAM Identity Center instance, trying the given region first and then the others.
 
     Identity Center lives in exactly one Region, and it is often not the Region the shell happens to use.
-    Returns (instance ARN, Region it was found in), or ("", region) when there is none.
+    Returns (instance ARN, identity store ID, Region it was found in), or ("", "", region) when there is none.
     """
-    arn = _fetch_sso_instance(session_mgr, region)
-    if arn:
-        return arn, region
-    for candidate in SUPPORTED_SSO_REGIONS:
-        if candidate == region:
-            continue
+    for candidate in [region, *(r for r in SUPPORTED_SSO_REGIONS if r != region)]:
         found = _probe_region_for_instance(session_mgr, candidate)
         if found:
-            return found[0], candidate
-    return "", region
+            return found[0], found[1], candidate
+    return "", "", region
 
 
 def _resolve_sso_region(default_region: str) -> str:
@@ -300,21 +279,34 @@ def _resolve_sso_region(default_region: str) -> str:
 
 @app.command("info")
 def show_info(
-    region: str | None = typer.Option(
-        None, "--region", "-r", help="AWS region (default: AWS_REGION / AWS_DEFAULT_REGION, else us-east-1)"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
+    region: Annotated[
+        str | None,
+        typer.Option(
+            "--region", "-r", help="AWS region (default: AWS_REGION / AWS_DEFAULT_REGION, else us-east-1)"
+        ),
+    ] = None,
+    json_output: JsonOption = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Exit with code 1 unless these credentials can run tarmac (non-root, can read the organization)",
+        ),
+    ] = False,
 ) -> None:
     """Show current AWS authentication details, caller identity, and Organization status."""
 
-    try:
+    with exit_on_error("Authentication Error"):
         session_mgr = AwsSessionManager(region_name=region)
         resolved_region = str(session_mgr.default_region)
         caller = session_mgr.get_caller_identity()
         caller_acct = caller.get("Account", "Unknown")
         org_info, org_err = _fetch_org_details(session_mgr)
         sso_region = _resolve_sso_region(resolved_region)
-        sso_arn, sso_found_region = _find_sso_instance(session_mgr, sso_region)
+        sso_arn, store_id, sso_found_region = _find_sso_instance(session_mgr, sso_region)
+        portal_url = f"https://{store_id}.awsapps.com/start" if store_id else None
+        is_root = session_mgr.is_root_identity() is True
+        can_run_tarmac = not is_root and bool(org_info.get("id"))
 
         if json_output:
             payload = {
@@ -326,8 +318,15 @@ def show_info(
                 "feature_set": org_info.get("feature_set"),
                 "is_management_account": caller_acct == org_info.get("master_id"),
                 "identity_center_arn": sso_arn or None,
+                "identity_center_region": sso_found_region if sso_arn else None,
+                "identity_store_id": store_id or None,
+                "access_portal_url": portal_url,
+                "is_root": is_root,
+                "can_run_tarmac": can_run_tarmac,
             }
             print(json.dumps(payload, indent=2))
+            if strict and not can_run_tarmac:
+                raise typer.Exit(code=1)
             return
 
         print_header("AWS Authentication & Identity Info")
@@ -355,6 +354,8 @@ def show_info(
 
         if sso_arn:
             table.add_row("Identity Center", f"[green]Enabled in {sso_found_region} ({sso_arn})[/green]")
+            table.add_row("Identity Store ID", store_id)
+            table.add_row("Access Portal URL", str(portal_url))
         else:
             table.add_row(
                 "Identity Center",
@@ -362,53 +363,30 @@ def show_info(
                 "identity may call sso-admin.[/yellow]",
             )
 
+        table.add_row("Credentials", _credentials_verdict(is_root, can_run_tarmac))
         console.print(table)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Authentication Error[/bold red]", border_style="red")
+        if strict and not can_run_tarmac:
+            raise typer.Exit(code=1)
+
+
+def _credentials_verdict(is_root: bool, can_run_tarmac: bool) -> str:
+    if is_root:
+        return (
+            "[bold red]✗ Root credentials cannot assume roles in member accounts. Run 'tarmac access bootstrap' "
+            "from CloudShell, then use the tarmac role or an SSO admin.[/bold red]"
         )
-        raise typer.Exit(code=1)
-
-
-def _render_status_actions_panel(actions: list[tuple[str, str, str]]) -> None:
-    """Render dedicated remediation table for pending landing zone components."""
-    has_failures = any(level == "FAIL" for level, _, _ in actions)
-    panel_title = (
-        "[bold red]Action Required (Missing Prerequisite)[/bold red]"
-        if has_failures
-        else "[bold yellow]Pending Actions & Remediation[/bold yellow]"
-    )
-    border_color = "red" if has_failures else "yellow"
-
-    action_table = Table(
-        box=box.SIMPLE,
-        header_style=f"bold {border_color}",
-        expand=True,
-        show_header=True,
-    )
-    action_table.add_column("Status", justify="center", width=8, min_width=8, no_wrap=True)
-    action_table.add_column("Component", style="bold white", width=26, no_wrap=True)
-    action_table.add_column("Action Required / Remediation", style="white")
-
-    for level, comp, action in actions:
-        badge = "[bold red]FAIL[/bold red]" if level == "FAIL" else "[bold yellow]WARN[/bold yellow]"
-        action_table.add_row(badge, comp, action)
-
-    console.print(
-        Panel(
-            action_table,
-            title=panel_title,
-            border_style=border_color,
-            padding=(0, 1),
-            expand=True,
+    if not can_run_tarmac:
+        return (
+            "[yellow]✗ Cannot read the organization. Use management account credentials with Organizations read "
+            "access, and create the organization with 'tarmac deploy --phase 1' if it does not exist.[/yellow]"
         )
-    )
+    return "[green]✓ Non-root and can read the organization[/green]"
 
 
 def _eval_org_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
     active = status.org_id != "Unknown"
     badge = "[bold green]ACTIVE[/bold green]" if active else "[bold red]MISSING[/bold red]"
-    action = None if active else "Organization not found. Run: tarmac org bootstrap"
+    action = None if active else "Organization not found. Run: tarmac deploy --phase 1"
     return ("AWS Organization", bundle.org.organization.name, status.org_id, badge, action)
 
 
@@ -416,7 +394,7 @@ def _eval_ous_status(status: Any) -> tuple[str, str, str, str, str | None]:
     synced = status.ous_declared <= status.ous_live
     diff = status.ous_declared - status.ous_live
     badge = "[bold green]SYNCED[/bold green]" if synced else "[bold yellow]DRIFT[/bold yellow]"
-    action = f"Missing {diff} OU(s). Run: tarmac ou sync" if not synced else None
+    action = f"Missing {diff} OU(s). Run: tarmac deploy --phase 2" if not synced else None
     return (
         "Organizational Units",
         f"{status.ous_declared} OUs declared",
@@ -430,7 +408,7 @@ def _eval_accounts_status(status: Any) -> tuple[str, str, str, str, str | None]:
     synced = status.accounts_declared <= status.accounts_live
     diff = status.accounts_declared - status.accounts_live
     badge = "[bold green]SYNCED[/bold green]" if synced else "[bold yellow]PENDING[/bold yellow]"
-    action = f"{diff} account(s) pending creation. Run: tarmac account apply" if not synced else None
+    action = f"{diff} account(s) pending creation. Run: tarmac deploy --phase 4" if not synced else None
 
     live_label = f"{status.accounts_live} accounts live"
     suspended_count = getattr(status, "accounts_suspended", 0)
@@ -449,7 +427,7 @@ def _eval_accounts_status(status: Any) -> tuple[str, str, str, str, str | None]:
 def _eval_cloudtrail_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
     synced = "COMPLETE" in status.cloudtrail_status
     badge = "[bold green]DEPLOYED[/bold green]" if synced else "[bold yellow]PENDING[/bold yellow]"
-    action = "CloudTrail stack not deployed. Run: tarmac baseline cloudtrail" if not synced else None
+    action = "CloudTrail stack not deployed. Run: tarmac deploy --phase 3" if not synced else None
     return (
         "Organization CloudTrail",
         bundle.org.cloudtrail.trail_name,
@@ -462,10 +440,10 @@ def _eval_cloudtrail_status(status: Any, bundle: Any) -> tuple[str, str, str, st
 def _eval_backend_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
     synced = "COMPLETE" in status.backend_status
     badge = "[bold green]DEPLOYED[/bold green]" if synced else "[bold yellow]PENDING[/bold yellow]"
-    action = "Backend stack not deployed. Run: tarmac baseline backend" if not synced else None
+    action = "Backend stack not deployed. Run: tarmac deploy --phase 5" if not synced else None
     return (
         "Terraform Backend",
-        bundle.org.terraform_backend.bucket_prefix,
+        Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name),
         status.backend_status,
         badge,
         action,
@@ -482,7 +460,7 @@ def _eval_sso_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str 
         "[bold green]SYNCED[/bold green]" if status.sso_configured else "[bold yellow]PENDING[/bold yellow]"
     )
     action = (
-        "SSO instance not detected. Enable in AWS Console or run: tarmac identity sync"
+        "SSO instance not detected. Enable in AWS Console or run: tarmac deploy --phase 6"
         if not status.sso_configured
         else None
     )
@@ -521,42 +499,26 @@ def _render_status_table(bundle: Any, status: Any) -> None:
     console.print(table)
 
     if actions:
-        _render_status_actions_panel(actions)
+        print_action_panel(
+            [
+                (
+                    "[bold red]FAIL[/bold red]" if level == "FAIL" else "[bold yellow]WARN[/bold yellow]",
+                    name,
+                    action,
+                )
+                for level, name, action in actions
+            ],
+            has_failures=any(level == "FAIL" for level, _, _ in actions),
+            titles=("Action Required (Missing Prerequisite)", "Pending Actions & Remediation"),
+            item_header="Component",
+            item_width=26,
+            action_header="Action Required / Remediation",
+        )
         print_info(
-            f"Reconciliation pending ({len(actions)} item(s)). Review actionable steps above or run 'tarmac deploy run'.\n"
+            f"Reconciliation pending ({len(actions)} item(s)). Review actionable steps above or run 'tarmac deploy'.\n"
         )
     else:
         print_success("Landing zone is fully reconciled and in sync with configuration.\n")
-
-
-@app.command("status")
-def show_status(
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Path to configuration directory"
-    ),
-    region: str | None = typer.Option(None, "--region", "-r", help="Primary AWS region"),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
-) -> None:
-    """Show reconciliation status between declared YAML and live AWS environment."""
-
-    bundle = load_configs_or_exit(config_dir)
-    target_region = region or bundle.org.organization.primary_region
-
-    try:
-        session_mgr = AwsSessionManager(region_name=target_region)
-        status_service = StatusService(session_mgr)
-        status = status_service.inspect(bundle, target_region)
-
-        if json_output:
-            print(json.dumps(dataclasses.asdict(status), indent=2))
-            return
-
-        _render_status_table(bundle, status)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Status Inspection Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 def _render_drift_table(report: Any) -> None:
@@ -595,7 +557,7 @@ def _render_drift_table(report: Any) -> None:
         print_warning(
             f"Drift detected across {report.drift_count + report.missing_count} item(s) "
             f"({report.missing_count} missing, {report.drift_count} drifted). "
-            "Execute the recommended remediation commands above or run 'tarmac deploy run'.\n"
+            "Execute the recommended remediation commands above or run 'tarmac deploy'.\n"
         )
     else:
         print_success(
@@ -603,40 +565,88 @@ def _render_drift_table(report: Any) -> None:
         )
 
 
-@app.command("drift")
-def show_drift(
-    config_dir: Path | None = typer.Option(
-        None, "--config-dir", "-c", help="Path to configuration directory"
-    ),
-    region: str | None = typer.Option(None, "--region", "-r", help="Primary AWS region"),
-    json_output: bool = typer.Option(False, "--json", help="Output results in JSON format"),
-    strict: bool = typer.Option(False, "--strict", help="Exit with code 1 if drift is detected"),
+def _render_detail_tables(ous: dict[str, str], monitors: list[Any], subscriptions: list[Any]) -> None:
+    table = create_table(title="Organizational Units")
+    table.add_column("OU Name", style="cyan")
+    table.add_column("OU ID", style="green")
+    for name, ou_id in ous.items():
+        table.add_row(name, ou_id)
+    console.print(table)
+
+    table = create_table(title="Cost Anomaly Monitors")
+    table.add_column("Monitor Name", style="cyan")
+    table.add_column("Type", style="yellow")
+    table.add_column("Scope / Linked Account", style="green")
+    for m in monitors:
+        values = (
+            m.get("MonitorSpecification", {}).get("Dimensions", {}).get("Values", ["All linked accounts"])
+        )
+        table.add_row(m.get("MonitorName", "Unknown"), m.get("MonitorType", "Unknown"), ", ".join(values))
+    console.print(table)
+
+    table = create_table(title="Cost Anomaly Alert Subscriptions")
+    table.add_column("Subscription Name", style="cyan")
+    table.add_column("Threshold", style="yellow")
+    table.add_column("Frequency", style="magenta")
+    table.add_column("Subscribers", style="green")
+    for sub in subscriptions:
+        table.add_row(
+            sub.get("SubscriptionName", "Unknown"),
+            f"${sub.get('Threshold', 0):.2f}",
+            sub.get("Frequency", "Unknown"),
+            ", ".join(s.get("Address", "") for s in sub.get("Subscribers", [])),
+        )
+    console.print(table)
+
+
+@app.command("status")
+def show_status(
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    json_output: JsonOption = False,
+    detail: Annotated[
+        bool,
+        typer.Option(
+            "--detail",
+            help="Also check every declared item for drift, and list live OUs and cost anomaly monitors",
+        ),
+    ] = False,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Exit with code 1 if drift is detected (implies --detail)")
+    ] = False,
 ) -> None:
-    """Audit live AWS resources against declared YAML manifests across all governance pillars."""
+    """Show how the live AWS environment compares with the declared configuration."""
 
     bundle = load_configs_or_exit(config_dir)
     target_region = region or bundle.org.organization.primary_region
 
-    try:
+    with exit_on_error("Status Inspection Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
-        drift_service = DriftService(session_mgr)
-        report = drift_service.inspect_drift(bundle, target_region)
+        status = StatusService(session_mgr).inspect(bundle, target_region)
+        report = DriftService(session_mgr).inspect_drift(bundle, target_region) if detail or strict else None
+        ous: dict[str, str] = {}
+        monitors: list[Any] = []
+        subscriptions: list[Any] = []
+        if detail:
+            ous = OUService(session_mgr).list_all_ous()
+            monitors, subscriptions = BaselineService(session_mgr).get_anomaly_overview()
 
         if json_output:
-            print(json.dumps(dataclasses.asdict(report), indent=2))
-            if strict and report.has_drift:
-                raise typer.Exit(code=1)
-            return
-
-        _render_drift_table(report)
-
-        if strict and report.has_drift:
+            payload = dataclasses.asdict(status)
+            if report is not None:
+                payload["drift"] = dataclasses.asdict(report)
+            if detail:
+                payload["organizational_units"] = ous
+                payload["cost_anomaly"] = {"monitors": monitors, "subscriptions": subscriptions}
+            print(json.dumps(payload, indent=2, default=str))
+        else:
+            _render_status_table(bundle, status)
+            if report is not None:
+                _render_drift_table(report)
+            if detail:
+                _render_detail_tables(ous, monitors, subscriptions)
+        if strict and report is not None and report.has_drift:
             raise typer.Exit(code=1)
-    except GovernanceError as e:
-        error_console.print(
-            Panel(str(e), title="[bold red]Drift Inspection Failed[/bold red]", border_style="red")
-        )
-        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

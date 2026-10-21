@@ -11,22 +11,13 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
+from ..core.org_accounts import active_account_ids, is_active, iter_accounts
 from ..core.placeholders import find_placeholder_values
+from ..core.stack_names import ACCESS_STACK, TARMAC_STACK_SUFFIXES, Bucket
 from ..core.templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
 
-# Stacks Tarmac creates are named "<organization.name>-<suffix>".
-TARMAC_STACK_SUFFIXES = (
-    "organization-scps",
-    "organization-cloudtrail",
-    "log-archive-hardening",
-    "terraform-backend",
-    "audit-account-hardening",
-    "sso-permission-sets",
-)
-# The stack 'tarmac access bootstrap' creates by default, and the region it defaults to.
-ACCESS_STACK = "tarmac-access"
 ACCESS_TEMPLATE = "cloudformation/tarmac-access.yaml"
 ACCESS_DEFAULT_REGION = "us-east-1"
 _LIVE_STACK_STATUSES = [
@@ -139,7 +130,7 @@ class PreflightService:
                 target="Management Account",
                 status=PreflightCheckStatus.INFO,
                 live_value="Not Initialized / Inaccessible",
-                action_required="Run 'tarmac org bootstrap' or check AWS Organizations permissions",
+                action_required="Run 'tarmac deploy --phase 1' or check AWS Organizations permissions",
             )
 
     def check_root_mfa(self) -> PreflightCheckResult:
@@ -228,7 +219,7 @@ class PreflightService:
                             target="Management Account",
                             status=PreflightCheckStatus.WARN,
                             live_value="Not Configured",
-                            action_required="Run 'tarmac org contacts' to configure",
+                            action_required="Run 'tarmac deploy --phase 1' to configure",
                         )
                     )
         except AWS_ERRORS as e:
@@ -366,7 +357,7 @@ class PreflightService:
                 live_value=f"{len(active_keys)} active (missing: {missing_str})",
                 action_required=(
                     f"Activate missing tag(s) ({missing_str}) in Billing & Cost Management console "
-                    "or run: tarmac org activate-cost-tags"
+                    "or run: tarmac deploy --phase 1"
                 ),
             )
         except ClientError as e:
@@ -561,13 +552,7 @@ class PreflightService:
         """Verify whether AWS Organizations account creation quota is sufficient for declared accounts."""
         try:
             org = self.session_mgr.get_client("organizations")
-            paginator = org.get_paginator("list_accounts")
-            active_accounts = 0
-            for page in paginator.paginate():
-                if isinstance(page, dict):
-                    for a in page.get("Accounts", []):
-                        if isinstance(a, dict) and a.get("Status") == "ACTIVE":
-                            active_accounts += 1
+            active_accounts = sum(1 for a in iter_accounts(org) if is_active(a))
             declared_count = len(self.bundle.accounts.accounts)
 
             sq = self.session_mgr.get_client("service-quotas", region_name="us-east-1")
@@ -673,16 +658,7 @@ class PreflightService:
 
             active_accts: dict[str, str] = {}
             try:
-                org = self.session_mgr.get_client("organizations")
-                paginator = org.get_paginator("list_accounts")
-                for page in paginator.paginate():
-                    if isinstance(page, dict):
-                        for acct in page.get("Accounts", []):
-                            if isinstance(acct, dict) and acct.get("Status") == "ACTIVE":
-                                name = str(acct.get("Name", ""))
-                                acct_id = str(acct.get("Id", ""))
-                                if name and acct_id:
-                                    active_accts[name] = acct_id
+                active_accts = active_account_ids(self.session_mgr.get_client("organizations"))
             except AWS_ERRORS as e:
                 logger.debug("Could not list accounts for S3 bucket collision check: %s", e)
 
@@ -693,21 +669,15 @@ class PreflightService:
             deployment_id = self.bundle.resolve_account_id(backend_name, active_accts) or mgmt_id
 
             org_name = self.bundle.org.organization.name
-            # Same rule as terraform-backend.yaml: tarmac always passes OrgName, which wins over BucketPrefix.
-            tf_bucket = (
-                f"{org_name}-terraform-state-{deployment_id}"
-                if org_name
-                else f"{self.bundle.org.terraform_backend.bucket_prefix}-{deployment_id}"
-            )
             prefixes_to_check = [
                 (
                     "CloudTrail Logs",
-                    f"{org_name}-org-cloudtrail-logs-{log_archive_id}",
+                    Bucket.CLOUDTRAIL_LOGS.for_account(org_name, log_archive_id),
                     log_archive_id,
                 ),
                 (
                     "Terraform State",
-                    tf_bucket,
+                    Bucket.TERRAFORM_STATE.for_account(org_name, deployment_id),
                     deployment_id,
                 ),
             ]
@@ -761,7 +731,7 @@ class PreflightService:
                                 live_value="Forbidden (Taken Globally)",
                                 action_required=(
                                     f"Bucket name '{b_name}' is globally claimed by another AWS account. "
-                                    "Change bucket_prefix in organization.yaml."
+                                    "Bucket names come from organization.name: choose a different name."
                                 ),
                             )
                         )

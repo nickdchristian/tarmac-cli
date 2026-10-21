@@ -35,10 +35,9 @@ READ_ONLY_PREFIXES = (
     "Assume",
 )
 
-# Change-type calls that are safe, and expected, while previewing. CloudFormation change sets are how a plan is
-# built, and sso-oidc.CreateToken is botocore silently refreshing an expired IAM Identity Center login token.
-# Entries are either a bare operation name or "service.Operation".
-DRY_RUN_ALLOWED = frozenset({"CreateChangeSet", "DeleteChangeSet", "sso-oidc.CreateToken"})
+# Change-type calls that are expected while previewing: sso-oidc.CreateToken is botocore silently refreshing an
+# expired IAM Identity Center login token. Entries are either a bare operation name or "service.Operation".
+DRY_RUN_ALLOWED = frozenset({"sso-oidc.CreateToken"})
 
 # AWS answers some calls with an error that only means "already done". Tarmac handles these itself and records the
 # result as UNCHANGED, so the call recorder keeps them out of the warnings.

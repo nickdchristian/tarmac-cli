@@ -1,7 +1,7 @@
 """Brown-field import: read a live AWS Organization and describe it as Tarmac configuration.
 
 Everything here is read-only. The result is a set of YAML files (plus SCP and permission-set policy
-documents) that match what already exists, so the first `tarmac deploy run` adopts the organization
+documents) that match what already exists, so the first `tarmac deploy` adopts the organization
 instead of fighting it. Anything that cannot be derived is written as a clearly marked placeholder and
 reported in `ImportReport.todos`.
 """
@@ -19,10 +19,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
+from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
+from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
 from .identity import IdentityService
-from .preflight import _LIVE_STACK_STATUSES, TARMAC_STACK_SUFFIXES
+from .preflight import _LIVE_STACK_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +81,6 @@ class ImportService:
         self.org: Any = session_mgr.get_client("organizations")
         self.report = ImportReport()
 
-    # ---------------------------------------------------------------- discovery
-
     def _organization(self) -> dict[str, Any]:
         org: dict[str, Any] = self.org.describe_organization()["Organization"]
         self.report.organization_id = str(org.get("Id", ""))
@@ -117,35 +117,34 @@ class ImportService:
 
     def _accounts(self, mgmt_id: str, ou_names: dict[str, str], root_id: str) -> list[dict[str, Any]]:
         accounts: list[dict[str, Any]] = []
-        for page in self.org.get_paginator("list_accounts").paginate():
-            for acct in sorted(page.get("Accounts", []), key=lambda a: a["Name"]):
-                if acct["Id"] == mgmt_id:
-                    continue
-                if acct.get("Status") != "ACTIVE":
-                    self.report.skipped_accounts.append(f"{acct['Name']} ({acct.get('Status', 'unknown')})")
-                    continue
-                parents = self.org.list_parents(ChildId=acct["Id"]).get("Parents", [])
-                parent_id = parents[0]["Id"] if parents else root_id
-                ou_name = ou_names.get(parent_id)
-                if ou_name is None:
-                    self.report.skipped_accounts.append(f"{acct['Name']} (directly under the root)")
-                    self.report.todos.append(
-                        f"Account '{acct['Name']}' sits directly under the organization root. Tarmac accounts "
-                        "must belong to an OU: move it into one, then re-run the import."
-                    )
-                    continue
-                entry: dict[str, Any] = {"name": acct["Name"], "email": acct["Email"], "ou": ou_name}
-                tags = _clean_tags(self._tags(acct["Id"]), self.report.todos, f"account '{acct['Name']}'")
-                if tags:
-                    entry["tags"] = tags
-                # Brown-field accounts keep their existing network layout.
-                entry["baseline"] = {"delete_default_vpc": False}
-                accounts.append(entry)
-                self.report.accounts.append(acct["Name"])
-                self.imported_accounts[str(acct["Id"])] = str(acct["Name"])
+        for acct in sorted(iter_accounts(self.org), key=lambda a: a["Name"]):
+            if acct["Id"] == mgmt_id:
+                continue
+            if not is_active(acct):
+                self.report.skipped_accounts.append(f"{acct['Name']} ({account_state(acct)})")
+                continue
+            parents = self.org.list_parents(ChildId=acct["Id"]).get("Parents", [])
+            parent_id = parents[0]["Id"] if parents else root_id
+            ou_name = ou_names.get(parent_id)
+            if ou_name is None:
+                self.report.skipped_accounts.append(f"{acct['Name']} (directly under the root)")
+                self.report.todos.append(
+                    f"Account '{acct['Name']}' sits directly under the organization root. Tarmac accounts "
+                    "must belong to an OU: move it into one, then re-run the import."
+                )
+                continue
+            entry: dict[str, Any] = {"name": acct["Name"], "email": acct["Email"], "ou": ou_name}
+            tags = _clean_tags(self._tags(acct["Id"]), self.report.todos, f"account '{acct['Name']}'")
+            if tags:
+                entry["tags"] = tags
+            # Brown-field accounts keep their existing network layout.
+            entry["baseline"] = {"delete_default_vpc": False}
+            accounts.append(entry)
+            self.report.accounts.append(acct["Name"])
+            self.imported_accounts[str(acct["Id"])] = str(acct["Name"])
         return accounts
 
-    def _scps(self, root_id: str, ou_names: dict[str, str], config_dir: Path) -> list[dict[str, Any]]:
+    def _scps(self, ou_names: dict[str, str]) -> list[dict[str, Any]]:
         policies: list[dict[str, Any]] = []
         used_files: set[str] = set()
         paginator = self.org.get_paginator("list_policies")
@@ -200,8 +199,8 @@ class ImportService:
                 self.report.scps.append(summary["Name"])
         return policies
 
-    def _trails(self) -> str | None:
-        """Names of organization trails; returns the first for cloudtrail.trail_name."""
+    def _trails(self, org_name: str) -> str | None:
+        """Names of organization trails; returns tarmac's own trail, else the first, for cloudtrail.trail_name."""
         try:
             trails = self.session_mgr.get_client("cloudtrail", region_name=self.region).describe_trails(
                 includeShadowTrails=False
@@ -209,15 +208,35 @@ class ImportService:
         except _READ_ERRORS as exc:
             logger.debug("Could not list trails: %s", exc)
             return None
-        names = [str(t["Name"]) for t in trails if t.get("IsOrganizationTrail")]
+        org_trails = [t for t in trails if t.get("IsOrganizationTrail")]
+        names = [str(t["Name"]) for t in org_trails]
         self.report.existing_trails = names
-        if names:
+        own = self._tarmac_trail_ids(org_name)
+        ours = [str(t["Name"]) for t in org_trails if {t.get("Name"), t.get("TrailARN")} & own]
+        foreign = [n for n in names if n not in ours]
+        if foreign:
             self.report.todos.append(
-                f"Organization trail(s) already exist: {', '.join(names)}. Tarmac creates its own trail and log "
+                f"Organization trail(s) already exist: {', '.join(foreign)}. Tarmac creates its own trail and log "
                 "bucket in phase 3, which AWS rejects while another organization trail exists. Delete or "
                 "replace the old trail first, or disable CloudTrail management for this deployment."
             )
-        return names[0] if names else None
+        candidates = ours or names
+        return candidates[0] if candidates else None
+
+    def _tarmac_trail_ids(self, org_name: str) -> set[str]:
+        """Physical IDs of the trail in tarmac's own CloudTrail stack, if that stack exists."""
+        try:
+            resources = self.session_mgr.get_client(
+                "cloudformation", region_name=self.region
+            ).describe_stack_resources(StackName=Stack.CLOUDTRAIL.for_org(org_name))
+        except _READ_ERRORS as exc:
+            logger.debug("No CloudTrail stack for %s: %s", org_name, exc)
+            return set()
+        return {
+            str(r["PhysicalResourceId"])
+            for r in resources.get("StackResources", [])
+            if r.get("ResourceType") == "AWS::CloudTrail::Trail" and r.get("PhysicalResourceId")
+        }
 
     def _stack_prefix(self) -> str | None:
         """organization.name implied by Tarmac stacks that already exist, if any."""
@@ -272,9 +291,7 @@ class ImportService:
         except _READ_ERRORS:
             return set()
 
-    # ---------------------------------------------------------------- identity
-
-    def _identity(self, config_dir: Path, account_names: dict[str, str]) -> dict[str, Any] | None:
+    def _identity(self, account_names: dict[str, str]) -> dict[str, Any] | None:
         try:
             service = IdentityService(self.session_mgr, preferred_region=self.region)
             instance_arn, store_id = service.get_instance_details()
@@ -289,7 +306,7 @@ class ImportService:
         try:
             users = self._list_users(store, store_id)
             groups = self._list_groups(store, store_id)
-            permission_sets = self._permission_sets(sso, instance_arn, config_dir)
+            permission_sets = self._permission_sets(sso, instance_arn)
             for group in groups:
                 group["members"] = self._members(store, store_id, group["_id"], users)
             self._assignments(sso, instance_arn, groups, permission_sets, account_names)
@@ -375,7 +392,7 @@ class ImportService:
                     members.append(user["username"])
         return sorted(members)
 
-    def _permission_sets(self, sso: Any, instance_arn: str, config_dir: Path) -> dict[str, dict[str, Any]]:
+    def _permission_sets(self, sso: Any, instance_arn: str) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
         for page in sso.get_paginator("list_permission_sets").paginate(InstanceArn=instance_arn):
             for arn in page.get("PermissionSets", []):
@@ -449,8 +466,6 @@ class ImportService:
                 "assigns through groups only."
             )
 
-    # ---------------------------------------------------------------- orchestration
-
     def discover_and_write(
         self,
         config_dir: Path,
@@ -488,8 +503,8 @@ class ImportService:
         self.report.organization_name = org_name
 
         accounts = self._accounts(mgmt_id, ou_names, root_id)
-        scps = self._scps(root_id, ou_names, config_dir)
-        trail_name = self._trails()
+        scps = self._scps(ou_names)
+        trail_name = self._trails(org_name)
         contacts = self._contacts(mgmt_email)
         trusted = self._trusted_services()
 
@@ -538,7 +553,7 @@ class ImportService:
                     "organization.yaml."
                 )
 
-        identity = self._identity(config_dir, self.imported_accounts) if include_identity else None
+        identity = self._identity(self.imported_accounts) if include_identity else None
 
         self._dump(
             config_dir / "organization.yaml",

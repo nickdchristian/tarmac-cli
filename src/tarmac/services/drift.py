@@ -14,15 +14,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from botocore.exceptions import ClientError
-
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AWS_ERRORS
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
+from .baseline import budget_stack_name
 from .ou import OUService
 from .scp import SCPService
+from .status import stack_status
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ class DriftService:
                     declared="Present",
                     live=f"Present ({live_ous[ou_name]})" if in_sync else "Missing",
                     status="IN_SYNC" if in_sync else "MISSING",
-                    remediation="" if in_sync else "tarmac ou sync",
+                    remediation="" if in_sync else "tarmac deploy --phase 2",
                 )
             )
 
@@ -135,7 +136,7 @@ class DriftService:
                         declared=f"OU: {acct.ou}",
                         live="Not Provisioned",
                         status="MISSING",
-                        remediation="tarmac account apply",
+                        remediation="tarmac deploy --phase 4",
                     )
                 )
                 continue
@@ -153,7 +154,7 @@ class DriftService:
                         declared=f"OU: {acct.ou}",
                         live=f"OU: {parent_name}",
                         status="DRIFTED",
-                        remediation="tarmac account apply",
+                        remediation="tarmac deploy --phase 4",
                     )
                 )
             else:
@@ -203,7 +204,7 @@ class DriftService:
                     declared=f"{len(expected_tags)} tags",
                     live=live_desc,
                     status=status,
-                    remediation="tarmac account sync-tags" if drifted_keys else "",
+                    remediation="tarmac deploy --phase 4" if drifted_keys else "",
                 )
             )
 
@@ -234,7 +235,7 @@ class DriftService:
                         declared="Attached",
                         live="Missing in AWS",
                         status="MISSING",
-                        remediation="tarmac org scp apply",
+                        remediation="tarmac deploy --phase 2",
                     )
                 )
                 continue
@@ -257,7 +258,7 @@ class DriftService:
                             declared="File content",
                             live="Policy drifted",
                             status="DRIFTED",
-                            remediation="tarmac org scp apply",
+                            remediation="tarmac deploy --phase 2",
                         )
                     )
                     continue
@@ -285,7 +286,7 @@ class DriftService:
                         declared=f"Attached to {policy_def.targets}",
                         live=f"Unattached to {missing_targets}",
                         status="DRIFTED",
-                        remediation="tarmac org scp apply",
+                        remediation="tarmac deploy --phase 2",
                     )
                 )
             else:
@@ -304,14 +305,14 @@ class DriftService:
         self,
         friendly_name: str,
         account_name: str,
-        stack_suffix: str,
+        stack: Stack,
         live_accts: dict[str, dict[str, Any]],
         target_region: str,
         prefix: str,
         report: DriftReport,
     ) -> None:
         """Audit status of a member account CloudFormation stack."""
-        stack_name = f"{prefix}-{stack_suffix}"
+        stack_name = stack.for_org(prefix)
         acct_id = self._resolve_id(account_name, live_accts)
         if not acct_id:
             status = "ACCOUNT_MISSING"
@@ -320,7 +321,7 @@ class DriftService:
                 client = self.session_mgr.get_member_client(
                     acct_id, "cloudformation", region_name=target_region
                 )
-                status = self._get_stack_status(client, stack_name)
+                status = stack_status(client, stack_name)
             except AWS_ERRORS:
                 status = "ACCESS_ERROR"
         self._record_stack_drift(friendly_name, status, report)
@@ -336,8 +337,8 @@ class DriftService:
         prefix = bundle.org.organization.name
         mgmt_cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
 
-        ct_stack = f"{prefix}-organization-cloudtrail"
-        ct_status = self._get_stack_status(mgmt_cfn, ct_stack)
+        ct_stack = Stack.CLOUDTRAIL.for_org(prefix)
+        ct_status = stack_status(mgmt_cfn, ct_stack)
         self._record_stack_drift("CloudTrail", ct_status, report)
 
         sso_region = (
@@ -352,22 +353,22 @@ class DriftService:
             if sso_region == target_region
             else self.session_mgr.get_client("cloudformation", region_name=sso_region)
         )
-        sso_stack = f"{prefix}-sso-permission-sets"
-        sso_status = self._get_stack_status(sso_cfn, sso_stack)
+        sso_stack = Stack.PERMISSION_SETS.for_org(prefix)
+        sso_status = stack_status(sso_cfn, sso_stack)
         self._record_stack_drift("SSOPermissionSets", sso_status, report)
 
         stacks_to_check = [
-            ("TerraformBackend", bundle.get_backend_account_name() or "deployment", "terraform-backend"),
+            ("TerraformBackend", bundle.get_backend_account_name() or "deployment", Stack.TERRAFORM_BACKEND),
             (
                 "LogArchiveHardening",
                 bundle.get_log_archive_account_name() or "log-archive",
-                "log-archive-hardening",
+                Stack.LOG_ARCHIVE,
             ),
-            ("AuditHardening", bundle.get_audit_account_name() or "audit", "audit-account-hardening"),
+            ("AuditHardening", bundle.get_audit_account_name() or "audit", Stack.AUDIT_ACCOUNT),
         ]
-        for friendly_name, acct_name, suffix in stacks_to_check:
+        for friendly_name, acct_name, stack in stacks_to_check:
             self._audit_member_stack(
-                friendly_name, acct_name, suffix, live_accts, target_region, prefix, report
+                friendly_name, acct_name, stack, live_accts, target_region, prefix, report
             )
 
     def _audit_budgets(
@@ -381,7 +382,7 @@ class DriftService:
         for acct in bundle.accounts.accounts:
             if not (acct.baseline and acct.baseline.budget):
                 continue
-            budget_name = f"{acct.name}-monthly-budget"
+            budget_name = budget_stack_name(acct.name)
             acct_id = self._resolve_id(acct.name, live_accts)
             if not acct_id:
                 status = "ACCOUNT_MISSING"
@@ -390,7 +391,7 @@ class DriftService:
                     client = self.session_mgr.get_member_client(
                         acct_id, "cloudformation", region_name=target_region
                     )
-                    status = self._get_stack_status(client, budget_name)
+                    status = stack_status(client, budget_name)
                 except AWS_ERRORS:
                     status = "ACCESS_ERROR"
             self._record_stack_drift(f"Budget ({acct.name})", status, report)
@@ -439,7 +440,7 @@ class DriftService:
                         if in_sync
                         else "Missing in Identity Center",
                         status="IN_SYNC" if in_sync else "MISSING",
-                        remediation="" if in_sync else "tarmac identity sync",
+                        remediation="" if in_sync else "tarmac deploy --phase 6",
                     )
                 )
         except AWS_ERRORS as e:
@@ -456,10 +457,10 @@ class DriftService:
             item_status, remediation = "IN_SYNC", ""
             declared = "CREATE_COMPLETE"
         elif status in ["NOT_FOUND", "ACCOUNT_MISSING"]:
-            item_status, remediation = "MISSING", "tarmac deploy run"
+            item_status, remediation = "MISSING", "tarmac deploy"
             declared = "Deployed"
         else:
-            item_status, remediation = "DRIFTED", "tarmac deploy run"
+            item_status, remediation = "DRIFTED", "tarmac deploy"
             declared = "CREATE_COMPLETE"
 
         report.items.append(
@@ -473,31 +474,10 @@ class DriftService:
             )
         )
 
-    def _get_account_tags(self, account_id: str) -> dict[str, str]:
-        """Fetch live tags on an AWS Organizations account."""
-        try:
-            paginator = self.org_client.get_paginator("list_tags_for_resource")
-            tags: dict[str, str] = {}
-            for page in paginator.paginate(ResourceId=account_id):
-                for t in page.get("Tags", []):
-                    tags[t["Key"]] = t["Value"]
-            return tags
-        except ClientError:
-            return {}
-
     def _get_live_policy_content(self, policy_id: str) -> str:
         """Fetch content string of a live SCP."""
         resp = self.org_client.describe_policy(PolicyId=policy_id)
         return str(resp.get("Policy", {}).get("Content", "{}"))
-
-    def _get_stack_status(self, client: Any, stack_name: str) -> str:
-        """Fetch stack status string or NOT_FOUND."""
-        try:
-            resp = client.describe_stacks(StackName=stack_name)
-            stacks = resp.get("Stacks", [])
-            return str(stacks[0]["StackStatus"]) if stacks else "NOT_FOUND"
-        except ClientError:
-            return "NOT_FOUND"
 
     def _resolve_id(self, account_name: str, live_accts: dict[str, dict[str, Any]]) -> str | None:
         """Resolve account ID from name case- and separator-insensitively."""

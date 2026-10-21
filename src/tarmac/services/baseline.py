@@ -27,6 +27,29 @@ from .cloudformation import CloudFormationService
 logger = logging.getLogger(__name__)
 
 
+BUDGET_TEMPLATE = "cloudformation/account-budget.yaml"
+
+
+def budget_stack_name(account_name: str) -> str:
+    return f"{account_name}-monthly-budget"
+
+
+def budget_parameters(account_name: str, budget_cfg: BudgetConfig) -> dict[str, str]:
+    """CloudFormation parameters for an account's budget stack (account-budget.yaml)."""
+    emails = list(budget_cfg.notification_emails)
+    parameters = {
+        "AccountName": account_name,
+        "MonthlyLimitUSD": str(budget_cfg.monthly_limit_usd),
+        "AlertThresholdPercent": str(budget_cfg.alert_threshold_percent),
+        "NotificationEmail": str(emails[0]) if emails else "",
+    }
+    if budget_cfg.forecast_alert_threshold_percent is not None:
+        parameters["ForecastThresholdPercent"] = str(budget_cfg.forecast_alert_threshold_percent)
+    if budget_cfg.incident_response_webhook_url:
+        parameters["IncidentResponseWebhookUrl"] = str(budget_cfg.incident_response_webhook_url)
+    return parameters
+
+
 class BaselineService:
     """Applies security and operational baselines to AWS member accounts."""
 
@@ -57,7 +80,6 @@ class BaselineService:
         account_id: str,
         account_name: str,
         regions: list[str] | None = None,
-        dry_run: bool = False,
     ) -> list[VpcCleanupReport]:
         """Purge default VPCs, subnets, and internet gateways across active AWS regions.
 
@@ -75,17 +97,13 @@ class BaselineService:
 
         if len(target_regions) <= 1:
             for region in target_regions:
-                reports.append(
-                    self._cleanup_region_default_vpc(account_id, account_name, region, dry_run=dry_run)
-                )
+                reports.append(self._cleanup_region_default_vpc(account_id, account_name, region))
         else:
             with ThreadPoolExecutor(max_workers=min(8, len(target_regions))) as pool:
                 reports = list(
                     pool.map(
                         with_current_context(
-                            lambda reg: self._cleanup_region_default_vpc(
-                                account_id, account_name, reg, dry_run=dry_run
-                            )
+                            lambda reg: self._cleanup_region_default_vpc(account_id, account_name, reg)
                         ),
                         target_regions,
                     )
@@ -94,15 +112,13 @@ class BaselineService:
         return reports
 
     def _cleanup_region_default_vpc(
-        self, account_id: str, account_name: str, region: str, dry_run: bool
+        self, account_id: str, account_name: str, region: str
     ) -> VpcCleanupReport:
         """Scan and clean the default VPC in a single region, tagging log records with the account and region."""
         with bind(account_id=account_id, account_name=account_name, region=region):
-            return self._clean_default_vpc(account_id, account_name, region, dry_run)
+            return self._clean_default_vpc(account_id, region)
 
-    def _clean_default_vpc(
-        self, account_id: str, account_name: str, region: str, dry_run: bool
-    ) -> VpcCleanupReport:
+    def _clean_default_vpc(self, account_id: str, region: str) -> VpcCleanupReport:
         try:
             ec2 = self.session_mgr.get_member_client(account_id, "ec2", region_name=region)
             vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}]).get("Vpcs", [])
@@ -127,19 +143,6 @@ class BaselineService:
                     skipped=True,
                     message=f"Default VPC {vpc_id} is in use (network interfaces attached); not deleted.",
                 )
-            if dry_run:
-                audit(
-                    "delete",
-                    f"default-vpc:{account_id}:{region}",
-                    Outcome.SUCCEEDED,
-                    f"Would delete default VPC {vpc_id} in {region}",
-                    dry_run=True,
-                    vpc_id=vpc_id,
-                )
-                return VpcCleanupReport(
-                    region=region, vpc_id=vpc_id, skipped=True, message="Simulated VPC deletion"
-                )
-
             detached_igws = self._detach_and_delete_igws(ec2, vpc_id)
             deleted_subnets = self._delete_subnets(ec2, vpc_id)
             ec2.delete_vpc(VpcId=vpc_id)
@@ -231,44 +234,21 @@ class BaselineService:
         account_tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
-        dry_run: bool = False,
     ) -> BudgetReport:
         """Create or update a monthly cost budget in the member account via CloudFormation."""
-        budget_name = f"{account_name}-monthly-budget"
+        budget_name = budget_stack_name(account_name)
+
+        def budget_report(status: str, message: str) -> BudgetReport:
+            return BudgetReport(
+                account_name=account_name,
+                account_id=account_id,
+                alert_threshold_percent=budget_cfg.alert_threshold_percent,
+                status=status,
+                message=message,
+            )
 
         if not budget_cfg.notification_emails and not budget_cfg.incident_response_webhook_url:
-            return BudgetReport(
-                account_name=account_name,
-                account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
-                alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status="SKIPPED",
-                message="No notification emails or incident response webhook specified.",
-            )
-
-        subscribers_count = len(budget_cfg.notification_emails) + (
-            1 if budget_cfg.incident_response_webhook_url else 0
-        )
-        if dry_run:
-            audit(
-                "deploy",
-                f"budget:{budget_name}",
-                Outcome.SUCCEEDED,
-                f"Would deploy budget '{budget_name}' (${budget_cfg.monthly_limit_usd:.2f}/month, "
-                f"{subscribers_count} subscriber(s)) in account '{account_name}'",
-                dry_run=True,
-                account_id=account_id,
-            )
-            return BudgetReport(
-                account_name=account_name,
-                account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
-                alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status="SIMULATED",
-                message="Simulated budget creation via CloudFormation",
-            )
+            return budget_report("SKIPPED", "No notification emails or incident response webhook specified.")
 
         emails = list(budget_cfg.notification_emails)
         if len(emails) > 1:
@@ -282,73 +262,14 @@ class BaselineService:
                 emails[0],
             )
 
-        parameters: dict[str, str] = {
-            "AccountName": account_name,
-            "MonthlyLimitUSD": str(budget_cfg.monthly_limit_usd),
-            "AlertThresholdPercent": str(budget_cfg.alert_threshold_percent),
-            "NotificationEmail": str(emails[0]) if emails else "",
-        }
-        if budget_cfg.forecast_alert_threshold_percent is not None:
-            parameters["ForecastThresholdPercent"] = str(budget_cfg.forecast_alert_threshold_percent)
-        if budget_cfg.incident_response_webhook_url:
-            parameters["IncidentResponseWebhookUrl"] = str(budget_cfg.incident_response_webhook_url)
+        parameters = budget_parameters(account_name, budget_cfg)
 
         try:
             cfn_client = self.session_mgr.get_member_client(
                 account_id, "cloudformation", region_name=self.session_mgr.default_region
             )
-            template_path = resolve_resource_path("cloudformation/account-budget.yaml")
+            template_path = resolve_resource_path(BUDGET_TEMPLATE)
             cfn_service = CloudFormationService(self.session_mgr)
-
-            def _cleanup_orphan_budget() -> None:
-                conflict: GovernanceError | None = None
-                try:
-                    budgets_client = self.session_mgr.get_member_client(
-                        account_id, "budgets", region_name="us-east-1"
-                    )
-                    resp = budgets_client.describe_budget(AccountId=account_id, BudgetName=budget_name)
-                    if isinstance(resp, dict) and "Budget" in resp:
-                        logger.debug(
-                            "Found pre-existing unmanaged budget '%s' in account '%s' (%s). "
-                            "Removing orphan budget to allow CloudFormation to manage it...",
-                            budget_name,
-                            account_name,
-                            account_id,
-                        )
-                        previous = resp["Budget"]
-                        limit = previous.get("BudgetLimit") or {}
-                        if not adopt_existing():
-                            conflict = GovernanceError(
-                                f"A budget named '{budget_name}' already exists in account '{account_name}' "
-                                f"({account_id}) and tarmac did not create it.",
-                                details=(
-                                    f"Its limit is {limit.get('Amount', '?')} {limit.get('Unit', '')}"
-                                    f" ({previous.get('TimeUnit', '?')}). Tarmac would delete it and create "
-                                    f"its own. {ADOPT_HINT} Or rename/delete it yourself first."
-                                ),
-                            )
-                            raise conflict
-                        budgets_client.delete_budget(AccountId=account_id, BudgetName=budget_name)
-                        audit(
-                            "delete",
-                            f"budget:{budget_name}",
-                            Outcome.SUCCEEDED,
-                            f"Deleted unmanaged budget '{budget_name}' in account '{account_name}' "
-                            "so CloudFormation can manage it",
-                            account_id=account_id,
-                            # Kept so the replaced budget can be recreated by hand if it mattered.
-                            previous_limit=f"{limit.get('Amount', '?')} {limit.get('Unit', '')}".strip(),
-                            previous_time_unit=previous.get("TimeUnit"),
-                            previous_budget_type=previous.get("BudgetType"),
-                        )
-                except ClientError as e:
-                    code = e.response.get("Error", {}).get("Code", "")
-                    if code not in ("NotFoundException", "ResourceNotFoundException"):
-                        logger.debug("Error checking existing budget in %s: %s", account_name, e)
-                except AWS_ERRORS as e:
-                    if e is conflict:
-                        raise
-                    logger.debug("Could not inspect existing budget in %s: %s", account_name, e)
 
             cfn_report = cfn_service.deploy_stack(
                 cfn_client=cfn_client,
@@ -358,8 +279,7 @@ class BaselineService:
                 tags=custom_tags,
                 account_tags=account_tags,
                 org_tags=org_tags,
-                dry_run=dry_run,
-                on_before_create=_cleanup_orphan_budget,
+                on_before_create=lambda: self._remove_unmanaged_budget(account_id, account_name, budget_name),
             )
             if len(emails) > 1:
                 self._reconcile_additional_budget_emails(
@@ -369,15 +289,7 @@ class BaselineService:
                     additional_emails=[str(e) for e in emails[1:]],
                 )
             status = "CREATED" if cfn_report.action == "CREATED" else "UPDATED"
-            return BudgetReport(
-                account_name=account_name,
-                account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
-                alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status=status,
-                message=f"Budget stack {status.lower()} via CloudFormation",
-            )
+            return budget_report(status, f"Budget stack {status.lower()} via CloudFormation")
         except AWS_ERRORS as e:
             audit(
                 "deploy",
@@ -386,15 +298,58 @@ class BaselineService:
                 f"Could not deploy budget '{budget_name}' in account '{account_name}': {e}",
                 account_id=account_id,
             )
-            return BudgetReport(
-                account_name=account_name,
-                account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
-                alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status="FAILED",
-                message=str(e),
+            return budget_report("FAILED", str(e))
+
+    def _remove_unmanaged_budget(self, account_id: str, account_name: str, budget_name: str) -> None:
+        """Delete a same-named budget tarmac did not create (only with --adopt-existing) so the stack can own it."""
+        conflict: GovernanceError | None = None
+        try:
+            budgets_client = self.session_mgr.get_member_client(
+                account_id, "budgets", region_name="us-east-1"
             )
+            resp = budgets_client.describe_budget(AccountId=account_id, BudgetName=budget_name)
+            if isinstance(resp, dict) and "Budget" in resp:
+                logger.debug(
+                    "Found pre-existing unmanaged budget '%s' in account '%s' (%s). "
+                    "Removing orphan budget to allow CloudFormation to manage it...",
+                    budget_name,
+                    account_name,
+                    account_id,
+                )
+                previous = resp["Budget"]
+                limit = previous.get("BudgetLimit") or {}
+                if not adopt_existing():
+                    conflict = GovernanceError(
+                        f"A budget named '{budget_name}' already exists in account '{account_name}' "
+                        f"({account_id}) and tarmac did not create it.",
+                        details=(
+                            f"Its limit is {limit.get('Amount', '?')} {limit.get('Unit', '')}"
+                            f" ({previous.get('TimeUnit', '?')}). Tarmac would delete it and create "
+                            f"its own. {ADOPT_HINT} Or rename/delete it yourself first."
+                        ),
+                    )
+                    raise conflict
+                budgets_client.delete_budget(AccountId=account_id, BudgetName=budget_name)
+                audit(
+                    "delete",
+                    f"budget:{budget_name}",
+                    Outcome.SUCCEEDED,
+                    f"Deleted unmanaged budget '{budget_name}' in account '{account_name}' "
+                    "so CloudFormation can manage it",
+                    account_id=account_id,
+                    # Kept so the replaced budget can be recreated by hand if it mattered.
+                    previous_limit=f"{limit.get('Amount', '?')} {limit.get('Unit', '')}".strip(),
+                    previous_time_unit=previous.get("TimeUnit"),
+                    previous_budget_type=previous.get("BudgetType"),
+                )
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code not in ("NotFoundException", "ResourceNotFoundException"):
+                logger.debug("Error checking existing budget in %s: %s", account_name, e)
+        except AWS_ERRORS as e:
+            if e is conflict:
+                raise
+            logger.debug("Could not inspect existing budget in %s: %s", account_name, e)
 
     def _reconcile_additional_budget_emails(
         self,
@@ -447,7 +402,6 @@ class BaselineService:
         account_id: str,
         account_name: str,
         anomaly_cfg: AnomalyDetectionConfig,
-        dry_run: bool = False,
     ) -> AnomalyReport:
         """Create Cost Anomaly Detection monitor and subscription in the management account."""
         monitor_name = f"{account_name}-cost-anomaly-monitor"
@@ -457,28 +411,9 @@ class BaselineService:
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
-                monitor_name=monitor_name,
                 threshold_usd=anomaly_cfg.threshold_usd,
                 status="SKIPPED",
                 message="Anomaly detection disabled or missing notification emails.",
-            )
-
-        if dry_run:
-            audit(
-                "create",
-                f"anomaly-monitor:{monitor_name}",
-                Outcome.SUCCEEDED,
-                f"Would set up cost anomaly monitor '{monitor_name}' for account '{account_name}'",
-                dry_run=True,
-                account_id=account_id,
-            )
-            return AnomalyReport(
-                account_name=account_name,
-                account_id=account_id,
-                monitor_name=monitor_name,
-                threshold_usd=anomaly_cfg.threshold_usd,
-                status="SIMULATED",
-                message="Simulated anomaly monitor creation",
             )
 
         self._setup_member_anomaly_monitor(account_id, account_name, anomaly_cfg)
@@ -501,7 +436,6 @@ class BaselineService:
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
-                monitor_name=monitor_name,
                 threshold_usd=anomaly_cfg.threshold_usd,
                 status=status,
                 message="Anomaly monitor and subscription active",
@@ -518,7 +452,6 @@ class BaselineService:
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
-                monitor_name=monitor_name,
                 threshold_usd=anomaly_cfg.threshold_usd,
                 status="FAILED",
                 message=str(err_msg),
@@ -668,8 +601,6 @@ class BaselineService:
         acct_def: AccountDef,
         account_id: str,
         regions: list[str] | None = None,
-        dry_run: bool = False,
-        force: bool = False,
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
     ) -> BaselineReport:
@@ -677,7 +608,7 @@ class BaselineService:
         baseline = acct_def.baseline
         report = BaselineReport(account_name=acct_def.name, account_id=account_id)
 
-        already_baselined = False if force else self.is_account_baselined(account_id)
+        already_baselined = self.is_account_baselined(account_id)
         if already_baselined:
             logger.info(
                 "Account '%s' (%s) is already baselined (%s=%s). Fast-forwarding...",
@@ -694,9 +625,7 @@ class BaselineService:
                 )
             ]
         elif baseline.delete_default_vpc:
-            report.vpc_reports = self.cleanup_default_vpcs(
-                account_id, acct_def.name, regions=regions, dry_run=dry_run
-            )
+            report.vpc_reports = self.cleanup_default_vpcs(account_id, acct_def.name, regions=regions)
 
         if baseline.budget:
             report.budget_report = self.setup_account_budget(
@@ -706,23 +635,18 @@ class BaselineService:
                 account_tags=acct_def.tags,
                 org_tags=org_tags,
                 custom_tags=custom_tags,
-                dry_run=dry_run,
             )
 
         if baseline.anomaly_detection:
             report.anomaly_report = self.setup_cost_anomaly_monitor(
-                account_id, acct_def.name, baseline.anomaly_detection, dry_run=dry_run
+                account_id, acct_def.name, baseline.anomaly_detection
             )
 
         has_vpc_errors = any(r.error for r in report.vpc_reports)
         has_budget_failure = report.budget_report is not None and report.budget_report.status == "FAILED"
         has_anomaly_failure = report.anomaly_report is not None and report.anomaly_report.status == "FAILED"
 
-        if (
-            not dry_run
-            and not already_baselined
-            and not (has_vpc_errors or has_budget_failure or has_anomaly_failure)
-        ):
+        if not already_baselined and not (has_vpc_errors or has_budget_failure or has_anomaly_failure):
             self.mark_account_baselined(account_id)
 
         return report

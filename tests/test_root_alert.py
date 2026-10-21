@@ -7,14 +7,12 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from tarmac.cli.deploy_root_alert import (
-    deploy_management_root_alert,
-    root_alert_regions,
-    root_alert_stack_name,
-)
+from tarmac.cli.deploy_root_alert import deploy_management_root_alert
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_loader import ConfigBundle, load_all_configs
 from tarmac.core.config_schema import RootAlertConfig
+from tarmac.core.stack_names import Stack
+from tarmac.services.stack_parameters import root_alert_regions
 from tarmac.services.teardown import TeardownService
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +33,9 @@ def _template() -> dict[str, Any]:
     Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
     return cast(
         dict[str, Any],
-        yaml.load((ROOT / "cloudformation" / "management-root-alert.yaml").read_text(), Loader),
+        yaml.load(
+            (ROOT / "src/tarmac/templates/cloudformation" / "management-root-alert.yaml").read_text(), Loader
+        ),
     )
 
 
@@ -51,7 +51,7 @@ def _bundle(test_bundle, *, email: str | None = "sec@example.com", **root_alert:
 def _deploy(bundle) -> MagicMock:
     mgr = MagicMock(spec=AwsSessionManager)
     cfn_service = MagicMock()
-    deploy_management_root_alert(mgr, cfn_service, bundle, "eu-west-1", ROOT, dry_run=False)
+    deploy_management_root_alert(mgr, cfn_service, bundle, "eu-west-1", ROOT)
     return cfn_service
 
 
@@ -81,7 +81,7 @@ def test_it_deploys_one_stack_per_region(test_bundle):
 
     assert cfn_service.deploy_stack.call_count == 2
     names = {call.args[1] for call in cfn_service.deploy_stack.call_args_list}
-    assert names == {root_alert_stack_name(bundle)}
+    assert names == {Stack.ROOT_ALERT.for_org(bundle.org.organization.name)}
     params = cfn_service.deploy_stack.call_args_list[0].args[3]
     assert params["AlertEmail"] == "sec@example.com"
 
@@ -109,13 +109,6 @@ def test_the_template_needs_no_iam_role():
     kinds = {r["Type"] for r in _template()["Resources"].values()}
 
     assert not any(k.startswith("AWS::IAM::") for k in kinds)
-
-
-def test_the_packaged_copy_is_identical():
-    source = (ROOT / "cloudformation" / "management-root-alert.yaml").read_text()
-    packaged = (ROOT / "src/tarmac/templates/cloudformation/management-root-alert.yaml").read_text()
-
-    assert source == packaged
 
 
 def _teardown(cfn: MagicMock) -> TeardownService:

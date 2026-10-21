@@ -35,7 +35,7 @@ def _template(tmp_path: Path) -> Path:
     return t
 
 
-def test_stack_create_update_unchanged_and_dry_run(caplog, tmp_path):
+def test_stack_create_update_and_unchanged_are_audited(caplog, tmp_path):
     svc = CloudFormationService(MagicMock())
     tpl = _template(tmp_path)
     cfn = MagicMock()
@@ -51,14 +51,12 @@ def test_stack_create_update_unchanged_and_dry_run(caplog, tmp_path):
     svc.deploy_stack(cfn, "s", tpl, {})
     cfn.update_stack.side_effect = _err("ValidationError", "No updates are to be performed")
     svc.deploy_stack(cfn, "s", tpl, {})
-    svc.deploy_stack(cfn, "s", tpl, {}, dry_run=True)
 
     got = [(e["action"], e["outcome"]) for e in _events(caplog)]
     assert got == [
         ("create", "succeeded"),
         ("update", "succeeded"),
         ("update", "unchanged"),
-        ("deploy", "simulated"),
     ]
 
 
@@ -106,7 +104,7 @@ def test_default_vpc_delete_is_audited_and_tagged_with_account_and_region(caplog
     assert "region" not in current_context()
 
 
-def test_default_vpc_dry_run_in_use_and_error(caplog):
+def test_default_vpc_in_use_and_error(caplog):
     mgr = MagicMock()
     ec2 = MagicMock()
     mgr.get_member_client.return_value = ec2
@@ -114,7 +112,6 @@ def test_default_vpc_dry_run_in_use_and_error(caplog):
     ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": []}
     svc = BaselineService(mgr)
 
-    svc.cleanup_default_vpcs("123456789012", "Dev", regions=["r1"], dry_run=True)
     ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": [{"NetworkInterfaceId": "eni-1"}]}
     svc.cleanup_default_vpcs("123456789012", "Dev", regions=["r1"])
     ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": []}
@@ -123,7 +120,7 @@ def test_default_vpc_dry_run_in_use_and_error(caplog):
     ec2.delete_vpc.side_effect = _err("DependencyViolation")
     svc.cleanup_default_vpcs("123456789012", "Dev", regions=["r1"])
 
-    assert [e["outcome"] for e in _events(caplog)] == ["simulated", "skipped", "failed"]
+    assert [e["outcome"] for e in _events(caplog)] == ["skipped", "failed"]
 
 
 def test_account_marked_baselined_is_audited(caplog):

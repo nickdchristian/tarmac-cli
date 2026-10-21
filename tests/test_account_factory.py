@@ -100,7 +100,7 @@ def test_export_inventory(tmp_path: Path):
     assert data[1]["name"] == "Production"
     assert data[1]["account_id"] is None
 
-    env_file = tmp_path / "env.sh"
+    env_file = tmp_path / "accounts.env"
     assert env_file.exists()
     content = env_file.read_text()
     assert 'export DEPLOYMENT_ACCOUNT_ID="111111111111"' in content
@@ -153,23 +153,6 @@ def test_sync_account_tags_noop_when_in_sync():
     mock_org_client.tag_resource.assert_not_called()
 
 
-def test_sync_account_tags_dry_run():
-    mock_session_mgr = MagicMock()
-    mock_org_client = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_org_client
-
-    tag_paginator = MagicMock()
-    tag_paginator.paginate.return_value = [{"Tags": []}]
-    mock_org_client.get_paginator.return_value = tag_paginator
-
-    service = AccountService(mock_session_mgr)
-    declared_tags = {"Environment": "dev"}
-
-    updated = service.sync_account_tags("111111111111", "dev-account", declared_tags, dry_run=True)
-    assert updated is True
-    mock_org_client.tag_resource.assert_not_called()
-
-
 def test_provision_account_reused_syncs_tags():
     mock_session_mgr = MagicMock()
     mock_org_client = MagicMock()
@@ -201,7 +184,7 @@ def test_provision_account_reused_syncs_tags():
         tags={"Environment": "Infrastructure", "ManagedBy": "tarmac"},
     )
 
-    result = service.provision_account(acct_def, target_ou_id="ou-infra-123", dry_run=False)
+    result = service.provision_accounts([acct_def], {acct_def.ou: "ou-infra-123"})[0]
     assert result.status == "SUCCEEDED"
     assert result.action_taken == "TAGGED"
     mock_org_client.tag_resource.assert_called_once_with(
@@ -402,7 +385,7 @@ def test_provision_account_skips_suspended():
     service = AccountService(mock_session_mgr)
     acct_def = AccountDef(name="ClosedInAws", email="closed@acme-corp.io", ou="Infrastructure")
 
-    result = service.provision_account(acct_def, target_ou_id="ou-infra-123", dry_run=False)
+    result = service.provision_accounts([acct_def], {acct_def.ou: "ou-infra-123"})[0]
     assert result.status == "SKIPPED"
     assert result.action_taken == "SUSPENDED_SKIPPED"
     mock_org_client.move_account.assert_not_called()
@@ -446,7 +429,7 @@ def test_provision_account_new_account_full_lifecycle():
     )
 
     with patch("time.sleep", return_value=None):
-        res = service.provision_account(acct_def, target_ou_id="ou-sec-999", dry_run=False)
+        res = service.provision_accounts([acct_def], {acct_def.ou: "ou-sec-999"})[0]
 
     assert res.status == "SUCCEEDED"
     assert res.action_taken == "CREATED"
@@ -467,44 +450,6 @@ def test_provision_account_new_account_full_lifecycle():
         DestinationParentId="ou-sec-999",
     )
     mock_org_client.tag_resource.assert_called_once()
-
-
-def test_poll_create_account_status_failure_surfaces_aws_reason():
-    """Verify that when AWS async account creation fails, AccountProvisioningError extracts AWS FailureReason."""
-    mock_session_mgr = MagicMock()
-    mock_org_client = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_org_client
-
-    mock_org_client.describe_create_account_status.return_value = {
-        "CreateAccountStatus": {
-            "State": "FAILED",
-            "FailureReason": "EMAIL_ALREADY_EXISTS",
-        }
-    }
-
-    service = AccountService(mock_session_mgr)
-    with patch("time.sleep", return_value=None), pytest.raises(AccountProvisioningError) as exc_info:
-        service._poll_create_account_status("car-fail-99", "DupeAccount")
-
-    assert "FAILED" in str(exc_info.value)
-    assert "EMAIL_ALREADY_EXISTS" in (exc_info.value.details or "")
-
-
-def test_poll_create_account_status_timeout():
-    """Verify that when account creation status times out, AccountProvisioningError is raised."""
-    mock_session_mgr = MagicMock()
-    mock_org_client = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_org_client
-
-    mock_org_client.describe_create_account_status.return_value = {
-        "CreateAccountStatus": {"State": "IN_PROGRESS"}
-    }
-
-    service = AccountService(mock_session_mgr)
-    with patch("time.sleep", return_value=None), pytest.raises(AccountProvisioningError) as exc_info:
-        service._poll_create_account_status("car-slow-99", "SlowAccount", max_attempts=3, delay_sec=0)
-
-    assert "timed out" in (exc_info.value.details or "").lower()
 
 
 def test_move_account_client_error_wrapped():
@@ -560,7 +505,6 @@ def test_provision_accounts_batch_mixed_existing_and_new():
     mock_org_client = MagicMock()
     mock_session_mgr.get_client.return_value = mock_org_client
 
-    # list_accounts returns Existing-1
     acct_paginator = MagicMock()
     acct_paginator.paginate.return_value = [
         {"Accounts": [{"Id": "111111111111", "Name": "Existing-1", "Status": "ACTIVE"}]}
@@ -663,7 +607,7 @@ def test_export_inventory_sanitizes_env_var_names_and_values(tmp_path):
     )
     service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
 
-    env_content = (tmp_path / "env.sh").read_text(encoding="utf-8")
+    env_content = (tmp_path / "accounts.env").read_text(encoding="utf-8")
     assert 'export ACCT_123_PROD_WHOAMI_ACCOUNT_ID="111111111111"' in env_content
     assert "$(" not in env_content
 
@@ -734,7 +678,9 @@ def test_export_inventory_escapes_shell_metacharacters_in_values(tmp_path):
     service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
 
     line = next(
-        ln for ln in (tmp_path / "env.sh").read_text(encoding="utf-8").splitlines() if "PROD_ACCOUNT_ID" in ln
+        ln
+        for ln in (tmp_path / "accounts.env").read_text(encoding="utf-8").splitlines()
+        if "PROD_ACCOUNT_ID" in ln
     )
     assert line == 'export PROD_ACCOUNT_ID="1\\$(id)\\`id\\`\\"\\\\"'
 

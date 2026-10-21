@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 from tarmac.core.models import PreflightCheckStatus
 from tarmac.services.preflight import ACCESS_TEMPLATE, PreflightService
 
-TEMPLATE = Path(__file__).resolve().parent.parent / ACCESS_TEMPLATE
+TEMPLATE = Path(__file__).resolve().parent.parent / "src" / "tarmac" / "templates" / ACCESS_TEMPLATE
 # IAM rejects a managed policy over 6,144 characters (whitespace excluded); CloudFormation only finds out at deploy
 # time. Keep headroom so the next feature does not discover the limit in a customer's account.
 IAM_LIMIT = 6144

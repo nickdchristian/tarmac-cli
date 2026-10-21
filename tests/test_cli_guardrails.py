@@ -1,13 +1,14 @@
 """Guardrails on destructive CLI commands: consent, production lock, exit codes and phase validation."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from helpers import make_config
 from typer.testing import CliRunner
 
-from tarmac.cli.deploy import _is_production_tagged, app
+from tarmac.cli.deploy import _is_production_tagged
+from tarmac.cli.main import app
 from tarmac.services.teardown import (
     TeardownItemReport,
     TeardownReport,
@@ -20,14 +21,13 @@ def _ok_report() -> TeardownReport:
     return TeardownReport(items=[], status="COMPLETED")
 
 
-@pytest.mark.parametrize("command", ["destroy", "teardown"])
-def test_teardown_json_without_yes_is_refused(tmp_path: Path, command: str):
+def test_teardown_json_without_yes_is_refused(tmp_path: Path):
     cfg = make_config(tmp_path, None)
     with (
         patch("tarmac.cli.deploy.AwsSessionManager"),
         patch("tarmac.services.teardown.TeardownService.teardown_all") as mock_all,
     ):
-        res = runner.invoke(app, [command, "--json", "-c", str(cfg)])
+        res = runner.invoke(app, ["destroy", "--json", "-c", str(cfg)])
     assert res.exit_code == 2
     mock_all.assert_not_called()
 
@@ -46,7 +46,7 @@ def test_teardown_json_with_yes_or_dry_run_is_allowed(tmp_path: Path):
 def test_run_json_without_yes_is_refused_for_live_deploy(tmp_path: Path):
     cfg = make_config(tmp_path, None)
     with patch("tarmac.cli.deploy.AwsSessionManager"), patch("tarmac.cli.deploy._run_phase_1_org") as phase:
-        res = runner.invoke(app, ["run", "--json", "--phase", "1", "-c", str(cfg)])
+        res = runner.invoke(app, ["deploy", "--json", "--phase", "1", "-c", str(cfg)])
     assert res.exit_code == 2
     phase.assert_not_called()
 
@@ -123,52 +123,57 @@ def test_teardown_rejects_invalid_phase(tmp_path: Path, phase: str):
     mock_all.assert_not_called()
 
 
-def test_run_rejects_invalid_phase(tmp_path: Path):
+@pytest.mark.parametrize("phase", ["0", "7", "9"])
+def test_run_rejects_invalid_phase(tmp_path: Path, phase: str):
     cfg = make_config(tmp_path, None)
     with patch("tarmac.cli.deploy.AwsSessionManager"):
-        res = runner.invoke(app, ["run", "--yes", "--phase", "9", "-c", str(cfg)])
+        res = runner.invoke(app, ["deploy", "--yes", "--phase", phase, "-c", str(cfg)])
     assert res.exit_code == 2
 
 
-def test_scp_plan_exits_1_when_a_target_cannot_be_resolved(tmp_path: Path):
-    from tarmac.cli import org as org_cli
+def test_phase_2_fails_when_an_scp_target_cannot_be_resolved(tmp_path: Path):
+    from tarmac.cli import deploy_phases
+    from tarmac.core.config_loader import load_all_configs
+    from tarmac.core.exceptions import GovernanceError
     from tarmac.core.models import SCPReconciliationResult
 
-    cfg = make_config(tmp_path, None)
+    bundle, _ = load_all_configs(make_config(tmp_path, None))
+    assert bundle is not None
     failed = SCPReconciliationResult(
-        name="Guard", policy_id="p-1", action_taken="NOOP", status="FAILED", unresolved_targets=["Typo"]
+        name="Guard", action_taken="NOOP", status="FAILED", unresolved_targets=["Typo"]
     )
     with (
-        patch("tarmac.cli.org.AwsSessionManager"),
-        patch("tarmac.cli.org.OUService"),
-        patch("tarmac.cli.org.SCPService") as scp_cls,
+        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.OrganizationService") as org_cls,
+        patch("tarmac.cli.deploy_phases.SCPService") as scp_cls,
     ):
-        scp_cls.return_value.reconcile_all.return_value = [failed]
-        res = runner.invoke(org_cli.app, ["scp", "plan", "-c", str(cfg)])
+        scp_cls.return_value.reconcile_via_cloudformation.return_value = [failed]
+        with pytest.raises(GovernanceError, match="SCP targets") as raised:
+            deploy_phases._run_phase_2_ou(MagicMock(), bundle, tmp_path)
 
-    assert res.exit_code == 1
-    assert "Typo" in res.output
+    assert "Typo" in str(raised.value)
+    org_cls.return_value.record_phase_completed.assert_not_called()
 
 
-def test_scp_apply_resolves_policy_files_relative_to_the_config_dir(tmp_path: Path, monkeypatch):
+def test_phase_2_resolves_policy_files_relative_to_the_config_dir(tmp_path: Path, monkeypatch):
     """Policy files resolve against the project that owns the config, not the current directory."""
-    from tarmac.cli import org as org_cli
-
     cfg = make_config(tmp_path, None)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
 
     with (
-        patch("tarmac.cli.org.AwsSessionManager"),
-        patch("tarmac.cli.org.OUService"),
-        patch("tarmac.cli.org.SCPService") as scp_cls,
+        patch("tarmac.cli.deploy.AwsSessionManager"),
+        patch("tarmac.cli.deploy.OrganizationService"),
+        patch("tarmac.cli.deploy_phases.OrganizationService"),
+        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.SCPService") as scp_cls,
     ):
-        scp_cls.return_value.reconcile_all.return_value = []
-        res = runner.invoke(org_cli.app, ["scp", "plan", "-c", str(cfg)])
+        scp_cls.return_value.reconcile_via_cloudformation.return_value = []
+        res = runner.invoke(app, ["deploy", "--yes", "--phase", "2", "-c", str(cfg)])
 
     assert res.exit_code == 0, res.output
-    assert scp_cls.return_value.reconcile_all.call_args.kwargs["project_root"] == cfg.parent
+    assert scp_cls.return_value.reconcile_via_cloudformation.call_args.kwargs["project_root"] == cfg.parent
 
 
 def test_teardown_without_yes_prompts_for_confirmation_and_cancels_on_no(tmp_path: Path):
