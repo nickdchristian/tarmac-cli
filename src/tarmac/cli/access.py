@@ -101,8 +101,8 @@ def access_bootstrap(
         )
     else:
         print_info(
-            "Next: enable IAM Identity Center, create an administrator user, sign in with 'aws sso login', "
-            "then run: tarmac access check"
+            "Next: enable IAM Identity Center (pick its Region deliberately: it can only be moved by deleting the "
+            "instance), create an administrator user, sign in with 'aws sso login', then run: tarmac access check"
         )
 
 
