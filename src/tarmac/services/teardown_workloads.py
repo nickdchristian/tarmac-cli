@@ -207,6 +207,7 @@ class WorkloadTeardown(TeardownBase):
             status = self.cfn_service._get_stack_status(cfn_client, stack_name)
 
             buckets_to_empty: set[str] = {
+                f"{bundle.org.organization.name}-terraform-state-{backend_acct_id}",
                 f"{bundle.org.terraform_backend.bucket_prefix}-{backend_acct_id}",
             }
             if status:

@@ -285,8 +285,28 @@ def test_log_archive_template_hardening(base: str):
 
     enc = res["AccessLogsBucket"]["Properties"]["BucketEncryption"]["ServerSideEncryptionConfiguration"]
     assert enc[0]["ServerSideEncryptionByDefault"]["SSEAlgorithm"] == "AES256"
+    access_rules = res["AccessLogsBucket"]["Properties"]["LifecycleConfiguration"]["Rules"]
+    assert access_rules[0]["NoncurrentVersionExpirationInDays"] == 90
     sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"] if isinstance(s, dict)]
     assert "AllowS3LogDeliveryEncrypt" not in sids
+
+    audit_doc = yaml.load((root / base / "audit-account-hardening.yaml").read_text(), Loader=_Loader)
+    audit_sns_sids = [
+        s["Sid"]
+        for s in audit_doc["Resources"]["SecurityAlertsTopicPolicy"]["Properties"]["PolicyDocument"][
+            "Statement"
+        ]
+    ]
+    assert "DenyInsecureTransport" in audit_sns_sids
+
+    budget_doc = yaml.load((root / base / "account-budget.yaml").read_text(), Loader=_Loader)
+    budget_sns_sids = [
+        s["Sid"]
+        for s in budget_doc["Resources"]["BudgetAlertsTopicPolicy"]["Properties"]["PolicyDocument"][
+            "Statement"
+        ]
+    ]
+    assert "DenyInsecureTransport" in budget_sns_sids
 
 
 def _denied_actions(policy_name: str) -> set[str]:
@@ -338,9 +358,16 @@ def test_example_region_scp_is_valid_and_keeps_tarmac_working():
     assert len(text.encode()) < 5120
     (stmt,) = doc["Statement"]
     assert stmt["Effect"] == "Deny"
-    assert {"iam:*", "organizations:*", "sts:*", "route53:*", "cloudfront:*", "support:*"} <= set(
-        stmt["NotAction"]
-    )
+    assert {
+        "iam:*",
+        "identitystore:*",
+        "organizations:*",
+        "sso:*",
+        "sts:*",
+        "route53:*",
+        "cloudfront:*",
+        "support:*",
+    } <= set(stmt["NotAction"])
     assert "Action" not in stmt
     assert "aws:RequestedRegion" in stmt["Condition"]["StringNotEquals"]
     exempt = " ".join(stmt["Condition"]["ArnNotLike"]["aws:PrincipalARN"])

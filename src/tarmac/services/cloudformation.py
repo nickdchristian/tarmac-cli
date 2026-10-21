@@ -301,7 +301,13 @@ class CloudFormationService:
         """Delete a stack in an unusable state (e.g. ROLLBACK_COMPLETE, DELETE_FAILED) before recreating it."""
         try:
             logger.debug("Deleting broken stack '%s'...", stack_name)
-            cfn_client.delete_stack(StackName=stack_name)
+            try:
+                cfn_client.delete_stack(StackName=stack_name)
+            except ClientError as e:
+                if "TerminationProtection" not in aws_error_message(e):
+                    raise
+                self._release_protection(cfn_client, stack_name, allowed=True, on_progress=None)
+                cfn_client.delete_stack(StackName=stack_name)
             waiter = cfn_client.get_waiter("stack_delete_complete")
             waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": 30})
             audit(

@@ -513,8 +513,9 @@ def test_check_s3_bucket_collision_resolves_member_accounts(mock_session, test_b
     results = service.check_s3_bucket_collision()
 
     assert len(results) == 2
-    assert results[0].target.endswith("-888888888888")
-    assert results[1].target.endswith("-999999999999")
+    org_name = test_bundle.org.organization.name
+    assert results[0].target == f"{org_name}-org-cloudtrail-logs-888888888888"
+    assert results[1].target == f"{org_name}-terraform-state-999999999999"
     assert all(r.status == PreflightCheckStatus.PASS for r in results)
     assert mock_s3_member.head_bucket.call_count == 2
 

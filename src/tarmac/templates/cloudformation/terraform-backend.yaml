@@ -32,6 +32,9 @@ Parameters:
 
 Conditions:
   HasOrgName: !Not [!Equals [!Ref OrgName, '']]
+  HasCustomBucketPrefix: !And
+    - !Not [!Equals [!Ref BucketPrefix, '']]
+    - !Not [!Equals [!Ref BucketPrefix, 'terraform-state']]
   CreateDynamoDBLockTable: !Equals [!Ref EnableDynamoDB, 'true']
 
 Resources:
@@ -46,9 +49,12 @@ Resources:
             comment: "S3 access logging is omitted on the backend bootstrap bucket to avoid circular dependencies; audit logging should be directed to the centralized Log Archive bucket."
     Properties:
       BucketName: !If
-        - HasOrgName
-        - !Sub '${OrgName}-terraform-state-${AWS::AccountId}'
+        - HasCustomBucketPrefix
         - !Sub '${BucketPrefix}-${AWS::AccountId}'
+        - !If
+          - HasOrgName
+          - !Sub '${OrgName}-terraform-state-${AWS::AccountId}'
+          - !Sub '${BucketPrefix}-${AWS::AccountId}'
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
