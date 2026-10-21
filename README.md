@@ -479,6 +479,26 @@ exists with the same name:
 After reviewing, re-run with `--adopt-existing` (on `deploy run`, `org scp plan|apply`, `account apply` and
 `account baseline`) to let tarmac take it over. The old budget's limit and period are recorded in the audit log.
 
+### GuardDuty features (all off unless you ask)
+
+`security_services.guardduty` turns on GuardDuty's foundational detection only. The optional protection plans are billed on
+top of it, so they stay off until you set them:
+
+```yaml
+security_services:
+  guardduty:
+    enabled: true
+    features:
+      s3_data_events: true      # S3 Protection
+      # eks_audit_logs, malware_protection (EBS), rds_login_events, lambda_network_logs
+```
+
+AWS switches on every optional feature (except Runtime Monitoring) when a detector is created without a feature list
+([CreateDetector](https://docs.aws.amazon.com/guardduty/latest/APIReference/API_CreateDetector.html)), so tarmac sends the list
+explicitly, and sets the same choice for new member accounts. On a detector that already exists tarmac only turns requested
+features on; it never turns one off, and it reports any optional feature that is on but not requested. Runtime Monitoring is
+not managed by tarmac.
+
 ## Safe Teardown
 
 Tarmac includes built-in safeguards to prevent accidental infrastructure or state loss:
