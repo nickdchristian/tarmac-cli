@@ -80,6 +80,8 @@ def load_configs_or_exit(config_dir: Path | None = None) -> ConfigBundle:
         if not errors:
             error_console.print("[red]•[/red] Failed to load configuration files.")
         raise typer.Exit(code=1)
+    for message in bundle.deprecated_settings():
+        error_console.print(f"[yellow]⚠ {message}[/yellow]")
     inventory.activate(config_dir or get_default_config_dir())
     return bundle
 
@@ -149,7 +151,6 @@ def backend_parameters(bundle: ConfigBundle, enable_dynamodb: bool) -> dict[str,
     backend = bundle.org.terraform_backend
     return {
         "OrgName": bundle.org.organization.name,
-        "BucketPrefix": backend.bucket_prefix,
         "EnableDynamoDB": "true" if enable_dynamodb else "false",
         "DynamoDBTableName": backend.dynamodb_table_name,
     }

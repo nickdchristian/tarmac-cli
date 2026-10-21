@@ -8,19 +8,6 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 from .tagging import validate_tags
 
 
-def _validate_bucket_prefix(v: str) -> str:
-    if not (3 <= len(v) <= 40):
-        raise ValueError(f"S3 bucket prefix must be between 3 and 40 characters (received {len(v)}).")
-    if not re.match(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$", v):
-        raise ValueError(
-            f"S3 bucket prefix '{v}' must be lowercase alphanumeric and may contain hyphens, "
-            "and cannot start or end with a hyphen."
-        )
-    if "--" in v:
-        raise ValueError(f"S3 bucket prefix '{v}' cannot contain consecutive hyphens ('--').")
-    return v
-
-
 class Contact(BaseModel):
     name: str = Field(..., min_length=1)
     title: str = Field(..., min_length=1)
@@ -93,7 +80,10 @@ class ObjectLockConfig(BaseModel):
 
 class CloudTrailConfig(BaseModel):
     trail_name: str = Field(default="organization-trail")
-    bucket_prefix: str = Field(default="org-cloudtrail")
+    bucket_prefix: str | None = Field(
+        default=None,
+        description="Deprecated and ignored: tarmac names its buckets after organization.name. Remove this line.",
+    )
     enable_kms: bool | None = Field(
         default=None,
         description=(
@@ -130,10 +120,6 @@ class CloudTrailConfig(BaseModel):
         ),
     )
 
-    @field_validator("bucket_prefix")
-    def validate_bucket_prefix(cls, v: str) -> str:
-        return _validate_bucket_prefix(v)
-
     @model_validator(mode="after")
     def object_lock_must_not_outlast_log_retention(self) -> "CloudTrailConfig":
         """Lifecycle cannot delete a locked version, so a lock longer than ``retention_days`` would silently
@@ -153,7 +139,10 @@ class TerraformBackendConfig(BaseModel):
         default="deployment",
         description="Designates the account name hosting Terraform remote state.",
     )
-    bucket_prefix: str = Field(default="org-terraform-state")
+    bucket_prefix: str | None = Field(
+        default=None,
+        description="Deprecated and ignored: tarmac names its buckets after organization.name. Remove this line.",
+    )
     dynamodb_table_name: str = Field(default="terraform-state-lock")
     enable_dynamodb: bool | None = Field(
         default=None,
@@ -163,10 +152,6 @@ class TerraformBackendConfig(BaseModel):
             "it. DynamoDB locking is deprecated in Terraform. Set true to create the table, false to remove it."
         ),
     )
-
-    @field_validator("bucket_prefix")
-    def validate_bucket_prefix(cls, v: str) -> str:
-        return _validate_bucket_prefix(v)
 
 
 class OrgDetails(BaseModel):

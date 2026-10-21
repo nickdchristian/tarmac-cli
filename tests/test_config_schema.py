@@ -285,40 +285,23 @@ def test_cost_allocation_tags_config_schema(sample_config_dir):
     assert bundle.get_cost_allocation_tags() == []
 
 
-def test_bucket_prefix_boundary_validation():
-    """Verify S3 bucket prefix rules: 3-40 chars, lowercase alphanumeric + single hyphens."""
-    from tarmac.core.config_schema import CloudTrailConfig, TerraformBackendConfig
+def test_bucket_prefix_is_accepted_but_reported_as_ignored(writable_config_dir):
+    """Configs written before bucket names came from organization.name still load, with a deprecation notice."""
+    import yaml
 
-    # Valid prefixes
-    assert CloudTrailConfig(bucket_prefix="my-trail-logs").bucket_prefix == "my-trail-logs"
-    assert TerraformBackendConfig(bucket_prefix="tf-state-123").bucket_prefix == "tf-state-123"
+    from tarmac.core.config_loader import load_all_configs
 
-    # Too short (< 3)
-    with pytest.raises(ValidationError) as exc:
-        CloudTrailConfig(bucket_prefix="ab")
-    assert "between 3 and 40 characters" in str(exc.value)
+    org_file = writable_config_dir / "organization.yaml"
+    data = yaml.safe_load(org_file.read_text())
+    data["cloudtrail"]["bucket_prefix"] = "Not-A-Valid-Prefix"
+    org_file.write_text(yaml.safe_dump(data))
 
-    # Too long (> 40)
-    with pytest.raises(ValidationError) as exc:
-        CloudTrailConfig(bucket_prefix="a" * 41)
-    assert "between 3 and 40 characters" in str(exc.value)
+    bundle, errors = load_all_configs(writable_config_dir)
 
-    # Starts or ends with hyphen
-    with pytest.raises(ValidationError):
-        CloudTrailConfig(bucket_prefix="-invalid-prefix")
-    with pytest.raises(ValidationError):
-        CloudTrailConfig(bucket_prefix="invalid-prefix-")
-
-    # Consecutive hyphens
-    with pytest.raises(ValidationError) as exc:
-        CloudTrailConfig(bucket_prefix="invalid--prefix")
-    assert "consecutive hyphens" in str(exc.value)
-
-    # Uppercase or underscores
-    with pytest.raises(ValidationError):
-        CloudTrailConfig(bucket_prefix="InvalidPrefix")
-    with pytest.raises(ValidationError):
-        CloudTrailConfig(bucket_prefix="invalid_prefix")
+    assert not errors
+    assert bundle is not None
+    (message,) = bundle.deprecated_settings()
+    assert "cloudtrail.bucket_prefix is ignored" in message
 
 
 def test_session_duration_validation():

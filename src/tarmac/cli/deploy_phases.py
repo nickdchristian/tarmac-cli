@@ -14,7 +14,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AccountProvisioningError, GovernanceError
 from ..core.models import BaselineReport, PreflightCheckStatus, PreflightReport, StackDeployReport
 from ..core.org_accounts import get_active_account_id_map
-from ..core.stack_names import Stack
+from ..core.stack_names import LOG_ARCHIVE_BUCKETS, Bucket, Stack
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
@@ -245,15 +245,9 @@ def _deploy_log_archive_hardening_stack(
     def on_before_create() -> None:
         if not dry_run:
             s3_client = session_mgr.get_member_client(log_archive_id, "s3", region_name=target_region)
-            org_name = bundle.org.organization.name
-            buckets = [
-                f"{org_name}-log-archive-access-logs-{log_archive_id}",
-                f"{org_name}-org-cloudtrail-logs-{log_archive_id}",
-                f"{org_name}-org-config-logs-{log_archive_id}",
-                f"{bundle.org.cloudtrail.bucket_prefix}-{log_archive_id}",
-            ]
-            for b in set(buckets):
-                cleanup_orphaned_bucket(s3_client, b, account_id=log_archive_id)
+            for bucket in LOG_ARCHIVE_BUCKETS:
+                name = bucket.for_account(bundle.org.organization.name, log_archive_id)
+                cleanup_orphaned_bucket(s3_client, name, account_id=log_archive_id)
 
     if not dry_run:
         resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
@@ -461,12 +455,8 @@ def _deploy_backend_stack(
     def on_before_create() -> None:
         if not dry_run and session_mgr and deployment_id:
             s3_client = session_mgr.get_member_client(deployment_id, "s3", region_name=target_region)
-            state_buckets = [
-                f"{bundle.org.organization.name}-terraform-state-{deployment_id}",
-                f"{bundle.org.terraform_backend.bucket_prefix}-{deployment_id}",
-            ]
-            for b in set(state_buckets):
-                cleanup_orphaned_bucket(s3_client, b, account_id=deployment_id)
+            name = Bucket.TERRAFORM_STATE.for_account(bundle.org.organization.name, deployment_id)
+            cleanup_orphaned_bucket(s3_client, name, account_id=deployment_id)
 
     backend_stack = Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name)
     enable_dynamodb, lock_warning = lock_table_wanted(

@@ -13,7 +13,7 @@ from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 from ..core.org_accounts import active_account_ids, is_active, iter_accounts
 from ..core.placeholders import find_placeholder_values
-from ..core.stack_names import ACCESS_STACK, TARMAC_STACK_SUFFIXES
+from ..core.stack_names import ACCESS_STACK, TARMAC_STACK_SUFFIXES, Bucket
 from ..core.templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
@@ -669,21 +669,15 @@ class PreflightService:
             deployment_id = self.bundle.resolve_account_id(backend_name, active_accts) or mgmt_id
 
             org_name = self.bundle.org.organization.name
-            # Same rule as terraform-backend.yaml: tarmac always passes OrgName, which wins over BucketPrefix.
-            tf_bucket = (
-                f"{org_name}-terraform-state-{deployment_id}"
-                if org_name
-                else f"{self.bundle.org.terraform_backend.bucket_prefix}-{deployment_id}"
-            )
             prefixes_to_check = [
                 (
                     "CloudTrail Logs",
-                    f"{org_name}-org-cloudtrail-logs-{log_archive_id}",
+                    Bucket.CLOUDTRAIL_LOGS.for_account(org_name, log_archive_id),
                     log_archive_id,
                 ),
                 (
                     "Terraform State",
-                    tf_bucket,
+                    Bucket.TERRAFORM_STATE.for_account(org_name, deployment_id),
                     deployment_id,
                 ),
             ]
@@ -737,7 +731,7 @@ class PreflightService:
                                 live_value="Forbidden (Taken Globally)",
                                 action_required=(
                                     f"Bucket name '{b_name}' is globally claimed by another AWS account. "
-                                    "Change bucket_prefix in organization.yaml."
+                                    "Bucket names come from organization.name: choose a different name."
                                 ),
                             )
                         )

@@ -16,6 +16,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
 from ..core.logging import setup_logging, start_run
 from ..core.placeholders import find_placeholder_values
+from ..core.stack_names import Stack
 from ..services.drift import DriftService
 from ..services.identity import SUPPORTED_SSO_REGIONS, _probe_region_for_instance
 from ..services.scaffold import scaffold_project
@@ -201,7 +202,7 @@ def validate_config(
             "valid": not bool(errors or bundle is None),
             "summary": _build_validation_summary(bundle),
             "errors": errors or [],
-            "warnings": find_placeholder_values(bundle) if bundle is not None else [],
+            "warnings": [*find_placeholder_values(bundle), *bundle.deprecated_settings()] if bundle else [],
         }
         print(json.dumps(payload, indent=2))
         if errors or bundle is None:
@@ -233,6 +234,8 @@ def validate_config(
         )
         for problem in placeholders:
             console.print(f"  [yellow]•[/yellow] {problem}")
+    for message in bundle.deprecated_settings():
+        print_warning(message)
 
 
 def _fetch_org_details(session_mgr: AwsSessionManager) -> tuple[dict[str, str], str]:
@@ -447,7 +450,7 @@ def _eval_backend_status(status: Any, bundle: Any) -> tuple[str, str, str, str, 
     action = "Backend stack not deployed. Run: tarmac deploy run --phase 5" if not synced else None
     return (
         "Terraform Backend",
-        bundle.org.terraform_backend.bucket_prefix,
+        Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name),
         status.backend_status,
         badge,
         action,

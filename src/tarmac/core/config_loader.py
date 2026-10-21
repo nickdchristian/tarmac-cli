@@ -340,6 +340,17 @@ class ConfigBundle:
             tags.update(self.accounts.tags)
         return tags
 
+    def deprecated_settings(self) -> list[str]:
+        """Settings the configuration still sets that tarmac now ignores, as messages to show the user."""
+        found = []
+        for section in ("cloudtrail", "terraform_backend"):
+            if "bucket_prefix" in getattr(self.org, section).model_fields_set:
+                found.append(
+                    f"organization.yaml: {section}.bucket_prefix is ignored (bucket names come from "
+                    "organization.name). Remove it."
+                )
+        return found
+
     def get_cost_allocation_tags(self) -> list[str]:
         """Collect user-defined cost allocation tag keys from configuration."""
         if not self.org.cost_allocation_tags.enabled:

@@ -748,8 +748,11 @@ def test_destroy_empties_and_deletes_the_config_bucket_with_the_other_log_bucket
         bundle, "eu-west-1", dry_run=True, account_id_map={"log-archive": "222222222222"}
     )
 
-    assert "acme-org-config-logs-222222222222" in {
-        i.resource_name for i in items if i.resource_type == "S3 Bucket"
+    # Exactly the buckets log-archive-hardening.yaml creates, and never one named from the retired bucket_prefix.
+    assert {i.resource_name for i in items if i.resource_type == "S3 Bucket"} == {
+        "acme-log-archive-access-logs-222222222222",
+        "acme-org-cloudtrail-logs-222222222222",
+        "acme-org-config-logs-222222222222",
     }
 
 

@@ -7,7 +7,7 @@ from botocore.exceptions import ClientError
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
-from ..core.stack_names import Stack
+from ..core.stack_names import Bucket, Stack
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
@@ -131,9 +131,8 @@ class WorkloadTeardown(TeardownBase):
             s3_client = self.session_mgr.get_member_client(backend_acct_id, "s3", region_name=target_region)
             status = self.cfn_service._get_stack_status(cfn_client, stack_name)
 
-            buckets_to_empty: set[str] = {
-                f"{bundle.org.organization.name}-terraform-state-{backend_acct_id}",
-                f"{bundle.org.terraform_backend.bucket_prefix}-{backend_acct_id}",
+            buckets_to_empty = {
+                Bucket.TERRAFORM_STATE.for_account(bundle.org.organization.name, backend_acct_id)
             }
             if status:
                 outputs = self.cfn_service._fetch_stack_outputs(cfn_client, stack_name)

@@ -74,7 +74,6 @@ ou_structure:
 # Organization-wide CloudTrail configuration
 cloudtrail:
   trail_name: "myorg-organization-trail"
-  bucket_prefix: "myorg-cloudtrail"
   log_archive_account: "Log-Archive"
   # enable_kms: true   # Unset = SSE-S3 for a new deployment (cheaper). true adds a KMS key (about $1/month), which CIS and Security Hub CloudTrail.2 ask for.
   # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
@@ -96,7 +95,6 @@ cloudtrail:
 # Terraform Backend configuration
 terraform_backend:
   account: "Deployment"
-  bucket_prefix: "myorg-terraform-state"
   dynamodb_table_name: "terraform-state-lock"
   # enable_dynamodb: true   # Unset = S3-only locking (use_lockfile) for a new backend; DynamoDB locking is deprecated
 

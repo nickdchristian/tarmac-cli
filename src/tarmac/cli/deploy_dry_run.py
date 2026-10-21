@@ -11,7 +11,7 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.config_schema import AccountBaselineConfig, Contact, OUDef
-from ..core.stack_names import Stack
+from ..core.stack_names import Bucket, Stack
 from ..services.accounts import AccountService
 from ..services.ou import OUService
 from .deploy_config_recorder import warn_if_config_recorder_missing
@@ -280,7 +280,7 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     if bundle.org.security_services.config_recorder.enabled:
         table.add_row(
             "AWS Config Bucket",
-            f"{bundle.org.organization.name}-org-config-logs-<log-archive-id>",
+            Bucket.CONFIG_LOGS.for_account(bundle.org.organization.name, "<log-archive-id>"),
             "CREATE (SEPARATE FROM CLOUDTRAIL, NO OBJECT LOCK)",
         )
     table.add_row("Trail Scope", "Multi-Region (All accounts in organization)", "APPLY ORG-WIDE")
@@ -364,7 +364,8 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
 
     backend_name = bundle.get_backend_account_name() or "deployment"
     backend_cfg = bundle.org.terraform_backend
-    backend_params = f"BucketPrefix: {backend_cfg.bucket_prefix}, Locking: {_locking_label(backend_cfg)}"
+    state_bucket = Bucket.TERRAFORM_STATE.for_account(bundle.org.organization.name, "<deployment-id>")
+    backend_params = f"Bucket: {state_bucket}, Locking: {_locking_label(backend_cfg)}"
     table.add_row(
         Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name),
         backend_name,
@@ -632,7 +633,7 @@ def _build_dry_run_plan_dict(
             "terraform_backend": {
                 "stack_name": Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name),
                 "account": bundle.get_backend_account_name() or "deployment",
-                "bucket_prefix": bundle.org.terraform_backend.bucket_prefix,
+                "bucket": Bucket.TERRAFORM_STATE.for_account(bundle.org.organization.name, "<deployment-id>"),
                 "dynamodb_table_name": bundle.org.terraform_backend.dynamodb_table_name,
                 "enable_dynamodb": bundle.org.terraform_backend.enable_dynamodb,
                 "locking": _locking_label(bundle.org.terraform_backend),

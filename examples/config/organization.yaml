@@ -84,7 +84,6 @@ ou_structure:
 # Organization-wide CloudTrail configuration
 cloudtrail:
   trail_name: "myorg-organization-trail"
-  bucket_prefix: "myorg-cloudtrail"
   log_archive_account: "log-archive"
   # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
   # RECOMMENDED: S3 Object Lock on the log bucket, so logs cannot be deleted or overwritten for a year.
@@ -106,7 +105,6 @@ cloudtrail:
 # Terraform Backend configuration (deployed in Deployment account)
 terraform_backend:
   account: "deployment"
-  bucket_prefix: "myorg-terraform-state"
   dynamodb_table_name: "terraform-state-lock"
   # enable_dynamodb: true # Unset = S3-only locking (Terraform 1.10+ use_lockfile). DynamoDB locking is deprecated in Terraform.
 

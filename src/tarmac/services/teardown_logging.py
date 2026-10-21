@@ -9,7 +9,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
-from ..core.stack_names import Stack
+from ..core.stack_names import LOG_ARCHIVE_BUCKETS, Stack
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
@@ -152,11 +152,8 @@ class LoggingTeardown(TeardownBase):
             s3_client = self.session_mgr.get_member_client(acct_id, "s3", region_name=target_region)
             status = self.cfn_service._get_stack_status(cfn_client, stack_name)
 
-            buckets_to_empty: set[str] = {
-                f"{bundle.org.cloudtrail.bucket_prefix}-{acct_id}",
-                f"{bundle.org.organization.name}-org-cloudtrail-logs-{acct_id}",
-                f"{bundle.org.organization.name}-org-config-logs-{acct_id}",
-                f"{bundle.org.organization.name}-log-archive-access-logs-{acct_id}",
+            buckets_to_empty = {
+                b.for_account(bundle.org.organization.name, acct_id) for b in LOG_ARCHIVE_BUCKETS
             }
             key_id = self._log_archive_key_id(cfn_client, stack_name) if status else None
             if status:
