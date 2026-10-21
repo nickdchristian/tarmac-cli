@@ -363,7 +363,7 @@ def _client_calls() -> dict[tuple[str, str, str], set[str]]:
                 op = str(node.args[0].value)
             for kind, service in owners:
                 if service not in models:
-                    names = session.get_service_model(service).operation_names
+                    names = cast(list[str], session.get_service_model(service).operation_names)
                     models[service] = {xform_name(o): o for o in names}
                 if op in models[service]:
                     calls.setdefault((kind, service, models[service][op]), set()).add(path.name)
