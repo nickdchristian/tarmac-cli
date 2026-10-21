@@ -11,6 +11,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.inventory import Inventory
 from ..core.models import TeardownItemReport
 from .teardown_base import TeardownBase, TeardownReport
+from .teardown_config import ConfigRecorderTeardown
 from .teardown_everything import EverythingTeardown
 from .teardown_governance import GovernanceTeardown
 from .teardown_logging import LoggingTeardown
@@ -32,7 +33,9 @@ __all__ = [
 ]
 
 
-class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown, EverythingTeardown):
+class TeardownService(
+    LoggingTeardown, WorkloadTeardown, GovernanceTeardown, ConfigRecorderTeardown, EverythingTeardown
+):
     """Orchestrates comprehensive teardown of Tarmac governance resources."""
 
     def teardown_phase(
@@ -63,6 +66,7 @@ class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown, Eve
         if phase == 5:
             self._notify_phase("Phase 5 | Backend & Security Services Deployments")
             items = []
+            items.extend(self.teardown_config_recorder(bundle, target_region, dry_run=dry_run))
             if disable_security_services:
                 items.extend(self.teardown_security_services(bundle, target_region, accts, dry_run=dry_run))
             items.extend(self.teardown_backend(bundle, target_region, dry_run=dry_run, account_id_map=accts))
@@ -99,6 +103,10 @@ class TeardownService(LoggingTeardown, WorkloadTeardown, GovernanceTeardown, Eve
         if 3 in phases_set:
             self._notify_phase("Phase 3 | Organization CloudTrail")
             items.extend(self.teardown_cloudtrail(bundle, region, dry_run=dry_run))
+
+        if 3 in phases_set or 5 in phases_set:
+            self._notify_phase("Phase 5 | AWS Config Recorders")
+            items.extend(self.teardown_config_recorder(bundle, region, dry_run=dry_run))
 
         if 3 in phases_set or 5 in phases_set:
             self._notify_phase("Phase 3/5 | Log Archive Hardening & Buckets")

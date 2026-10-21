@@ -6,6 +6,7 @@ accounts are never closed here: ``tarmac account suspend --close`` does that one
 
 import contextlib
 import logging
+import shlex
 from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -439,7 +440,7 @@ class EverythingTeardown(TeardownBase):
                             "Member Account",
                             acct["Name"],
                             "SKIPPED",
-                            f"Never closed automatically. To close: tarmac account suspend {acct['Name']} --close",
+                            f"Never closed automatically. To close: tarmac account suspend {shlex.quote(acct['Id'])} --close",
                             account=acct["Name"],
                             account_id=acct["Id"],
                         )
@@ -509,7 +510,11 @@ class EverythingTeardown(TeardownBase):
                 break
             try:
                 self.cfn_service.delete_stack(
-                    cfn, ACCESS_STACK, wait=not using_role, on_progress=self.on_progress
+                    cfn,
+                    ACCESS_STACK,
+                    wait=not using_role,
+                    on_progress=self.on_progress,
+                    release_protection=True,
                 )
             except AWS_ERRORS as exc:
                 results.append(

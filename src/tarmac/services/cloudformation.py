@@ -24,6 +24,46 @@ UNUSABLE_STACK_STATES = frozenset(
 )
 
 
+def lock_table_wanted(
+    cfn_client: Any, stack_name: str, configured: bool | None, s3_only: bool = False
+) -> tuple[bool, str | None]:
+    """Decide whether the Terraform backend stack should have a DynamoDB lock table.
+
+    Returns (wanted, warning). With nothing configured a new backend is S3-only, which is cheaper and is what
+    Terraform now recommends ("DynamoDB-based locking is deprecated"), and an existing stack that has the table keeps
+    it, because dropping the table breaks every Terraform configuration still pointing at it.
+    """
+    current = _stack_parameter(cfn_client, stack_name, "EnableDynamoDB")
+    has_table = current == "true"
+    if s3_only:
+        wanted = False
+    elif configured is None:
+        return has_table, None
+    else:
+        wanted = configured
+    if has_table and not wanted:
+        return False, (
+            f"Stack '{stack_name}' has a DynamoDB lock table and this deployment removes it. Terraform "
+            "configurations that still set dynamodb_table will fail to lock state until they use "
+            "`use_lockfile = true` instead."
+        )
+    return wanted, None
+
+
+def _stack_parameter(cfn_client: Any, stack_name: str, key: str) -> str | None:
+    """A parameter of an existing stack, or None when the stack or parameter does not exist or cannot be read."""
+    try:
+        stacks = cfn_client.describe_stacks(StackName=stack_name).get("Stacks", [])
+    except (ClientError, AttributeError):
+        return None
+    if not isinstance(stacks, list) or not stacks:
+        return None
+    for param in stacks[0].get("Parameters", []) or []:
+        if isinstance(param, dict) and param.get("ParameterKey") == key:
+            return str(param.get("ParameterValue"))
+    return None
+
+
 class CloudFormationService:
     """Deploys and manages foundational CloudFormation stacks with robust waiters and output retrieval."""
 
@@ -42,8 +82,11 @@ class CloudFormationService:
         dry_run: bool = False,
         template_body: str | None = None,
         on_before_create: Callable[[], None] | None = None,
+        termination_protection: bool = False,
     ) -> StackDeployReport:
         """Deploy or update a CloudFormation stack and return a StackDeployReport.
+
+        With `termination_protection`, the stack is protected against accidental deletion once it is deployed.
 
         Tags are merged according to the Tarmac Tagging Hierarchy:
         Default System Tags (ManagedBy: tarmac) -> org_tags -> account_tags -> tags (stack/custom)
@@ -94,8 +137,39 @@ class CloudFormationService:
             cfn_client, stack_name, template_body, cfn_params, cfn_tags, stack_exists
         )
         outputs = self._fetch_stack_outputs(cfn_client, stack_name)
+        if termination_protection:
+            self.protect_stack(cfn_client, stack_name)
 
         return StackDeployReport(stack_name=stack_name, action=action, outputs=outputs, status="SUCCEEDED")
+
+    def protect_stack(self, cfn_client: Any, stack_name: str) -> None:
+        """Turn on termination protection. Failing to do so never fails a deployment; it is reported instead."""
+        try:
+            if self._is_protected(cfn_client, stack_name):
+                return
+            cfn_client.update_termination_protection(StackName=stack_name, EnableTerminationProtection=True)
+        except ClientError as e:
+            audit(
+                "protect",
+                f"stack:{stack_name}",
+                Outcome.FAILED,
+                f"Could not turn on termination protection for '{stack_name}': {aws_error_message(e)}. "
+                "If this is AccessDenied, re-run 'tarmac access bootstrap' to refresh the role's permissions.",
+            )
+            return
+        audit(
+            "protect",
+            f"stack:{stack_name}",
+            Outcome.SUCCEEDED,
+            f"Turned on termination protection for '{stack_name}'",
+        )
+
+    @staticmethod
+    def _is_protected(cfn_client: Any, stack_name: str) -> bool:
+        stacks = cfn_client.describe_stacks(StackName=stack_name).get("Stacks", [])
+        return bool(
+            isinstance(stacks, list) and stacks and stacks[0].get("EnableTerminationProtection") is True
+        )
 
     def import_resources_and_deploy_stack(
         self,
@@ -248,8 +322,12 @@ class CloudFormationService:
         stack_name: str,
         wait: bool = True,
         on_progress: Callable[[str], None] | None = None,
+        release_protection: bool = False,
     ) -> bool:
         """Delete a CloudFormation stack and optionally wait for completion.
+
+        A stack with termination protection is only deleted when the caller passes `release_protection`, meaning the
+        user asked for these resources to be removed; protection is then switched off first and that is announced.
 
         Returns True if the stack was deleted, or False if the stack did not exist.
         """
@@ -257,6 +335,8 @@ class CloudFormationService:
         if stack_status is None or stack_status == "DELETE_COMPLETE":
             logger.debug("Stack '%s' does not exist or is already deleted.", stack_name)
             return False
+        if self._is_protected(cfn_client, stack_name):
+            self._release_protection(cfn_client, stack_name, release_protection, on_progress)
 
         logger.debug("Deleting CloudFormation stack '%s' (current status: %s)...", stack_name, stack_status)
         if on_progress:
@@ -286,6 +366,29 @@ class CloudFormationService:
                 f"Could not delete CloudFormation stack '{stack_name}': {detail}",
             )
             raise DeploymentError(f"Failed to delete stack '{stack_name}'", details=detail) from e
+
+    @staticmethod
+    def _release_protection(
+        cfn_client: Any, stack_name: str, allowed: bool, on_progress: Callable[[str], None] | None
+    ) -> None:
+        if not allowed:
+            raise DeploymentError(
+                f"Stack '{stack_name}' has termination protection and was not deleted.",
+                details="Run the teardown command that removes these resources, or turn protection off yourself.",
+            )
+        message = (
+            f"Turning off termination protection on '{stack_name}': it protects against accidental deletion, "
+            "and this teardown was asked to remove it."
+        )
+        if on_progress:
+            on_progress(message)
+        audit("unprotect", f"stack:{stack_name}", Outcome.SUCCEEDED, message)
+        try:
+            cfn_client.update_termination_protection(StackName=stack_name, EnableTerminationProtection=False)
+        except ClientError as e:
+            raise DeploymentError(
+                f"Could not turn off termination protection on '{stack_name}'", details=str(e)
+            ) from e
 
     @staticmethod
     def _change_set_failure_reason(cfn_client: Any, stack_name: str, change_set_name: str) -> str:

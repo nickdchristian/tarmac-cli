@@ -13,6 +13,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.config_schema import OUDef
 from ..services.accounts import AccountService
 from ..services.ou import OUService
+from .deploy_config_recorder import warn_if_config_recorder_missing
 from .ui import console, create_table, print_info, print_warning
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,15 @@ def _records_plan(phase: int) -> Callable[[Callable[..., None]], Callable[..., N
         return wrapper
 
     return decorator
+
+
+def _locking_label(backend_cfg: Any) -> str:
+    """How the Terraform backend will lock state, for the plan output."""
+    if backend_cfg.enable_dynamodb is None:
+        return "S3-only (use_lockfile) for a new backend; an existing DynamoDB table is kept"
+    if backend_cfg.enable_dynamodb:
+        return f"DynamoDB table {backend_cfg.dynamodb_table_name}"
+    return "S3-only (use_lockfile)"
 
 
 def _collect_ou_tree(ous: list[OUDef], parent: str = "Root") -> list[tuple[str, str, str]]:
@@ -201,7 +211,10 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     trail_cfg = bundle.org.cloudtrail
     stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
-    kms_desc = "Enabled (Customer Managed Key)" if trail_cfg.enable_kms else "Disabled (SSE-S3 AES-256)"
+    if trail_cfg.enable_kms is None:
+        kms_desc = "Unset: SSE-S3 for a new deployment; an existing KMS key is kept"
+    else:
+        kms_desc = "Enabled (Customer Managed Key)" if trail_cfg.enable_kms else "Disabled (SSE-S3 AES-256)"
 
     table.add_row("CloudFormation Stack", stack_name, "DEPLOY STACK")
     table.add_row(
@@ -213,7 +226,13 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     table.add_row("Primary Region", target_region, "STACK REGION")
     table.add_row("Log Archive Account", log_archive_name, "AGGREGATE S3 SINK")
     table.add_row(
-        "KMS Encryption", kms_desc, "CONSTRUCT KEY POLICY" if trail_cfg.enable_kms else "NO KEY NEEDED"
+        "KMS Encryption",
+        kms_desc,
+        "CONSTRUCT KEY POLICY"
+        if trail_cfg.enable_kms
+        else "KEEP EXISTING KEY, ELSE NONE"
+        if trail_cfg.enable_kms is None
+        else "NO KEY NEEDED",
     )
     if trail_cfg.retention_days:
         table.add_row(
@@ -221,6 +240,21 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
         )
     else:
         table.add_row("Log Retention", "Keep indefinitely", "NO EXPIRATION")
+    lock = trail_cfg.object_lock
+    if lock:
+        table.add_row(
+            "Object Lock",
+            f"{lock.mode}, {lock.retention_days} days",
+            "LOCK NEW LOG OBJECTS (CANNOT BE UNDONE)",
+        )
+    else:
+        table.add_row("Object Lock", "Off", "RECOMMENDED: GOVERNANCE, 365 DAYS")
+    if bundle.org.security_services.config_recorder.enabled:
+        table.add_row(
+            "AWS Config Bucket",
+            f"{bundle.org.organization.name}-org-config-logs-<log-archive-id>",
+            "CREATE (SEPARATE FROM CLOUDTRAIL, NO OBJECT LOCK)",
+        )
     table.add_row("Trail Scope", "Multi-Region (All accounts in organization)", "APPLY ORG-WIDE")
     console.print(table)
 
@@ -339,10 +373,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
 
     backend_name = bundle.get_backend_account_name() or "deployment"
     backend_cfg = bundle.org.terraform_backend
-    backend_params = (
-        f"BucketPrefix: {backend_cfg.bucket_prefix}, "
-        f"DynamoDB: {backend_cfg.dynamodb_table_name} (enabled={backend_cfg.enable_dynamodb})"
-    )
+    backend_params = f"BucketPrefix: {backend_cfg.bucket_prefix}, Locking: {_locking_label(backend_cfg)}"
     table.add_row(
         f"{bundle.org.organization.name}-terraform-backend",
         backend_name,
@@ -377,6 +408,30 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     sh_params = f"Delegated Admin: {audit_name}, AutoEnable: {sec_services.securityhub.auto_enable_members}"
     table.add_row("Security Hub Service", audit_name, sh_params, sh_action)
 
+    config_cfg = sec_services.config_recorder
+    if config_cfg.enabled:
+        regions = list(
+            dict.fromkeys(
+                [bundle.org.organization.primary_region, *bundle.org.organization.additional_regions]
+            )
+        )
+        scope = (
+            f"global resources in {regions[0]}"
+            if config_cfg.include_global_resources
+            else "no global resources"
+        )
+        table.add_row(
+            "AWS Config recorders",
+            "All accounts (StackSet) + management",
+            f"Regions: {', '.join(regions)}; {scope}; {config_cfg.recording_frequency.lower()} recording"
+            + ("" if config_cfg.record_resource_compliance else "; no ResourceCompliance items"),
+            "DEPLOY STACKSET",
+        )
+    else:
+        table.add_row(
+            "AWS Config recorders", "-", "Delivers to the central log bucket", "[dim]DISABLED[/dim]"
+        )
+
     root_alert = sec_services.root_alert
     table.add_row(
         f"{bundle.org.organization.name}-management-root-alert",
@@ -387,6 +442,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     )
 
     console.print(table)
+    warn_if_config_recorder_missing(bundle)
 
 
 @_records_plan(6)
@@ -628,6 +684,7 @@ def _build_dry_run_plan_dict(
                 "bucket_prefix": bundle.org.terraform_backend.bucket_prefix,
                 "dynamodb_table_name": bundle.org.terraform_backend.dynamodb_table_name,
                 "enable_dynamodb": bundle.org.terraform_backend.enable_dynamodb,
+                "locking": _locking_label(bundle.org.terraform_backend),
             },
             "log_archive_hardening": {
                 "stack_name": f"{bundle.org.organization.name}-log-archive-hardening",

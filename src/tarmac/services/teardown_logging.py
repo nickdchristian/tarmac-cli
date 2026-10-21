@@ -46,7 +46,9 @@ class LoggingTeardown(TeardownBase):
                     self._notify_progress(
                         f"Deleting CloudFormation stack '{stack_name}' in Management (waiting for AWS)..."
                     )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    self.cfn_service.delete_stack(
+                        cfn_client, stack_name, on_progress=self.on_progress, release_protection=True
+                    )
                     results.append(
                         TeardownItemReport(
                             resource_type="CloudFormation Stack",
@@ -198,6 +200,7 @@ class LoggingTeardown(TeardownBase):
             buckets_to_empty: set[str] = {
                 f"{bundle.org.cloudtrail.bucket_prefix}-{log_acct_id}",
                 f"{bundle.org.organization.name}-org-cloudtrail-logs-{log_acct_id}",
+                f"{bundle.org.organization.name}-org-config-logs-{log_acct_id}",
                 f"{bundle.org.organization.name}-log-archive-access-logs-{log_acct_id}",
             }
             key_id = self._log_archive_key_id(cfn_client, stack_name) if status else None
@@ -266,7 +269,9 @@ class LoggingTeardown(TeardownBase):
                     self._notify_progress(
                         f"Deleting CloudFormation stack '{stack_name}' in {log_acct_name} (waiting for AWS)..."
                     )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    self.cfn_service.delete_stack(
+                        cfn_client, stack_name, on_progress=self.on_progress, release_protection=True
+                    )
                     results.append(
                         TeardownItemReport(
                             resource_type="CloudFormation Stack",
@@ -476,7 +481,9 @@ class LoggingTeardown(TeardownBase):
                     self._notify_progress(
                         f"Deleting CloudFormation stack '{stack_name}' in {audit_acct_name} (waiting for AWS)..."
                     )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    self.cfn_service.delete_stack(
+                        cfn_client, stack_name, on_progress=self.on_progress, release_protection=True
+                    )
                     results.append(
                         TeardownItemReport(
                             resource_type="CloudFormation Stack",

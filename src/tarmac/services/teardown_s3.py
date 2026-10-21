@@ -24,14 +24,43 @@ def _delete_s3_batch(s3_client: Any, bucket_name: str, batch: list[dict[str, str
     """Delete one batch of objects; return how many were actually deleted.
 
     With Quiet=True S3 only reports failures, so inspect Errors rather than assuming success.
+
+    Objects under Object Lock governance retention come back as AccessDenied. Teardown is an explicit,
+    confirmed destruction, so those are retried once with BypassGovernanceRetention (which needs
+    s3:BypassGovernanceRetention). Compliance-mode locks cannot be bypassed by anyone and fail with a clear message.
     """
     resp = s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": batch, "Quiet": True})
     errors = resp.get("Errors", []) if isinstance(resp, dict) else []
+    denied = [e for e in errors if e.get("Code") == "AccessDenied"]
+    if denied:
+        retry = [{k: e[k] for k in ("Key", "VersionId") if e.get(k)} for e in denied]
+        retried = s3_client.delete_objects(
+            Bucket=bucket_name,
+            Delete={"Objects": retry, "Quiet": True},
+            BypassGovernanceRetention=True,
+        )
+        retry_errors = retried.get("Errors", []) if isinstance(retried, dict) else []
+        bypassed = len(retry) - len(retry_errors)
+        if bypassed > 0:
+            audit(
+                "purge",
+                f"S3 Bucket:{bucket_name}",
+                Outcome.SUCCEEDED,
+                f"Deleted {bypassed} object version(s) in '{bucket_name}' by bypassing Object Lock governance retention",
+                bypassed_governance_retention=bypassed,
+            )
+        errors = [e for e in errors if e.get("Code") != "AccessDenied"] + retry_errors
     if errors:
         first = errors[0]
+        hint = (
+            " If the bucket uses Object Lock in COMPLIANCE mode, nobody can delete these versions until their "
+            "retention period ends."
+            if first.get("Code") == "AccessDenied"
+            else ""
+        )
         raise GovernanceError(
             f"Failed to delete {len(errors)} object(s) from bucket '{bucket_name}'.",
-            details=f"{first.get('Code', 'Unknown')}: {first.get('Message', '')} (key: {first.get('Key', '')})",
+            details=f"{first.get('Code', 'Unknown')}: {first.get('Message', '')} (key: {first.get('Key', '')}){hint}",
         )
     return len(batch)
 

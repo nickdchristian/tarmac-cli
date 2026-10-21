@@ -76,15 +76,29 @@ cloudtrail:
   trail_name: "myorg-organization-trail"
   bucket_prefix: "myorg-cloudtrail"
   log_archive_account: "Log-Archive"
-  enable_kms: true
+  # enable_kms: true   # Unset = SSE-S3 for a new deployment (cheaper). true adds a KMS key (about $1/month), which CIS and Security Hub CloudTrail.2 ask for.
   # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
+  # RECOMMENDED: S3 Object Lock on the log bucket, so logs cannot be deleted or overwritten for a year.
+  # Off unless set, and S3 cannot turn it off again once it is on. `object_lock: null` hides the deploy warning.
+  # object_lock:
+  #   mode: GOVERNANCE     # GOVERNANCE (bypassable) or COMPLIANCE (cannot be undone before it expires)
+  #   retention_days: 365
+
+# Security services (all off unless enabled)
+# security_services:
+#   delegated_account: audit
+#   guardduty: {enabled: true}
+#   securityhub: {enabled: true}
+#   config_recorder:          # AWS Config in every account, delivered to its own log archive bucket. Billed per item.
+#     enabled: true           # Security Hub CSPM standards need it. `config_recorder: null` acknowledges the warning.
+#     recording_frequency: CONTINUOUS   # or DAILY: $0.012/item vs $0.003, cheaper only above 4 changes a day
 
 # Terraform Backend configuration
 terraform_backend:
   account: "Deployment"
   bucket_prefix: "myorg-terraform-state"
   dynamodb_table_name: "terraform-state-lock"
-  enable_dynamodb: true
+  # enable_dynamodb: true   # Unset = S3-only locking (use_lockfile) for a new backend; DynamoDB locking is deprecated
 
 # Cost Allocation Tags in AWS Cost Explorer & Billing
 cost_allocation_tags:
