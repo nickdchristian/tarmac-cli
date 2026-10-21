@@ -5,14 +5,20 @@
 # -----------------------------------------------------------------------------
 # 1. Separation of Duties (KMS Key Policy):
 #    AWS's default KMS policy (kms:*) delegates all key actions to IAM.
-#    This template enforces least privilege by strictly separating duties:
-#    - Key Administrators: Can manage key rotation, tags, and lifecycle, but
-#      CANNOT encrypt or decrypt data.
-#    - Security Auditors & Investigators: Granted 'kms:Decrypt' to inspect and
-#      analyze logs in Amazon Athena or S3, but CANNOT forge or encrypt logs.
-#    - AWS Service Principals (cloudtrail, config, s3 logging): Granted
-#      'kms:GenerateDataKey' guarded by 'aws:SourceOrgID' to write verified
-#      audit logs into S3.
+#    This template narrows that:
+#    - Key management: the account root principal is granted key management
+#      actions (rotation, tags, lifecycle) without kms:Encrypt or kms:Decrypt.
+#    - Reading logs: the same root principal is granted kms:Decrypt and
+#      kms:DescribeKey, which delegates to IAM. Any identity in this account whose
+#      IAM policy allows kms:Decrypt can read the logs; there is no separate
+#      auditor principal in the key policy. Grant that permission only to your
+#      auditor roles.
+#    - Writing logs: the cloudtrail.amazonaws.com and config.amazonaws.com
+#      service principals are granted kms:GenerateDataKey (and Decrypt,
+#      DescribeKey) guarded by 'aws:SourceOrgID'. S3 server access logs are
+#      written to a separate bucket and are not encrypted with this key.
+#    This is a guardrail, not a hard separation: kms:Put* includes PutKeyPolicy, so
+#    an identity allowed to manage this key can rewrite the policy.
 #
 # 2. Centralized S3 Log Storage (AWS Security Reference Architecture - SRA):
 #    - 'OrganizationCloudTrailBucket': Centralized organizational log repository

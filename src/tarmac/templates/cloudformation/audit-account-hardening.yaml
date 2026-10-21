@@ -7,12 +7,18 @@
 #    AWS's default KMS policy grants 'kms:*' to 'arn:aws:iam::<account-id>:root'.
 #    While convenient, that allows any identity with broad IAM privileges to
 #    encrypt/decrypt sensitive audit data.
-#    This template enforces strict Separation of Duties:
-#    - Key Administrators (the account root principal) are restricted to key
-#      lifecycle management (create, update, rotate, delete) and CANNOT encrypt/decrypt.
-#    - Cryptographic usage is restricted exclusively to authorized service
-#      principals (sns.amazonaws.com, events.amazonaws.com, config.amazonaws.com)
-#      guarded by strict condition keys (aws:SourceAccount, aws:SourceArn, aws:SourceOrgID).
+#    This template narrows that:
+#    - The account root principal is granted key management actions only (create,
+#      describe, enable, disable, update, delete, tag, schedule deletion) and NOT
+#      kms:Encrypt/kms:Decrypt, so IAM policies in this account cannot grant data
+#      access on their own.
+#    - Cryptographic usage is granted to service principals (sns.amazonaws.com,
+#      events.amazonaws.com, config.amazonaws.com) with condition keys
+#      (aws:SourceAccount, aws:SourceArn, aws:SourceOrgID).
+#    This is a guardrail, not a hard separation: kms:Put* includes PutKeyPolicy, so
+#    an identity allowed to manage this key can rewrite the policy and grant itself
+#    decrypt. Real separation needs a separate admin boundary (for example an SCP
+#    that denies kms:PutKeyPolicy to everything except a break-glass role).
 #
 # 2. KMS "Resource: *" Syntax:
 #    In AWS KMS key policies, 'Resource: "*"' is syntactically required by AWS to
@@ -220,7 +226,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub '${OrgName}-config-compliance-changes'
-      Description: Alert on non-compliant Config rule evaluations
+      Description: Alert on non-compliant evaluations of AWS Config rules in this account and Region
       EventPattern:
         source:
           - aws.config
@@ -238,7 +244,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub '${OrgName}-guardduty-findings'
-      Description: Alert on GuardDuty findings with medium or higher severity
+      Description: Alert on GuardDuty findings (severity 4 or higher) delivered to this account in this Region
       EventPattern:
         source:
           - aws.guardduty
@@ -257,7 +263,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub '${OrgName}-securityhub-findings'
-      Description: Alert on Security Hub findings with high or critical severity
+      Description: Alert on Security Hub findings (HIGH or CRITICAL) delivered to this account in this Region
       EventPattern:
         source:
           - aws.securityhub
@@ -277,7 +283,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub '${OrgName}-root-activity-alert'
-      Description: Alert when root user credentials or sessions are used in any account
+      Description: Alert on root user activity recorded on this account's event bus in this Region (root use in other accounts is not delivered here)
       EventPattern:
         detail-type:
           - AWS Console Sign In via CloudTrail
