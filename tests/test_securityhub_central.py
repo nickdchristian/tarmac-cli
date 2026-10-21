@@ -258,6 +258,46 @@ def test_service_reports_a_central_configuration_failure():
     assert "Central configuration failed" in report.message
 
 
+def test_central_configuration_designates_the_administrator_in_the_home_region_only():
+    """Linked Regions inherit the central policy, so the delegation is made once, from the home Region."""
+    sh = MagicMock()
+    sh.describe_organization_configuration.return_value = _org_config("CENTRAL")
+    sh.describe_standards.return_value = STANDARDS
+    sh.get_paginator.return_value.paginate.return_value = [{"ConfigurationPolicySummaries": []}]
+    sh.create_configuration_policy.return_value = {"Id": "pol-1"}
+    sh.get_configuration_policy_association.return_value = {}
+    sh.start_configuration_policy_association.return_value = {"AssociationStatus": "PENDING"}
+    sh.list_finding_aggregators.return_value = {"FindingAggregators": [{"FindingAggregatorArn": AGG_ARN}]}
+    sh.get_finding_aggregator.return_value = {
+        "RegionLinkingMode": "SPECIFIED_REGIONS",
+        "Regions": ["eu-west-1"],
+    }
+
+    mgr = MagicMock()
+    org = MagicMock()
+    org.list_roots.return_value = {"Roots": [{"Id": ROOT}]}
+    mgmt_by_region: dict[str, MagicMock] = {}
+
+    def client(svc: str, **kwargs: Any) -> MagicMock:
+        if svc == "organizations":
+            return org
+        m = mgmt_by_region.setdefault(kwargs.get("region_name", ""), MagicMock())
+        m.list_organization_admin_accounts.return_value = {"AdminAccounts": []}
+        return m
+
+    mgr.get_client.side_effect = client
+    mgr.get_member_client.return_value = sh
+
+    SecurityServicesService(mgr).configure_securityhub(
+        "111122223333", "us-east-1", ["us-east-1", "eu-west-1"], SecurityHubConfig(enabled=True)
+    )
+
+    assert set(mgmt_by_region) == {"us-east-1"}
+    mgmt_by_region["us-east-1"].enable_organization_admin_account.assert_called_once_with(
+        AdminAccountId="111122223333"
+    )
+
+
 # -- finding aggregator scope ---------------------------------------------------------------------------------
 
 AGG_ARN = "arn:aws:securityhub:us-east-1:111122223333:finding-aggregator/abc"
