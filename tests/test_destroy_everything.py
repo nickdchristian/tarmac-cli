@@ -166,7 +166,7 @@ def test_org_settings_are_reverted_but_identity_center_access_is_kept(inv: Inven
     inv.record("trusted-access:sso.amazonaws.com")
     inv.record("alternate-contact:BILLING")
     org, iam, account = MagicMock(), MagicMock(), MagicMock()
-    items = _service({"organizations": org, "iam": iam, "account": account}).teardown_org_settings(None, inv)  # type: ignore[arg-type]
+    items = _service({"organizations": org, "iam": iam, "account": account}).teardown_org_settings(inv)
 
     org.deregister_delegated_administrator.assert_called_once_with(
         AccountId="222", ServicePrincipal="iam.amazonaws.com"
@@ -186,7 +186,7 @@ def test_failed_revert_stays_in_the_inventory(inv: Inventory):
     org.disable_aws_service_access.side_effect = _err("ConstraintViolationException")
     items = _service(
         {"organizations": org, "iam": MagicMock(), "account": MagicMock()}
-    ).teardown_org_settings(None, inv)  # type: ignore[arg-type]
+    ).teardown_org_settings(inv)
     assert items[0].action == "FAILED"
     assert "config.amazonaws.com" in inv.get("trusted-access")
 
@@ -219,7 +219,7 @@ def test_group_assignments_are_removed_before_the_group(inv: Inventory, monkeypa
             calls.append("unassign")
 
     monkeypatch.setattr("tarmac.services.teardown_everything.IdentityService", FakeIdentity)
-    items = _service({}).teardown_identity_principals(None, "us-east-1", inv)  # type: ignore[arg-type]
+    items = _service({}).teardown_identity_principals("us-east-1", inv)
 
     assert calls == ["unassign", "delete_group"]
     assert {i.action for i in items} == {"DELETED"}
@@ -369,7 +369,7 @@ def test_contact_that_replaced_an_existing_one_is_not_removed(inv: Inventory):
     account = MagicMock()
     items = _service(
         {"organizations": MagicMock(), "iam": MagicMock(), "account": account}
-    ).teardown_org_settings(None, inv)  # type: ignore[arg-type]
+    ).teardown_org_settings(inv)
     account.delete_alternate_contact.assert_called_once_with(AlternateContactType="SECURITY")
     assert {i.resource_name: i.action for i in items} == {"BILLING": "SKIPPED", "SECURITY": "DELETED"}
 

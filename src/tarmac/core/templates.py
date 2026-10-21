@@ -38,7 +38,7 @@ def resolve_resource_path(
         return cwd_candidate
 
     bundled = _find_bundled_resource(rel)
-    if bundled is not None and bundled.is_file():
+    if bundled is not None:
         return Path(str(bundled))
 
     raise ConfigurationError(
@@ -49,34 +49,22 @@ def resolve_resource_path(
 
 def _find_bundled_resource(rel: Path) -> Path | None:
     """Search within bundled tarmac.templates package."""
-    try:
-        traversable = importlib.resources.files("tarmac.templates")
-        direct = traversable.joinpath(*rel.parts)
-        if direct.is_file():
-            return Path(str(direct))
+    traversable = importlib.resources.files("tarmac.templates")
+    direct = traversable.joinpath(*rel.parts)
+    if direct.is_file():
+        return Path(str(direct))
 
-        if len(rel.parts) == 1:
-            cfn = traversable.joinpath("cloudformation", rel.name)
-            if cfn.is_file():
-                return Path(str(cfn))
-            pol = traversable.joinpath("policies", "scp", rel.name)
-            if pol.is_file():
-                return Path(str(pol))
-            iam = traversable.joinpath("policies", "iam", rel.name)
-            if iam.is_file():
-                return Path(str(iam))
-    except Exception as e:
-        logger.debug("Failed searching bundled resources for %s: %s", rel, e)
+    if len(rel.parts) == 1:
+        cfn = traversable.joinpath("cloudformation", rel.name)
+        if cfn.is_file():
+            return Path(str(cfn))
+        pol = traversable.joinpath("policies", "scp", rel.name)
+        if pol.is_file():
+            return Path(str(pol))
+        iam = traversable.joinpath("policies", "iam", rel.name)
+        if iam.is_file():
+            return Path(str(iam))
     return None
-
-
-def read_resource_text(
-    relative_path: str | Path,
-    project_root: Path | None = None,
-) -> str:
-    """Read the string content of a template or policy file."""
-    path = resolve_resource_path(relative_path, project_root=project_root)
-    return path.read_text(encoding="utf-8")
 
 
 def export_bundled_templates(target_dir: Path, force: bool = False) -> list[Path]:

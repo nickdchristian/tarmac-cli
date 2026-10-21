@@ -184,7 +184,7 @@ def test_provision_account_reused_syncs_tags():
         tags={"Environment": "Infrastructure", "ManagedBy": "tarmac"},
     )
 
-    result = service.provision_account(acct_def, target_ou_id="ou-infra-123")
+    result = service.provision_accounts([acct_def], {acct_def.ou: "ou-infra-123"})[0]
     assert result.status == "SUCCEEDED"
     assert result.action_taken == "TAGGED"
     mock_org_client.tag_resource.assert_called_once_with(
@@ -385,7 +385,7 @@ def test_provision_account_skips_suspended():
     service = AccountService(mock_session_mgr)
     acct_def = AccountDef(name="ClosedInAws", email="closed@acme-corp.io", ou="Infrastructure")
 
-    result = service.provision_account(acct_def, target_ou_id="ou-infra-123")
+    result = service.provision_accounts([acct_def], {acct_def.ou: "ou-infra-123"})[0]
     assert result.status == "SKIPPED"
     assert result.action_taken == "SUSPENDED_SKIPPED"
     mock_org_client.move_account.assert_not_called()
@@ -429,7 +429,7 @@ def test_provision_account_new_account_full_lifecycle():
     )
 
     with patch("time.sleep", return_value=None):
-        res = service.provision_account(acct_def, target_ou_id="ou-sec-999")
+        res = service.provision_accounts([acct_def], {acct_def.ou: "ou-sec-999"})[0]
 
     assert res.status == "SUCCEEDED"
     assert res.action_taken == "CREATED"
@@ -450,44 +450,6 @@ def test_provision_account_new_account_full_lifecycle():
         DestinationParentId="ou-sec-999",
     )
     mock_org_client.tag_resource.assert_called_once()
-
-
-def test_poll_create_account_status_failure_surfaces_aws_reason():
-    """Verify that when AWS async account creation fails, AccountProvisioningError extracts AWS FailureReason."""
-    mock_session_mgr = MagicMock()
-    mock_org_client = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_org_client
-
-    mock_org_client.describe_create_account_status.return_value = {
-        "CreateAccountStatus": {
-            "State": "FAILED",
-            "FailureReason": "EMAIL_ALREADY_EXISTS",
-        }
-    }
-
-    service = AccountService(mock_session_mgr)
-    with patch("time.sleep", return_value=None), pytest.raises(AccountProvisioningError) as exc_info:
-        service._poll_create_account_status("car-fail-99", "DupeAccount")
-
-    assert "FAILED" in str(exc_info.value)
-    assert "EMAIL_ALREADY_EXISTS" in (exc_info.value.details or "")
-
-
-def test_poll_create_account_status_timeout():
-    """Verify that when account creation status times out, AccountProvisioningError is raised."""
-    mock_session_mgr = MagicMock()
-    mock_org_client = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_org_client
-
-    mock_org_client.describe_create_account_status.return_value = {
-        "CreateAccountStatus": {"State": "IN_PROGRESS"}
-    }
-
-    service = AccountService(mock_session_mgr)
-    with patch("time.sleep", return_value=None), pytest.raises(AccountProvisioningError) as exc_info:
-        service._poll_create_account_status("car-slow-99", "SlowAccount", max_attempts=3, delay_sec=0)
-
-    assert "timed out" in (exc_info.value.details or "").lower()
 
 
 def test_move_account_client_error_wrapped():

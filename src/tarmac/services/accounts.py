@@ -619,52 +619,6 @@ class AccountService:
         )
         return False
 
-    def provision_account(
-        self,
-        acct_def: AccountDef,
-        target_ou_id: str,
-        org_tags: dict[str, str] | None = None,
-    ) -> AccountProvisionResult:
-        """Idempotently create an account and ensure placement in the target OU."""
-        results = self.provision_accounts([acct_def], {acct_def.ou: target_ou_id}, org_tags=org_tags)
-        return results[0]
-
-    def _poll_create_account_status(
-        self, request_id: str, account_name: str, max_attempts: int = 40, delay_sec: int = 15
-    ) -> str:
-        """Poll account creation status until SUCCEEDED or failed."""
-        last_state = "IN_PROGRESS"
-        last_reason = ""
-        for attempt in range(1, max_attempts + 1):
-            time.sleep(delay_sec)
-            try:
-                last_state, account_id, last_reason = self._describe_create_status(request_id)
-                logger.info(
-                    "Creation status for '%s': %s (attempt %d/%d)",
-                    account_name,
-                    last_state,
-                    attempt,
-                    max_attempts,
-                )
-                if last_state == "SUCCEEDED":
-                    if not account_id:
-                        raise AccountProvisioningError(
-                            f"Account creation for '{account_name}' succeeded but AccountId was not returned."
-                        )
-                    return account_id
-                if last_state != "IN_PROGRESS":
-                    raise AccountProvisioningError(
-                        f"Account creation for '{account_name}' failed with status: {last_state}",
-                        details=last_reason or f"Status ended in {last_state}",
-                    )
-            except ClientError as e:
-                logger.warning("Error querying creation status: %s", e)
-
-        raise AccountProvisioningError(
-            f"Account creation for '{account_name}' failed with status: {last_state}",
-            details=last_reason or f"Status timed out or ended in {last_state}",
-        )
-
     def export_inventory(self, catalog: AccountsCatalog, ou_map: dict[str, str], output_dir: Path) -> Path:
         """Export current organization account inventory to JSON and environment shell script."""
         existing = self.list_existing_accounts()

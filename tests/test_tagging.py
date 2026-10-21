@@ -181,10 +181,7 @@ def test_config_bundle_tag_resolution(tmp_path: Path):
     assert acct_tags["AccountLevel"] == "AuditAcct"
     assert acct_tags["CostCenter"] == "Sec-200"
 
-    resolved = bundle.get_resolved_tags(
-        account_name="audit",
-        custom_tags={"InvocationTag": "ManualRun"},
-    )
+    resolved = merge_tags(org_tags, acct_tags, {"InvocationTag": "ManualRun"})
     assert resolved["ManagedBy"] == "tarmac"
     assert resolved["OrgLevel"] == "True"
     assert resolved["CatalogLevel"] == "CatalogDefault"
@@ -310,7 +307,7 @@ def test_catalog_tags_override_org_tags_and_account_tags_override_catalog(tmp_pa
     assert org_tags["Shared"] == "FromCatalog"
     assert org_tags["Tier"] == "CatalogDefault"
 
-    resolved = bundle.get_resolved_tags(account_name="audit")
+    resolved = merge_tags(org_tags, bundle.get_account_tags("audit"))
     assert resolved["Tier"] == "AccountSpecific"
     assert resolved["Shared"] == "FromCatalog"
 

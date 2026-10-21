@@ -12,7 +12,6 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.audit import Outcome, audit
-from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
 from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
@@ -52,7 +51,7 @@ class EverythingTeardown(TeardownBase):
     """Identity principals, OUs, organization settings and the access role that Tarmac created."""
 
     def teardown_identity_principals(
-        self, bundle: ConfigBundle, target_region: str, inventory: Inventory, dry_run: bool = False
+        self, target_region: str, inventory: Inventory, dry_run: bool = False
     ) -> list[TeardownItemReport]:
         results: list[TeardownItemReport] = self._new_results_list()
         users, groups = inventory.get("identity-user"), inventory.get("identity-group")
@@ -264,9 +263,7 @@ class EverythingTeardown(TeardownBase):
                 names.extend(c["Id"] for c in page.get("Children", []))
         return names
 
-    def teardown_org_settings(
-        self, bundle: ConfigBundle, inventory: Inventory, dry_run: bool = False
-    ) -> list[TeardownItemReport]:
+    def teardown_org_settings(self, inventory: Inventory, dry_run: bool = False) -> list[TeardownItemReport]:
         """Undo phase 1: delegation, root-access features, trusted access, contacts and cost tags."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
@@ -415,7 +412,7 @@ class EverythingTeardown(TeardownBase):
         inventory.forget(kind, key)
         return _item(label, name, "DELETED", "Reverted a setting tarmac enabled", account_id=mgmt_id)
 
-    def report_accounts_kept(self, dry_run: bool = False) -> list[TeardownItemReport]:
+    def report_accounts_kept(self) -> list[TeardownItemReport]:
         """List the member accounts tarmac manages; closing them stays a deliberate, per-account step."""
         results: list[TeardownItemReport] = self._new_results_list()
         if not self._has_credentials():

@@ -8,7 +8,6 @@ import yaml
 from tarmac.core.exceptions import ConfigurationError
 from tarmac.core.templates import (
     export_bundled_templates,
-    read_resource_text,
     resolve_resource_path,
 )
 from tarmac.services.scaffold import scaffold_project
@@ -44,9 +43,6 @@ def test_resolve_resource_path_local_override(tmp_path: Path):
 
     resolved = resolve_resource_path("cloudformation/organization-cloudtrail.yaml", project_root=tmp_path)
     assert resolved == custom_file
-    assert read_resource_text("cloudformation/organization-cloudtrail.yaml", project_root=tmp_path) == (
-        "AWSTemplateFormatVersion: '2010-09-09'\nDescription: Custom"
-    )
 
 
 def test_resolve_resource_path_not_found(tmp_path: Path):

@@ -144,7 +144,7 @@ class TeardownService(
 
         if inventory is not None:
             self._notify_phase("Identity Center users and groups created by tarmac")
-            items.extend(self.teardown_identity_principals(bundle, region, inventory, dry_run=dry_run))
+            items.extend(self.teardown_identity_principals(region, inventory, dry_run=dry_run))
 
         if 2 in phases_set:
             self._notify_phase("Phase 2 | Service Control Policies")
@@ -154,7 +154,7 @@ class TeardownService(
             self._notify_phase("Organizational Units created by tarmac")
             items.extend(self.teardown_ous(inventory, dry_run=dry_run))
             self._notify_phase("Phase 1 | Organization settings")
-            items.extend(self.teardown_org_settings(bundle, inventory, dry_run=dry_run))
+            items.extend(self.teardown_org_settings(inventory, dry_run=dry_run))
 
         if phases is None and mgmt_id:
             self._notify_phase("Milestones | Resetting Deployment Tags")
@@ -162,7 +162,7 @@ class TeardownService(
 
         if inventory is not None:
             self._notify_phase("Member accounts (kept)")
-            items.extend(self.report_accounts_kept(dry_run=dry_run))
+            items.extend(self.report_accounts_kept())
             self._notify_phase("Tarmac access role and bootstrap user")
             items.extend(self.teardown_access(region, dry_run=dry_run))
 

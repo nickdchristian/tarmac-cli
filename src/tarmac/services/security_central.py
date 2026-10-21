@@ -84,7 +84,7 @@ class SecurityHubCentralConfiguration:
             )
 
     def _enable_central_mode(self) -> None:
-        if self._configuration_type() != "CENTRAL":
+        if self._configuration().get("ConfigurationType") != "CENTRAL":
             self._require_no_local_members()
             self.sh.update_organization_configuration(
                 AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
@@ -101,9 +101,6 @@ class SecurityHubCentralConfiguration:
         resp = self.sh.describe_organization_configuration()
         config = resp.get("OrganizationConfiguration", {}) if isinstance(resp, dict) else {}
         return config if isinstance(config, dict) else {}
-
-    def _configuration_type(self) -> str:
-        return str(self._configuration().get("ConfigurationType", "LOCAL"))
 
     def _wait_until_enabled(self) -> None:
         waited = 0.0

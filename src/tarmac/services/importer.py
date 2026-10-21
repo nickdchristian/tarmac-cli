@@ -144,7 +144,7 @@ class ImportService:
             self.imported_accounts[str(acct["Id"])] = str(acct["Name"])
         return accounts
 
-    def _scps(self, root_id: str, ou_names: dict[str, str], config_dir: Path) -> list[dict[str, Any]]:
+    def _scps(self, ou_names: dict[str, str]) -> list[dict[str, Any]]:
         policies: list[dict[str, Any]] = []
         used_files: set[str] = set()
         paginator = self.org.get_paginator("list_policies")
@@ -291,7 +291,7 @@ class ImportService:
         except _READ_ERRORS:
             return set()
 
-    def _identity(self, config_dir: Path, account_names: dict[str, str]) -> dict[str, Any] | None:
+    def _identity(self, account_names: dict[str, str]) -> dict[str, Any] | None:
         try:
             service = IdentityService(self.session_mgr, preferred_region=self.region)
             instance_arn, store_id = service.get_instance_details()
@@ -306,7 +306,7 @@ class ImportService:
         try:
             users = self._list_users(store, store_id)
             groups = self._list_groups(store, store_id)
-            permission_sets = self._permission_sets(sso, instance_arn, config_dir)
+            permission_sets = self._permission_sets(sso, instance_arn)
             for group in groups:
                 group["members"] = self._members(store, store_id, group["_id"], users)
             self._assignments(sso, instance_arn, groups, permission_sets, account_names)
@@ -392,7 +392,7 @@ class ImportService:
                     members.append(user["username"])
         return sorted(members)
 
-    def _permission_sets(self, sso: Any, instance_arn: str, config_dir: Path) -> dict[str, dict[str, Any]]:
+    def _permission_sets(self, sso: Any, instance_arn: str) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
         for page in sso.get_paginator("list_permission_sets").paginate(InstanceArn=instance_arn):
             for arn in page.get("PermissionSets", []):
@@ -503,7 +503,7 @@ class ImportService:
         self.report.organization_name = org_name
 
         accounts = self._accounts(mgmt_id, ou_names, root_id)
-        scps = self._scps(root_id, ou_names, config_dir)
+        scps = self._scps(ou_names)
         trail_name = self._trails(org_name)
         contacts = self._contacts(mgmt_email)
         trusted = self._trusted_services()
@@ -553,7 +553,7 @@ class ImportService:
                     "organization.yaml."
                 )
 
-        identity = self._identity(config_dir, self.imported_accounts) if include_identity else None
+        identity = self._identity(self.imported_accounts) if include_identity else None
 
         self._dump(
             config_dir / "organization.yaml",

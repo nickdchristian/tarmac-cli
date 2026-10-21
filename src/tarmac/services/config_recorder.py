@@ -89,7 +89,7 @@ class ConfigRecorderService:
         cfn_tags = merge_tags(org_tags, tags, {TAG_MANAGED_BY: "tarmac"})
         cf = self.session_mgr.get_client("cloudformation", region_name=primary_region)
         try:
-            self._activate_organizations_access(cf)
+            cf.activate_organizations_access()
             root_id = self._root_id()
             targets = self._targets(root_id, management_account_id)
             report.stack_set_action = self._ensure_stack_set(cf, name, template_body, parameters, cfn_tags)
@@ -130,10 +130,6 @@ class ConfigRecorderService:
                     "Could not create the AWS Config service-linked role", details=aws_error_message(e)
                 ) from e  # InvalidInput is IAM's answer when the service-linked role already exists
         return service_linked_role_arn(self.session_mgr, management_account_id)
-
-    def _activate_organizations_access(self, cf: Any) -> None:
-        """Trusted access for service-managed StackSets; safe to repeat."""
-        cf.activate_organizations_access()
 
     def _root_id(self) -> str:
         roots = self.session_mgr.get_client("organizations").list_roots().get("Roots", [])

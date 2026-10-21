@@ -116,9 +116,9 @@ class BaselineService:
     ) -> VpcCleanupReport:
         """Scan and clean the default VPC in a single region, tagging log records with the account and region."""
         with bind(account_id=account_id, account_name=account_name, region=region):
-            return self._clean_default_vpc(account_id, account_name, region)
+            return self._clean_default_vpc(account_id, region)
 
-    def _clean_default_vpc(self, account_id: str, account_name: str, region: str) -> VpcCleanupReport:
+    def _clean_default_vpc(self, account_id: str, region: str) -> VpcCleanupReport:
         try:
             ec2 = self.session_mgr.get_member_client(account_id, "ec2", region_name=region)
             vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}]).get("Vpcs", [])

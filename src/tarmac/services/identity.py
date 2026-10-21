@@ -830,10 +830,6 @@ class IdentityService:
 
         return added_count
 
-    def _fetch_active_accounts(self) -> dict[str, str]:
-        """Fetch all ACTIVE AWS accounts from Organizations as {Name: Id}."""
-        return active_account_ids(self.session_mgr.get_client("organizations"))
-
     def sync_identity(
         self,
         id_cfg: IdentityCenterConfig,
@@ -864,7 +860,11 @@ class IdentityService:
                 user_map[u.username] = uid
                 report.users_synced.append(u.username)
 
-        accts = active_accounts if active_accounts is not None else self._fetch_active_accounts()
+        accts = (
+            active_accounts
+            if active_accounts is not None
+            else active_account_ids(self.session_mgr.get_client("organizations"))
+        )
 
         total_assignments, group_map, synced_groups = self.sync_groups_and_assignments(
             id_cfg.groups, ps_map, accts

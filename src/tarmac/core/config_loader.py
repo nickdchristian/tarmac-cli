@@ -18,7 +18,6 @@ from .config_schema import (
     OUDef,
 )
 from .exceptions import ConfigurationError
-from .tagging import merge_tags
 from .templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
@@ -169,7 +168,7 @@ class ConfigBundle:
             if acct.ou not in valid_ous:
                 errors.append(
                     f"Account '{acct.name}' references undefined OU '{acct.ou}'. "
-                    f"Valid OUs are: {sorted(list(valid_ous))}"
+                    f"Valid OUs are: {sorted(valid_ous)}"
                 )
         return errors
 
@@ -181,7 +180,7 @@ class ConfigBundle:
         if del_admin and normalize_account_name(del_admin) not in norm_names:
             errors.append(
                 f"Delegated admin account '{del_admin}' in organization.yaml does not exist in accounts catalog. "
-                f"Valid accounts: {sorted(list(account_names))}"
+                f"Valid accounts: {sorted(account_names)}"
             )
 
         sec_cfg = self.org.security_services
@@ -190,7 +189,7 @@ class ConfigBundle:
             if normalize_account_name(sec_admin) not in norm_names:
                 errors.append(
                     f"Security services delegated admin account '{sec_admin}' in organization.yaml does not exist in accounts catalog. "
-                    f"Valid accounts: {sorted(list(account_names))}"
+                    f"Valid accounts: {sorted(account_names)}"
                 )
         return errors
 
@@ -358,28 +357,12 @@ class ConfigBundle:
         tags = list(self.org.cost_allocation_tags.tags)
         if not tags and self.org.organization.cost_allocation_tags:
             tags = list(self.org.organization.cost_allocation_tags)
-        return sorted(list(dict.fromkeys(tags)))
+        return sorted(set(tags))
 
     def get_account_tags(self, account_name: str | None) -> dict[str, str]:
         """Fetch declared tags for an account."""
         acct = self.get_account(account_name)
         return dict(acct.tags) if acct else {}
-
-    def get_resolved_tags(
-        self,
-        account_name: str | None = None,
-        custom_tags: dict[str, str] | None = None,
-    ) -> dict[str, str]:
-        """Resolve full tag hierarchy for an account or organization deployment:
-
-        Default System Tags -> Organization Tags -> Account Tags -> Custom Tags
-        """
-
-        return merge_tags(
-            self.get_organization_tags(),
-            self.get_account_tags(account_name) if account_name else None,
-            custom_tags,
-        )
 
 
 def _load_model(config_dir: Path, base_name: str, model_cls: type[T], errors: list[str]) -> T | None:
