@@ -9,10 +9,12 @@ from ..core.exceptions import AWS_ERRORS
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from .identity import IdentityService
 from .scp import SCPService
-from .teardown_base import TeardownBase
+from .teardown_base import STACK, TeardownBase
 from .teardown_security import SecurityServicesTeardown
 
 logger = logging.getLogger(__name__)
+
+SCP = "Service Control Policy"
 
 
 class GovernanceTeardown(TeardownBase):
@@ -29,44 +31,20 @@ class GovernanceTeardown(TeardownBase):
                 "cloudformation", region_name=self.session_mgr.default_region
             )
             status = self.cfn_service._get_stack_status(cfn_client, stack_name)
-            if status and status != "DELETE_COMPLETE":
-                if dry_run:
-                    results.append(
-                        TeardownItemReport(
-                            resource_type="CloudFormation Stack",
-                            resource_name=stack_name,
-                            account_name="Management",
-                            account_id=mgmt_id,
-                            action="SIMULATED",
-                            message=f"Would delete SCP stack (status: {status})",
-                        )
-                    )
-                else:
-                    self._notify_progress(
-                        f"Deleting CloudFormation stack '{stack_name}' in Management (waiting for AWS)..."
-                    )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
-                    results.append(
-                        TeardownItemReport(
-                            resource_type="CloudFormation Stack",
-                            resource_name=stack_name,
-                            account_name="Management",
-                            account_id=mgmt_id,
-                            action="DELETED",
-                            message="Deleted SCP CloudFormation stack",
-                        )
-                    )
+            if item := self._remove_stack(
+                cfn_client,
+                stack_name,
+                status,
+                "Management",
+                mgmt_id,
+                dry_run,
+                would="Would delete SCP stack",
+                deleted="Deleted SCP CloudFormation stack",
+                missing=None,
+            ):
+                results.append(item)
         except AWS_ERRORS as e:
-            results.append(
-                TeardownItemReport(
-                    resource_type="CloudFormation Stack",
-                    resource_name=stack_name,
-                    account_name="Management",
-                    account_id=mgmt_id,
-                    action="FAILED",
-                    message=str(e),
-                )
-            )
+            results.append(TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "FAILED", str(e)))
 
         try:
             scp_service = SCPService(self.session_mgr)
@@ -88,28 +66,16 @@ class GovernanceTeardown(TeardownBase):
                 if p_name in existing:
                     pol_id = str(existing[p_name]["Id"])
                     if p_name not in declared_names and not scp_service.is_tarmac_managed(pol_id):
+                        message = f"Not declared in config and lacks {TAG_MANAGED_BY}=tarmac tag"
                         results.append(
-                            TeardownItemReport(
-                                resource_type="Service Control Policy",
-                                resource_name=p_name,
-                                account_name="Management",
-                                account_id=mgmt_id,
-                                action="SKIPPED",
-                                message=f"Not declared in config and lacks {TAG_MANAGED_BY}=tarmac tag",
-                            )
+                            TeardownItemReport(SCP, p_name, "Management", mgmt_id, "SKIPPED", message)
                         )
                         continue
                     targets = scp_service.list_targets_for_policy(pol_id)
                     if dry_run:
+                        message = f"Would detach from {len(targets)} target(s) and delete"
                         results.append(
-                            TeardownItemReport(
-                                resource_type="Service Control Policy",
-                                resource_name=p_name,
-                                account_name="Management",
-                                account_id=mgmt_id,
-                                action="SIMULATED",
-                                message=f"Would detach from {len(targets)} target(s) and delete",
-                            )
+                            TeardownItemReport(SCP, p_name, "Management", mgmt_id, "SIMULATED", message)
                         )
                     else:
                         self._notify_progress(
@@ -122,38 +88,19 @@ class GovernanceTeardown(TeardownBase):
                                 logger.warning("Could not detach policy %s from %s: %s", pol_id, t, e)
                         try:
                             org_client.delete_policy(PolicyId=pol_id)
+                            message = f"Detached from {len(targets)} targets and deleted"
                             results.append(
-                                TeardownItemReport(
-                                    resource_type="Service Control Policy",
-                                    resource_name=p_name,
-                                    account_name="Management",
-                                    account_id=mgmt_id,
-                                    action="DELETED",
-                                    message=f"Detached from {len(targets)} targets and deleted",
-                                )
+                                TeardownItemReport(SCP, p_name, "Management", mgmt_id, "DELETED", message)
                             )
                         except ClientError as e:
                             results.append(
-                                TeardownItemReport(
-                                    resource_type="Service Control Policy",
-                                    resource_name=p_name,
-                                    account_name="Management",
-                                    account_id=mgmt_id,
-                                    action="FAILED",
-                                    message=str(e),
-                                )
+                                TeardownItemReport(SCP, p_name, "Management", mgmt_id, "FAILED", str(e))
                             )
         except AWS_ERRORS as e:
             logger.warning("Direct SCP cleanup failed: %s", e)
+            message = f"Could not inspect or remove direct SCPs: {e}"
             results.append(
-                TeardownItemReport(
-                    resource_type="Service Control Policy",
-                    resource_name="(direct policies)",
-                    account_name="Management",
-                    account_id=mgmt_id,
-                    action="FAILED",
-                    message=f"Could not inspect or remove direct SCPs: {e}",
-                )
+                TeardownItemReport(SCP, "(direct policies)", "Management", mgmt_id, "FAILED", message)
             )
 
         return results
@@ -204,46 +151,22 @@ class GovernanceTeardown(TeardownBase):
                 try:
                     cfn_client = self.session_mgr.get_client("cloudformation", region_name=stack_region)
                     status = self.cfn_service._get_stack_status(cfn_client, stack_name)
-                    if status and status != "DELETE_COMPLETE":
-                        if dry_run:
-                            results.append(
-                                TeardownItemReport(
-                                    resource_type="CloudFormation Stack",
-                                    resource_name=stack_name,
-                                    account_name="Management",
-                                    account_id=mgmt_id,
-                                    action="SIMULATED",
-                                    message=f"Would delete permission sets stack (status: {status})",
-                                )
-                            )
-                        else:
-                            self._notify_progress(
-                                f"Deleting CloudFormation stack '{stack_name}' in Management (waiting for AWS)..."
-                            )
-                            self.cfn_service.delete_stack(
-                                cfn_client, stack_name, on_progress=self.on_progress
-                            )
-                            results.append(
-                                TeardownItemReport(
-                                    resource_type="CloudFormation Stack",
-                                    resource_name=stack_name,
-                                    account_name="Management",
-                                    account_id=mgmt_id,
-                                    action="DELETED",
-                                    message="Deleted permission sets CloudFormation stack",
-                                )
-                            )
+                    if item := self._remove_stack(
+                        cfn_client,
+                        stack_name,
+                        status,
+                        "Management",
+                        mgmt_id,
+                        dry_run,
+                        would="Would delete permission sets stack",
+                        deleted="Deleted permission sets CloudFormation stack",
+                        missing=None,
+                    ):
+                        results.append(item)
                         break
                 except AWS_ERRORS as e:
                     results.append(
-                        TeardownItemReport(
-                            resource_type="CloudFormation Stack",
-                            resource_name=stack_name,
-                            account_name="Management",
-                            account_id=mgmt_id,
-                            action="FAILED",
-                            message=str(e),
-                        )
+                        TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "FAILED", str(e))
                     )
                     break
 
@@ -254,58 +177,33 @@ class GovernanceTeardown(TeardownBase):
                     if ps_def.name in existing_ps:
                         ps_arn = existing_ps[ps_def.name]
                         if not identity_service.is_tarmac_managed_permission_set(inst_arn, ps_arn):
-                            results.append(
-                                TeardownItemReport(
-                                    resource_type="Permission Set",
-                                    resource_name=ps_def.name,
-                                    account_name="Management",
-                                    account_id=mgmt_id,
-                                    action="SKIPPED",
-                                    message=(
-                                        "Not tagged tarmac:managed-by=tarmac, so it was not created by "
-                                        "tarmac; delete it manually if intended"
-                                    ),
-                                )
+                            action, message = (
+                                "SKIPPED",
+                                "Not tagged tarmac:managed-by=tarmac, so it was not created by "
+                                "tarmac; delete it manually if intended",
                             )
-                            continue
-                        if dry_run:
-                            results.append(
-                                TeardownItemReport(
-                                    resource_type="Permission Set",
-                                    resource_name=ps_def.name,
-                                    account_name="Management",
-                                    account_id=mgmt_id,
-                                    action="SIMULATED",
-                                    message=f"Would delete retained Permission Set '{ps_def.name}' ({ps_arn})",
-                                )
-                            )
+                        elif dry_run:
+                            action = "SIMULATED"
+                            message = f"Would delete retained Permission Set '{ps_def.name}' ({ps_arn})"
                         else:
                             self._notify_progress(
                                 f"Deleting retained Permission Set '{ps_def.name}' in IAM Identity Center..."
                             )
-                            deleted = identity_service.delete_permission_set(inst_arn, ps_arn)
-                            if deleted is False:
-                                results.append(
-                                    TeardownItemReport(
-                                        resource_type="Permission Set",
-                                        resource_name=ps_def.name,
-                                        account_name="Management",
-                                        account_id=mgmt_id,
-                                        action="FAILED",
-                                        message=f"Could not delete retained Permission Set '{ps_def.name}'",
-                                    )
+                            if identity_service.delete_permission_set(inst_arn, ps_arn) is False:
+                                action, message = (
+                                    "FAILED",
+                                    f"Could not delete retained Permission Set '{ps_def.name}'",
                                 )
                             else:
-                                results.append(
-                                    TeardownItemReport(
-                                        resource_type="Permission Set",
-                                        resource_name=ps_def.name,
-                                        account_name="Management",
-                                        account_id=mgmt_id,
-                                        action="DELETED",
-                                        message=f"Deleted retained Permission Set '{ps_def.name}'",
-                                    )
+                                action, message = (
+                                    "DELETED",
+                                    f"Deleted retained Permission Set '{ps_def.name}'",
                                 )
+                        results.append(
+                            TeardownItemReport(
+                                "Permission Set", ps_def.name, "Management", mgmt_id, action, message
+                            )
+                        )
             except AWS_ERRORS as e:
                 logger.debug("Identity Center direct cleanup: %s", e)
 
@@ -341,42 +239,20 @@ class GovernanceTeardown(TeardownBase):
         ]
 
         if dry_run:
-            results.append(
-                TeardownItemReport(
-                    resource_type="Organization Tag",
-                    resource_name="tarmac:* tags",
-                    account_name="Management",
-                    account_id=mgmt_account_id,
-                    action="SIMULATED",
-                    message="Would remove milestone and status tags",
+            action, message = "SIMULATED", "Would remove milestone and status tags"
+        else:
+            try:
+                self._notify_progress(
+                    "Resetting deployment milestone and status tags on Management Account..."
                 )
+                org_client = self.session_mgr.get_client("organizations")
+                org_client.untag_resource(ResourceId=mgmt_account_id, TagKeys=tag_keys)
+                action, message = "DELETED", "Removed deployment milestone and status tags"
+            except ClientError as e:
+                action, message = "FAILED", str(e)
+        results.append(
+            TeardownItemReport(
+                "Organization Tag", "tarmac:* tags", "Management", mgmt_account_id, action, message
             )
-            return results
-
-        try:
-            self._notify_progress("Resetting deployment milestone and status tags on Management Account...")
-            org_client = self.session_mgr.get_client("organizations")
-            org_client.untag_resource(ResourceId=mgmt_account_id, TagKeys=tag_keys)
-            results.append(
-                TeardownItemReport(
-                    resource_type="Organization Tag",
-                    resource_name="tarmac:* tags",
-                    account_name="Management",
-                    account_id=mgmt_account_id,
-                    action="DELETED",
-                    message="Removed deployment milestone and status tags",
-                )
-            )
-        except ClientError as e:
-            results.append(
-                TeardownItemReport(
-                    resource_type="Organization Tag",
-                    resource_name="tarmac:* tags",
-                    account_name="Management",
-                    account_id=mgmt_account_id,
-                    action="FAILED",
-                    message=str(e),
-                )
-            )
-
+        )
         return results
