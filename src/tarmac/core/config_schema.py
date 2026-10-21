@@ -218,6 +218,15 @@ class GuardDutyConfig(BaseModel):
 class SecurityHubConfig(BaseModel):
     enabled: bool = False
     auto_enable_members: bool = True
+    central_configuration: bool = Field(
+        default=True,
+        description=(
+            "Manage Security Hub with one central configuration policy applied to the whole organization "
+            "from the primary Region (the standards below reach every account, existing and new). Used when "
+            "auto_enable_members is true. False keeps Region-by-Region local configuration, where new member "
+            "accounts join Security Hub with no standards."
+        ),
+    )
     standards: list[str] = Field(default_factory=lambda: ["aws-foundational-security-best-practices"])
 
 
@@ -340,6 +349,16 @@ class BudgetConfig(BaseModel):
     monthly_limit_usd: float = Field(gt=0, description="Monthly budget limit in USD.")
     alert_threshold_percent: float = Field(
         default=80.0, gt=0, le=100, description="Percentage threshold to trigger budget alerts."
+    )
+    forecast_alert_threshold_percent: float | None = Field(
+        default=100.0,
+        gt=0,
+        le=1000,
+        description=(
+            "Also alert when the forecasted monthly spend reaches this percentage of the limit, which warns "
+            "before the limit is hit. Set to null to turn it off. AWS needs about 5 weeks of usage history "
+            "before a forecast alert can fire."
+        ),
     )
     notification_emails: list[EmailStr] = Field(
         default_factory=list,
