@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.1.9](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.8...v0.1.9) (2026-10-21)
+
+
+### Features
+
+* **budget:** forecast alert, on by default at 100 percent ([#64](https://github.com/nickdchristian/tarmac-cli/issues/64)) ([55f5b1a](https://github.com/nickdchristian/tarmac-cli/commit/55f5b1a570e508a991ad7188334205b47bfb297b))
+* **cloudtrail:** opt-in S3 Object Lock on the log bucket, with a strong recommendation ([#66](https://github.com/nickdchristian/tarmac-cli/issues/66)) ([03ffd90](https://github.com/nickdchristian/tarmac-cli/commit/03ffd90fc5a59560027314b0f65fc62c71071792))
+* **config:** optional AWS Config recorders in every account ([#69](https://github.com/nickdchristian/tarmac-cli/issues/69)) ([a299135](https://github.com/nickdchristian/tarmac-cli/commit/a299135038293cc60d472de30ab6fad5d540f456))
+* **preflight:** warn when the deployed access role is older than this release ([#70](https://github.com/nickdchristian/tarmac-cli/issues/70)) ([068f51d](https://github.com/nickdchristian/tarmac-cli/commit/068f51db901ab94ba3c77032d1b8bff75a6f4a8a))
+* **security:** alert by email when the root user is used in the management account ([#78](https://github.com/nickdchristian/tarmac-cli/issues/78)) ([af54026](https://github.com/nickdchristian/tarmac-cli/commit/af54026a5f911c439af7cb7deb05a7c304f72095))
+* **securityhub:** central configuration policy for the organization ([#68](https://github.com/nickdchristian/tarmac-cli/issues/68)) ([d0a039d](https://github.com/nickdchristian/tarmac-cli/commit/d0a039d53a2676b1a5afbbb41fea4439816a7de7))
+* **stacks:** protect data and access stacks from accidental deletion ([#77](https://github.com/nickdchristian/tarmac-cli/issues/77)) ([ce6c7db](https://github.com/nickdchristian/tarmac-cli/commit/ce6c7db633dfed5e0df51a9e04ad41e6465f3c92))
+* stop before overwriting SCPs or budgets tarmac did not create ([#67](https://github.com/nickdchristian/tarmac-cli/issues/67)) ([6c75968](https://github.com/nickdchristian/tarmac-cli/commit/6c75968ac87fa7d32d5a0fad77e08aa7099c81c1))
+* **terraform:** lock state in S3 by default and keep an existing DynamoDB table ([#76](https://github.com/nickdchristian/tarmac-cli/issues/76)) ([5562eb7](https://github.com/nickdchristian/tarmac-cli/commit/5562eb7aea395f07a10173debf14f9e1b6a443db))
+
+
+### Bug Fixes
+
+* **access:** let the role clean up default VPCs in the management account ([#58](https://github.com/nickdchristian/tarmac-cli/issues/58)) ([1ffab56](https://github.com/nickdchristian/tarmac-cli/commit/1ffab56299298485a0233718802f13f3911c3c6c))
+* audit existing Identity Center users and groups, name accounts by ID in close hint ([#59](https://github.com/nickdchristian/tarmac-cli/issues/59)) ([ae97286](https://github.com/nickdchristian/tarmac-cli/commit/ae9728687b751a04e8f0e55e2462304ea8c88d2d))
+* **baseline:** record the definition of a budget tarmac replaces ([#61](https://github.com/nickdchristian/tarmac-cli/issues/61)) ([2b5e8c1](https://github.com/nickdchristian/tarmac-cli/commit/2b5e8c1068c29b334e27bacf630d7372d5cb1c5a))
+* **ci:** set GH_REPO so release-please can dispatch the publish workflow ([#57](https://github.com/nickdchristian/tarmac-cli/issues/57)) ([5a886cf](https://github.com/nickdchristian/tarmac-cli/commit/5a886cf55c3b058f1b4cafe3a4919e29bb6d13ef))
+* **cli:** check AWS credentials up front in deploy, destroy and import ([#62](https://github.com/nickdchristian/tarmac-cli/issues/62)) ([20ed3a6](https://github.com/nickdchristian/tarmac-cli/commit/20ed3a6643310bca14e1ca3bb1e93a61e3fba073))
+* **cloudtrail:** default log encryption to SSE-S3 and keep an existing KMS key ([#80](https://github.com/nickdchristian/tarmac-cli/issues/80)) ([8c60aac](https://github.com/nickdchristian/tarmac-cli/commit/8c60aacc59c58744a03243652d9e43f22ce89415))
+* **guardduty:** create detectors with every optional feature off ([#75](https://github.com/nickdchristian/tarmac-cli/issues/75)) ([9e6c20d](https://github.com/nickdchristian/tarmac-cli/commit/9e6c20d136c4c1e1afdc9414c1759c55a21d9a06))
+* **import:** only assign permission sets on accounts written to accounts.yaml ([#55](https://github.com/nickdchristian/tarmac-cli/issues/55)) ([e9d9d21](https://github.com/nickdchristian/tarmac-cli/commit/e9d9d21bdc9ca17a69457cc9701fd459d1085487))
+* **scp:** exempt AssumeRoot sessions with the documented aws:AssumedRoot key ([#71](https://github.com/nickdchristian/tarmac-cli/issues/71)) ([8c8cacd](https://github.com/nickdchristian/tarmac-cli/commit/8c8cacddb9216f393458031d93f003b71942ecc8))
+* **security:** register the GuardDuty and Security Hub admin in every Region ([#72](https://github.com/nickdchristian/tarmac-cli/issues/72)) ([b69cee2](https://github.com/nickdchristian/tarmac-cli/commit/b69cee22020cf3780b8f7429cf61ca6b4bd3a5e8))
+* stop reporting phase 1 complete when management VPC cleanup fails ([#56](https://github.com/nickdchristian/tarmac-cli/issues/56)) ([5749548](https://github.com/nickdchristian/tarmac-cli/commit/5749548f0a97aa1f3074ad0d42562655d8446e37))
+
+
+### Documentation
+
+* **access:** stop calling the access policy least privilege and warn that the Identity Center Region is hard to change ([#74](https://github.com/nickdchristian/tarmac-cli/issues/74)) ([3fc8a1c](https://github.com/nickdchristian/tarmac-cli/commit/3fc8a1cd6b26045e29a7f3902bf6f0098577e444))
+* example SCP protecting GuardDuty and Security Hub from being turned off ([#79](https://github.com/nickdchristian/tarmac-cli/issues/79)) ([e7ff122](https://github.com/nickdchristian/tarmac-cli/commit/e7ff12259fad69968f09b15624a468c9bd6108c5))
+* example SCP restricting regions ([#65](https://github.com/nickdchristian/tarmac-cli/issues/65)) ([2a29461](https://github.com/nickdchristian/tarmac-cli/commit/2a2946190306ca62af2bee19f92869bb4bb52b1d))
+* **templates:** correct comments that overstated KMS separation of duties and alert scope ([#73](https://github.com/nickdchristian/tarmac-cli/issues/73)) ([c4d2ff2](https://github.com/nickdchristian/tarmac-cli/commit/c4d2ff270b714a1526eadc6f8951867b422b0a82))
+
 ## [0.1.8](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.7...v0.1.8) (2026-10-20)
 
 
