@@ -243,6 +243,10 @@ Resources:
           - Id: ExpireAccessLogs
             Status: Enabled
             ExpirationInDays: 90
+            NoncurrentVersionExpirationInDays: 90
+          - Id: RemoveExpiredAccessLogDeleteMarkers
+            Status: Enabled
+            ExpiredObjectDeleteMarker: true
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced

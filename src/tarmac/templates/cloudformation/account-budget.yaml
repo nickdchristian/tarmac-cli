@@ -60,6 +60,14 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref BudgetAlertsTopic
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
           - Sid: AllowAWSBudgetsToPublish
             Effect: Allow
             Principal:

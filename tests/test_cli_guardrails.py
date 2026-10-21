@@ -171,6 +171,48 @@ def test_scp_apply_resolves_policy_files_relative_to_the_config_dir(tmp_path: Pa
     assert scp_cls.return_value.reconcile_all.call_args.kwargs["project_root"] == cfg.parent
 
 
+def test_teardown_without_yes_prompts_for_confirmation_and_cancels_on_no(tmp_path: Path):
+    """Standard teardown without --yes or --dry-run must prompt for confirmation and abort on 'n'."""
+    cfg = make_config(tmp_path, None)
+    with (
+        patch("tarmac.cli.deploy.AwsSessionManager"),
+        patch("tarmac.services.teardown.TeardownService.teardown_all") as mock_all,
+    ):
+        res = runner.invoke(app, ["destroy", "-c", str(cfg)], input="n\n")
+    assert res.exit_code == 0
+    assert "Teardown cancelled by user" in res.output
+    mock_all.assert_not_called()
+
+
+def test_broken_stack_deletion_releases_termination_protection_when_needed():
+    """_delete_broken_stack disables termination protection and retries when delete_stack fails due to protection."""
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    from tarmac.services.cloudformation import CloudFormationService
+
+    cfn = MagicMock()
+    cfn.delete_stack.side_effect = [
+        ClientError(
+            {
+                "Error": {
+                    "Code": "ValidationError",
+                    "Message": "Stack [s1] cannot be deleted while TerminationProtection is enabled",
+                }
+            },
+            "DeleteStack",
+        ),
+        {},
+    ]
+    svc = CloudFormationService(MagicMock())
+    svc._delete_broken_stack(cfn, "s1")
+    cfn.update_termination_protection.assert_called_once_with(
+        StackName="s1", EnableTerminationProtection=False
+    )
+    assert cfn.delete_stack.call_count == 2
+
+
 def test_production_lock_is_not_hidden_by_a_higher_precedence_tag():
     """accounts.yaml tags override organization.yaml tags, but a 'prod' anywhere must still block destroy."""
     from types import SimpleNamespace

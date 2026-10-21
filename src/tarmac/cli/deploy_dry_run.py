@@ -511,8 +511,15 @@ def _compute_dry_run_summary_counts(bundle: ConfigBundle) -> dict[str, int]:
         if (bundle.org.service_control_policies and bundle.org.service_control_policies.enabled)
         else 0
     )
-    stack_count = 4 + (1 if scp_count > 0 else 0)
     id_cfg = bundle.identity.identity_center
+    sec_cfg = bundle.org.security_services
+    stack_count = (
+        4
+        + (1 if scp_count > 0 else 0)
+        + (1 if sec_cfg.config_recorder.enabled else 0)
+        + (1 if sec_cfg.root_alert.enabled else 0)
+        + (1 if id_cfg.permission_sets else 0)
+    )
     user_count = 2 + len(id_cfg.additional_users)
     perm_count = len(id_cfg.permission_sets)
     group_count = len(id_cfg.groups)
@@ -708,6 +715,16 @@ def _build_dry_run_plan_dict(
                     "delegated_admin": audit_name,
                     "auto_enable_members": bundle.org.security_services.securityhub.auto_enable_members,
                 },
+            },
+            "config_recorder": {
+                "enabled": bundle.org.security_services.config_recorder.enabled,
+                "recording_frequency": bundle.org.security_services.config_recorder.recording_frequency,
+                "include_global_resources": bundle.org.security_services.config_recorder.include_global_resources,
+            },
+            "root_alert": {
+                "enabled": bundle.org.security_services.root_alert.enabled,
+                "stack_name": f"{bundle.org.organization.name}-management-root-alert",
+                "all_regions": bundle.org.security_services.root_alert.all_regions,
             },
         }
 

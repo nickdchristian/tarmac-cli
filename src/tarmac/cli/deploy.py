@@ -512,20 +512,20 @@ def _confirm_teardown(
     if inv is not None:
         _confirm_everything(bundle, inv)
         return
-        confirm = typer.confirm(
-            "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
-            "remove AWS Budgets, and detach SCPs"
-            + (
-                ", and DISABLE GuardDuty/Security Hub/Config delegation (finding history is deleted)"
-                if disable_security_services
-                else ""
-            )
-            + ". Continue?",
-            default=False,
+    confirm = typer.confirm(
+        "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
+        "remove AWS Budgets, and detach SCPs"
+        + (
+            ", and DISABLE GuardDuty/Security Hub/Config delegation (finding history is deleted)"
+            if disable_security_services
+            else ""
         )
-        if not confirm:
-            print_info("Teardown cancelled by user.")
-            raise typer.Exit(code=0)
+        + ". Continue?",
+        default=False,
+    )
+    if not confirm:
+        print_info("Teardown cancelled by user.")
+        raise typer.Exit(code=0)
 
 
 def _execute_teardown(

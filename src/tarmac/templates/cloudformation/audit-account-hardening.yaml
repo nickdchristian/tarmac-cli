@@ -201,6 +201,14 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref SecurityAlertsTopic
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
           - Sid: AllowEventsPublish
             Effect: Allow
             Principal:
