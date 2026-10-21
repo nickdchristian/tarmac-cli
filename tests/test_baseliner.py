@@ -1,10 +1,13 @@
 """Tests for AccountBaseliner module."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
+from helpers import CfnLoader
 
+from tarmac.core.adoption import set_adopt_existing
 from tarmac.core.config_schema import (
     AccountBaselineConfig,
     AccountDef,
@@ -86,7 +89,49 @@ def test_setup_account_budget_creates_stack():
     assert param_dict["NotificationEmail"] == "test@example.com"
 
 
-def test_setup_account_budget_maps_multiple_emails_to_parameters():
+@pytest.mark.parametrize(("forecast", "expected"), [(None, None), (80.0, "80.0")])
+def test_forecast_alert_parameter_follows_the_configured_value(forecast, expected):
+    mgr, cfn = MagicMock(), MagicMock()
+    mgr.get_member_client.return_value = cfn
+    mgr.default_region = "eu-west-1"
+    cfn.describe_stacks.side_effect = [
+        ClientError(
+            {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+        ),
+        {"Stacks": [{"Outputs": []}]},
+    ]
+    cfg = BudgetConfig(
+        monthly_limit_usd=100.0, notification_emails=["a@b.co"], forecast_alert_threshold_percent=forecast
+    )
+
+    BaselineService(mgr).setup_account_budget("123456789012", "ProdAccount", cfg, dry_run=False)
+
+    params = {p["ParameterKey"]: p["ParameterValue"] for p in cfn.create_stack.call_args[1]["Parameters"]}
+    assert params.get("ForecastThresholdPercent") == expected
+
+
+def test_forecast_alert_is_on_at_100_percent_by_default():
+    assert BudgetConfig(monthly_limit_usd=100.0).forecast_alert_threshold_percent == 100.0
+
+
+def test_forecast_alert_must_be_positive():
+    with pytest.raises(ValueError):
+        BudgetConfig(monthly_limit_usd=100.0, forecast_alert_threshold_percent=0)
+
+
+def test_budget_template_adds_the_forecast_notification_only_when_asked():
+    import yaml
+
+    template = yaml.load(
+        (Path(__file__).resolve().parent.parent / "cloudformation" / "account-budget.yaml").read_text(),
+        Loader=CfnLoader,
+    )
+    assert template["Parameters"]["ForecastThresholdPercent"]["Default"] == 0
+    assert "HasForecastAlert" in template["Conditions"]
+    notifications = template["Resources"]["MonthlyBudget"]["Properties"]["NotificationsWithSubscribers"]
+    assert len(notifications) == 2  # the actual alert plus the conditional forecast alert
+    assert "FORECASTED" in str(notifications[1])
+
     """Verify that multiple emails configure the primary email on NotificationEmail for the SNS topic."""
     mock_session_mgr = MagicMock()
     mock_cfn = MagicMock()
@@ -139,6 +184,7 @@ def test_setup_account_budget_updates_stack():
 
 
 def test_setup_account_budget_cleans_up_orphan_unmanaged_budget():
+    set_adopt_existing(True)
     mock_session_mgr = MagicMock()
     mock_cfn = MagicMock()
     mock_budgets = MagicMock()
@@ -177,6 +223,40 @@ def test_setup_account_budget_cleans_up_orphan_unmanaged_budget():
         AccountId="123456789012", BudgetName="ProdAccount-monthly-budget"
     )
     mock_cfn.create_stack.assert_called_once()
+
+
+def test_replaced_budget_definition_is_recorded_in_the_audit_log(caplog):
+    set_adopt_existing(True)
+    import logging
+
+    caplog.set_level(logging.INFO, logger="tarmac.audit")
+    mock_session_mgr = MagicMock()
+    mock_cfn, mock_budgets = MagicMock(), MagicMock()
+    mock_session_mgr.get_member_client.side_effect = lambda _a, svc, **_k: (
+        mock_cfn if svc == "cloudformation" else mock_budgets
+    )
+    mock_session_mgr.default_region = "eu-west-1"
+    mock_cfn.describe_stacks.side_effect = [
+        ClientError(
+            {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+        ),
+        {"Stacks": [{"Outputs": []}]},
+    ]
+    mock_budgets.describe_budget.return_value = {
+        "Budget": {
+            "BudgetName": "ProdAccount-monthly-budget",
+            "BudgetLimit": {"Amount": "250.0", "Unit": "USD"},
+            "TimeUnit": "MONTHLY",
+            "BudgetType": "COST",
+        }
+    }
+    cfg = BudgetConfig(monthly_limit_usd=100.0, alert_threshold_percent=80.0, notification_emails=["a@b.co"])
+
+    BaselineService(mock_session_mgr).setup_account_budget("123456789012", "ProdAccount", cfg, dry_run=False)
+
+    deleted = next(r.data for r in caplog.records if getattr(r, "data", {}).get("action") == "delete")
+    assert deleted["details"]["previous_limit"] == "250.0 USD"
+    assert deleted["details"]["previous_time_unit"] == "MONTHLY"
 
 
 def test_setup_account_budget_dry_run():
@@ -610,3 +690,28 @@ def test_cleanup_default_vpc_in_use_is_left_intact(dry_run: bool):
     ec2.delete_internet_gateway.assert_not_called()
     ec2.delete_subnet.assert_not_called()
     ec2.delete_vpc.assert_not_called()
+
+
+def test_existing_budget_is_not_deleted_without_adopt_existing():
+    mgr, cfn, budgets = MagicMock(), MagicMock(), MagicMock()
+    mgr.get_member_client.side_effect = lambda _a, svc, **_k: cfn if svc == "cloudformation" else budgets
+    mgr.default_region = "eu-west-1"
+    cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    budgets.describe_budget.return_value = {
+        "Budget": {
+            "BudgetName": "ProdAccount-monthly-budget",
+            "BudgetLimit": {"Amount": "5000.0", "Unit": "USD"},
+            "TimeUnit": "MONTHLY",
+        }
+    }
+    cfg = BudgetConfig(monthly_limit_usd=100.0, notification_emails=["a@b.co"])
+
+    report = BaselineService(mgr).setup_account_budget("123456789012", "ProdAccount", cfg, dry_run=False)
+
+    assert report.status == "FAILED"
+    assert "tarmac did not create it" in report.message
+    assert "--adopt-existing" in report.message
+    budgets.delete_budget.assert_not_called()
+    cfn.create_stack.assert_not_called()
