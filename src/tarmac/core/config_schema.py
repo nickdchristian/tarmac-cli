@@ -1,9 +1,9 @@
 """Pydantic data models for validating AWS Governance configuration files."""
 
 import re
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from .tagging import validate_tags
 
@@ -79,14 +79,28 @@ class OUDef(BaseModel):
     children: list["OUDef"] = Field(default_factory=list)
 
 
+class ObjectLockConfig(BaseModel):
+    mode: Literal["GOVERNANCE", "COMPLIANCE"] = Field(
+        description=(
+            "GOVERNANCE can be bypassed by principals with s3:BypassGovernanceRetention. COMPLIANCE cannot be "
+            "shortened or removed by anyone, including root, until the retention period ends."
+        )
+    )
+    retention_days: int = Field(
+        ge=1, le=36500, description="Days each new CloudTrail log object is locked for."
+    )
+
+
 class CloudTrailConfig(BaseModel):
     trail_name: str = Field(default="organization-trail")
     bucket_prefix: str = Field(default="org-cloudtrail")
-    enable_kms: bool = Field(
-        default=True,
+    enable_kms: bool | None = Field(
+        default=None,
         description=(
-            "Encrypt CloudTrail logs with a customer managed KMS key. False uses SSE-S3 (AES256) for the "
-            "trail and the log bucket and skips the key (about $1/month plus request charges)."
+            "Encrypt CloudTrail logs with a customer managed KMS key (about $1/month plus request charges). "
+            "Unset: a new deployment uses SSE-S3 (AES256), which CloudTrail applies by default, and a deployment "
+            "that already has the key keeps it. True adds the key, which Security Hub control CloudTrail.2 and the "
+            "CIS benchmark ask for; false switches an existing deployment back to SSE-S3 for new logs."
         ),
     )
     log_archive_account: str | None = Field(
@@ -98,15 +112,40 @@ class CloudTrailConfig(BaseModel):
         ge=1,
         le=36500,
         description=(
-            "Delete CloudTrail log files this many days after they are written, to cap storage cost. "
+            "Delete CloudTrail log files (and AWS Config history, when enabled) this many days after they are "
+            "written, to cap storage cost. "
             "Leave unset to keep them indefinitely. Logs cannot be recovered once purged, so choose a value "
             "that meets your audit and compliance requirements."
+        ),
+    )
+
+    object_lock: ObjectLockConfig | None = Field(
+        default=None,
+        description=(
+            "S3 Object Lock default retention on the CloudTrail log bucket, so logs cannot be deleted or "
+            "overwritten during the period. Off unless set, because S3 does not allow Object Lock to be "
+            "disabled on a bucket once it is on. Recommended: mode GOVERNANCE, retention_days 365 (tarmac "
+            "warns on deploy while it is unset; write `object_lock: null` to acknowledge and silence the "
+            "warning). COMPLIANCE mode also blocks teardown from deleting the logs until the period ends."
         ),
     )
 
     @field_validator("bucket_prefix")
     def validate_bucket_prefix(cls, v: str) -> str:
         return _validate_bucket_prefix(v)
+
+    @model_validator(mode="after")
+    def object_lock_must_not_outlast_log_retention(self) -> "CloudTrailConfig":
+        """Lifecycle cannot delete a locked version, so a lock longer than ``retention_days`` would silently
+        keep logs longer than asked."""
+        lock = self.object_lock
+        if lock is not None and self.retention_days is not None and lock.retention_days > self.retention_days:
+            raise ValueError(
+                f"cloudtrail.object_lock.retention_days ({lock.retention_days}) is longer than "
+                f"cloudtrail.retention_days ({self.retention_days}): logs would be kept for the lock period "
+                "anyway. Shorten the lock, lengthen retention_days, or remove object_lock."
+            )
+        return self
 
 
 class TerraformBackendConfig(BaseModel):
@@ -174,9 +213,25 @@ class ServiceControlPoliciesConfig(BaseModel):
 
 
 class GuardDutyFeaturesConfig(BaseModel):
-    s3_data_events: bool = False
-    eks_audit_logs: bool = False
-    malware_protection: bool = False
+    """Optional GuardDuty protection plans. All off: each is billed on top of the foundational data sources.
+
+    AWS enables every optional feature (except Runtime Monitoring) on a new detector unless told otherwise, so tarmac
+    sends this list explicitly. Runtime Monitoring is not managed by tarmac.
+    """
+
+    s3_data_events: bool = Field(
+        default=False, description="S3 Protection, billed per million S3 data events."
+    )
+    eks_audit_logs: bool = Field(
+        default=False, description="EKS Protection, billed per million audit-log events."
+    )
+    malware_protection: bool = Field(
+        default=False, description="Malware Protection for EC2 (EBS), billed per GB."
+    )
+    rds_login_events: bool = Field(default=False, description="RDS Protection, billed per vCPU per month.")
+    lambda_network_logs: bool = Field(
+        default=False, description="Lambda Protection, billed per GB of network logs."
+    )
 
 
 class GuardDutyConfig(BaseModel):
@@ -188,7 +243,49 @@ class GuardDutyConfig(BaseModel):
 class SecurityHubConfig(BaseModel):
     enabled: bool = False
     auto_enable_members: bool = True
+    central_configuration: bool = Field(
+        default=True,
+        description=(
+            "Manage Security Hub with one central configuration policy applied to the whole organization "
+            "from the primary Region (the standards below reach every account, existing and new). Used when "
+            "auto_enable_members is true. False keeps Region-by-Region local configuration, where new member "
+            "accounts join Security Hub with no standards."
+        ),
+    )
     standards: list[str] = Field(default_factory=lambda: ["aws-foundational-security-best-practices"])
+
+
+class ConfigRecorderConfig(BaseModel):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Record resource configuration with AWS Config in every account, in the primary and additional "
+            "regions, delivering to a bucket in the log archive account. Off by default because AWS Config "
+            "bills per configuration item, so cost grows with accounts x regions x resource changes. Security "
+            "Hub CSPM standards need a recorder to evaluate most of their controls."
+        ),
+    )
+    include_global_resources: bool = Field(
+        default=True,
+        description="Record global resource types (IAM and similar) in the primary region only.",
+    )
+    record_resource_compliance: bool = Field(
+        default=False,
+        description=(
+            "Also record AWS::Config::ResourceCompliance items. Security Hub CSPM updates them on every compliance "
+            "change and does not need them, so AWS recommends leaving them out when the recorder serves only "
+            "Security Hub. Set true if you use the compliance history, or if recorder creation fails in a Region "
+            "where global IAM types are not supported."
+        ),
+    )
+    recording_frequency: Literal["CONTINUOUS", "DAILY"] = Field(
+        default="CONTINUOUS",
+        description=(
+            "CONTINUOUS records every change at $0.003 per item. DAILY records at most one item per resource per "
+            "day at $0.012 per item, so it only saves money for resources that change more than four times a day; "
+            "for most accounts CONTINUOUS is cheaper. AWS Firewall Manager needs CONTINUOUS."
+        ),
+    )
 
 
 def _validate_webhook_url(v: str | None) -> str | None:
@@ -211,6 +308,7 @@ class SecurityServicesConfig(BaseModel):
     delegated_account: str = "audit"
     guardduty: GuardDutyConfig = Field(default_factory=GuardDutyConfig)
     securityhub: SecurityHubConfig = Field(default_factory=SecurityHubConfig)
+    config_recorder: ConfigRecorderConfig = Field(default_factory=ConfigRecorderConfig)
     incident_response_webhook_url: str | None = Field(
         default=None,
         description=(
@@ -218,6 +316,11 @@ class SecurityServicesConfig(BaseModel):
             "subscribing directly to the Audit account security alerts SNS topic."
         ),
     )
+
+    @field_validator("config_recorder", mode="before")
+    def null_means_decided_against(cls, v: Any) -> Any:
+        """`config_recorder: null` records "no AWS Config", the same way `object_lock: null` does for Object Lock."""
+        return {"enabled": False} if v is None else v
 
     @field_validator("incident_response_webhook_url")
     def validate_webhook_url(cls, v: str | None) -> str | None:
@@ -271,6 +374,16 @@ class BudgetConfig(BaseModel):
     monthly_limit_usd: float = Field(gt=0, description="Monthly budget limit in USD.")
     alert_threshold_percent: float = Field(
         default=80.0, gt=0, le=100, description="Percentage threshold to trigger budget alerts."
+    )
+    forecast_alert_threshold_percent: float | None = Field(
+        default=100.0,
+        gt=0,
+        le=1000,
+        description=(
+            "Also alert when the forecasted monthly spend reaches this percentage of the limit, which warns "
+            "before the limit is hit. Set to null to turn it off. AWS needs about 5 weeks of usage history "
+            "before a forecast alert can fire."
+        ),
     )
     notification_emails: list[EmailStr] = Field(
         default_factory=list,

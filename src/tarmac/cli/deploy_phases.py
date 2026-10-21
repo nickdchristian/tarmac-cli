@@ -16,13 +16,15 @@ from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from ..services.identity import IdentityService
+from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.preflight import PreflightService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
 from ..services.teardown import cleanup_orphaned_bucket
-from .common import get_active_account_id_map
+from .common import get_active_account_id_map, log_archive_parameters, warn_if_object_lock_unset
+from .deploy_config_recorder import deploy_config_recorder
 from .deploy_dry_run import (
     _render_phase_0_dry_run,
     _render_phase_1_dry_run,
@@ -145,6 +147,18 @@ def _run_phase_1_org(
             for r in vpc_reports:
                 if not r.skipped and r.deleted_vpc:
                     print_success(f"Management Account: Purged default VPC ({r.vpc_id}) in {r.region}")
+            vpc_failures = [f"{r.region}: {r.message}" for r in vpc_reports if r.error]
+            if vpc_failures and not dry_run:
+                for failure in vpc_failures:
+                    print_warning(f"Management Account default VPC cleanup failed in {failure}")
+                raise GovernanceError(
+                    f"Phase 1 incomplete: default VPC cleanup failed in {len(vpc_failures)} region(s).",
+                    details=(
+                        "Fix the cause (the role needs ec2:DescribeVpcs/Subnets/InternetGateways/"
+                        "NetworkInterfaces and the matching Detach/Delete actions), or set "
+                        "organization.delete_default_vpc: false to leave the management account's VPCs alone."
+                    ),
+                )
             if not dry_run:
                 baseliner.mark_account_baselined(mgmt_id)
 
@@ -214,6 +228,7 @@ def _deploy_log_archive_hardening_stack(
 ) -> StackDeployReport:
     """Deploy the Log Archive account hardening stack containing the centralized S3 sink & KMS key."""
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
+    warn_if_object_lock_unset(bundle)
     cfn_client = session_mgr.get_member_client(log_archive_id, "cloudformation", region_name=target_region)
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=project_root
@@ -225,21 +240,20 @@ def _deploy_log_archive_hardening_stack(
             buckets = [
                 f"{bundle.org.organization.name}-log-archive-access-logs-{log_archive_id}",
                 f"{bundle.org.organization.name}-org-cloudtrail-logs-{log_archive_id}",
+                f"{bundle.org.organization.name}-org-config-logs-{log_archive_id}",
                 f"{bundle.org.cloudtrail.bucket_prefix}-{log_archive_id}",
             ]
             for b in set(buckets):
                 cleanup_orphaned_bucket(s3_client, b, account_id=log_archive_id)
 
+    if not dry_run:
+        resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
+
     return cfn_service.deploy_stack(
         cfn_client,
         f"{bundle.org.organization.name}-log-archive-hardening",
         template_file,
-        {
-            "OrganizationId": org_id,
-            "OrgName": bundle.org.organization.name,
-            "EnableKmsEncryption": "true" if bundle.org.cloudtrail.enable_kms else "false",
-            "LogRetentionDays": str(bundle.org.cloudtrail.retention_days or 0),
-        },
+        log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", ""))),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
@@ -320,6 +334,9 @@ def _run_phase_3_cloudtrail(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
     stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
+
+    if not dry_run:
+        resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
 
     params = {
         "OrgName": bundle.org.organization.name,
@@ -644,6 +661,10 @@ def _run_phase_5_hardening(
         dry_run,
         custom_tags=custom_tags,
         skip_log_archive_hardening=skip_log_archive_hardening,
+    )
+
+    deploy_config_recorder(
+        session_mgr, cfn_service, bundle, target_region, project_root, accts, custom_tags=custom_tags
     )
 
     _delegate_security_services(session_mgr, bundle, target_region, accts, dry_run)

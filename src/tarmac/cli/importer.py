@@ -7,6 +7,7 @@ import typer
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS
 from ..services.importer import ImportService
+from .common import require_credentials_or_exit
 from .ui import console, error_console, print_header, print_info, print_success, print_warning
 
 
@@ -34,6 +35,7 @@ def import_command(
     print_header("Import Existing Organization")
     try:
         session_mgr = AwsSessionManager(region_name=region)
+        require_credentials_or_exit(session_mgr)
         service = ImportService(session_mgr, region or session_mgr.default_region)
         report = service.discover_and_write(
             config_dir, name=name, include_identity=not no_identity, force=force

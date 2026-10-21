@@ -75,6 +75,7 @@ class ImportService:
         self.session_mgr = session_mgr
         self.region = region
         self.project_root = Path(".")
+        self.imported_accounts: dict[str, str] = {}  # {AccountId: Name} of accounts written to accounts.yaml
         self.org: Any = session_mgr.get_client("organizations")
         self.report = ImportReport()
 
@@ -141,6 +142,7 @@ class ImportService:
                 entry["baseline"] = {"delete_default_vpc": False}
                 accounts.append(entry)
                 self.report.accounts.append(acct["Name"])
+                self.imported_accounts[str(acct["Id"])] = str(acct["Name"])
         return accounts
 
     def _scps(self, root_id: str, ou_names: dict[str, str], config_dir: Path) -> list[dict[str, Any]]:
@@ -407,33 +409,45 @@ class ImportService:
                 self.report.permission_sets.append(ps["Name"])
         return result
 
-    @staticmethod
     def _assignments(
+        self,
         sso: Any,
         instance_arn: str,
         groups: list[dict[str, Any]],
         permission_sets: dict[str, dict[str, Any]],
         account_names: dict[str, str],
     ) -> None:
+        """Group assignments on imported accounts. Anything tarmac cannot express is counted and reported."""
         by_id = {g["_id"]: g for g in groups}
+        outside: dict[str, int] = {}  # assignments to accounts that are not in accounts.yaml
+        user_assignments = 0
         for ps_arn, ps in permission_sets.items():
-            accounts_pages = sso.get_paginator("list_accounts_for_provisioned_permission_set").paginate(
+            for apage in sso.get_paginator("list_accounts_for_provisioned_permission_set").paginate(
                 InstanceArn=instance_arn, PermissionSetArn=ps_arn
-            )
-            for apage in accounts_pages:
+            ):
                 for account_id in apage.get("AccountIds", []):
-                    if account_id not in account_names:
-                        continue
+                    imported = account_id in account_names
                     for ppage in sso.get_paginator("list_account_assignments").paginate(
                         InstanceArn=instance_arn, AccountId=account_id, PermissionSetArn=ps_arn
                     ):
                         for a in ppage.get("AccountAssignments", []):
                             if a.get("PrincipalType") != "GROUP":
-                                continue
-                            group = by_id.get(a["PrincipalId"])
-                            if group is None:
-                                continue
-                            _add_assignment(group, ps["definition"]["name"], account_names[account_id])
+                                user_assignments += 1
+                            elif not imported:
+                                outside[account_id] = outside.get(account_id, 0) + 1
+                            elif (group := by_id.get(a["PrincipalId"])) is not None:
+                                _add_assignment(group, ps["definition"]["name"], account_names[account_id])
+        if outside:
+            self.report.todos.append(
+                f"{sum(outside.values())} group assignment(s) on {len(outside)} account(s) that are not in "
+                f"accounts.yaml were left out ({', '.join(sorted(outside))}), usually the management account. "
+                "Tarmac only assigns permission sets on the member accounts it manages."
+            )
+        if user_assignments:
+            self.report.todos.append(
+                f"{user_assignments} permission-set assignment(s) made directly to users were left out: tarmac "
+                "assigns through groups only."
+            )
 
     # ---------------------------------------------------------------- orchestration
 
@@ -474,12 +488,6 @@ class ImportService:
         self.report.organization_name = org_name
 
         accounts = self._accounts(mgmt_id, ou_names, root_id)
-        account_ids = {
-            str(a["Id"]): str(a["Name"])
-            for page in self.org.get_paginator("list_accounts").paginate()
-            for a in page.get("Accounts", [])
-            if a.get("Status") == "ACTIVE"
-        }
         scps = self._scps(root_id, ou_names, config_dir)
         trail_name = self._trails()
         contacts = self._contacts(mgmt_email)
@@ -530,7 +538,7 @@ class ImportService:
                     "organization.yaml."
                 )
 
-        identity = self._identity(config_dir, account_ids) if include_identity else None
+        identity = self._identity(config_dir, self.imported_accounts) if include_identity else None
 
         self._dump(
             config_dir / "organization.yaml",

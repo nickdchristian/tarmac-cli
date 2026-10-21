@@ -46,6 +46,9 @@ def _ou_pages(**kw: Any) -> list[dict[str, Any]]:
 class FakeSession:
     default_region = "us-east-1"
 
+    def get_caller_identity(self) -> dict[str, str]:
+        return {"Account": "111", "Arn": "arn:aws:sts::111:assumed-role/Reader/me"}
+
     def __init__(self, with_sso: bool = True):
         self.with_sso = with_sso
         org = MagicMock()
@@ -342,3 +345,58 @@ def test_existing_files_make_the_cli_fail_cleanly(monkeypatch, tmp_path: Path):
     result = CliRunner().invoke(app, ["import", "-c", str(tmp_path), "--no-identity"])
     assert result.exit_code == 1
     assert "--force" in result.output
+
+
+def test_assignments_outside_accounts_yaml_are_reported_not_written(monkeypatch, tmp_path: Path):
+    """The management account and root-level accounts are not in accounts.yaml, so assigning to them would not validate."""
+    session = FakeSession()
+    sso, store = MagicMock(), MagicMock()
+    pages = {
+        "list_users": [
+            {"Users": [{"UserId": "u1", "UserName": "alice-admin", "Emails": [{"Value": "a@acme-corp.io"}]}]}
+        ],
+        "list_groups": [{"Groups": [{"GroupId": "g1", "DisplayName": "Admins"}]}],
+        "list_group_memberships": [{"GroupMemberships": []}],
+        "list_permission_sets": [{"PermissionSets": ["arn:ps1"]}],
+        "list_managed_policies_in_permission_set": [{"AttachedManagedPolicies": []}],
+        "list_accounts_for_provisioned_permission_set": [{"AccountIds": ["222", "111", "444"]}],
+        "list_account_assignments": [
+            {
+                "AccountAssignments": [
+                    {"PrincipalType": "GROUP", "PrincipalId": "g1"},
+                    {"PrincipalType": "USER", "PrincipalId": "u1"},
+                ]
+            }
+        ],
+    }
+
+    def paginator(name: str) -> MagicMock:
+        pag = MagicMock()
+        pag.paginate.side_effect = lambda **kw: pages[name]
+        return pag
+
+    sso.get_paginator.side_effect = paginator
+    store.get_paginator.side_effect = paginator
+    sso.describe_permission_set.return_value = {"PermissionSet": {"Name": "Admin", "SessionDuration": "PT4H"}}
+    sso.get_inline_policy_for_permission_set.return_value = {}
+
+    class FakeIdentity:
+        region = "us-east-1"
+        sso_client = sso
+        identitystore_client = store
+
+        def __init__(self, *a: Any, **k: Any) -> None: ...
+
+        def get_instance_details(self) -> tuple[str, str]:
+            return "arn:inst", "d-1"
+
+    monkeypatch.setattr("tarmac.services.importer.IdentityService", FakeIdentity)
+    monkeypatch.chdir(tmp_path)
+    report = ImportService(session, "us-east-1").discover_and_write(tmp_path / "cfg")  # type: ignore[arg-type]
+
+    ident = yaml.safe_load((tmp_path / "cfg" / "identity.yaml").read_text())["identity_center"]
+    assert ident["groups"][0]["assignments"] == [{"permission_set": "Admin", "accounts": ["Audit"]}]
+    assert not any("undefined account" in e for e in report.validation_errors)
+    text = "\n".join(report.todos)
+    assert "2 group assignment(s) on 2 account(s)" in text
+    assert "3 permission-set assignment(s) made directly to users" in text
