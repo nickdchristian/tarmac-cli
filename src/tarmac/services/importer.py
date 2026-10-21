@@ -21,9 +21,10 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
 from ..core.org_accounts import is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
+from ..core.stack_names import TARMAC_STACK_SUFFIXES
 from ..core.tagging import validate_tags
 from .identity import IdentityService
-from .preflight import _LIVE_STACK_STATUSES, TARMAC_STACK_SUFFIXES
+from .preflight import _LIVE_STACK_STATUSES
 
 logger = logging.getLogger(__name__)
 

@@ -17,12 +17,12 @@ from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
 from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from ..core.org_accounts import is_active, iter_accounts
+from ..core.stack_names import ACCESS_STACK
 from .identity import IdentityService
 from .teardown_base import TeardownBase
 
 logger = logging.getLogger(__name__)
 
-ACCESS_STACK = "tarmac-access"
 BOOTSTRAP_USER = "tarmac-bootstrap"
 ACCESS_ROLE = "TarmacDeploymentRole"
 # Disabling this would delete the Identity Center instance created through Organizations.

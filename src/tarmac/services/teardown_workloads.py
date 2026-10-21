@@ -7,6 +7,7 @@ from botocore.exceptions import ClientError
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
+from ..core.stack_names import Stack
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
@@ -116,7 +117,7 @@ class WorkloadTeardown(TeardownBase):
         accts = account_id_map or self._get_active_accounts()
         backend_acct_name = bundle.get_backend_account_name() or "deployment"
         backend_acct_id = bundle.resolve_account_id(backend_acct_name, accts) or ""
-        stack_name = f"{bundle.org.organization.name}-terraform-backend"
+        stack_name = Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name)
 
         if not backend_acct_id:
             message = "Deployment/backend account not resolved in active accounts"

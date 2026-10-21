@@ -14,6 +14,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AccountProvisioningError, GovernanceError
 from ..core.models import BaselineReport, PreflightCheckStatus, PreflightReport, StackDeployReport
 from ..core.org_accounts import get_active_account_id_map
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
@@ -246,7 +247,7 @@ def _deploy_log_archive_hardening_stack(
 
     return cfn_service.deploy_stack(
         cfn_client,
-        f"{bundle.org.organization.name}-log-archive-hardening",
+        Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
         template_file,
         log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", ""))),
         tags=custom_tags,
@@ -332,7 +333,7 @@ def _run_phase_3_cloudtrail(
     resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
     report = cfn_service.deploy_stack(
         session_mgr.get_client("cloudformation", region_name=target_region),
-        f"{bundle.org.organization.name}-organization-cloudtrail",
+        Stack.CLOUDTRAIL.for_org(bundle.org.organization.name),
         template_file,
         cloudtrail_parameters(bundle, log_archive_id, bool(bundle.org.cloudtrail.enable_kms)),
         tags=custom_tags,
@@ -450,7 +451,7 @@ def _deploy_backend_stack(
             for b in set(state_buckets):
                 cleanup_orphaned_bucket(s3_client, b, account_id=deployment_id)
 
-    backend_stack = f"{bundle.org.organization.name}-terraform-backend"
+    backend_stack = Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name)
     enable_dynamodb, lock_warning = lock_table_wanted(
         cfn_client, backend_stack, bundle.org.terraform_backend.enable_dynamodb
     )
@@ -513,7 +514,7 @@ def _deploy_hardening_stacks(
     )
     cfn_service.deploy_stack(
         session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region),
-        f"{bundle.org.organization.name}-audit-account-hardening",
+        Stack.AUDIT_ACCOUNT.for_org(bundle.org.organization.name),
         resolve_resource_path("cloudformation/audit-account-hardening.yaml", project_root=project_root),
         audit_hardening_parameters(bundle, org_id),
         tags=custom_tags,

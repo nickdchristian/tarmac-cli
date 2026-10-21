@@ -19,6 +19,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
 from ..core.models import TAG_MANAGED_BY, StackDeployReport
 from ..core.org_accounts import is_active, iter_accounts
+from ..core.stack_names import Stack
 from ..core.tagging import merge_tags, to_cfn_tags
 from .cloudformation import CloudFormationService
 
@@ -31,14 +32,6 @@ OPERATION_PREFERENCES = {
     "MaxConcurrentPercentage": 100,
     "FailureTolerancePercentage": 100,
 }
-
-
-def stack_set_name(org_name: str) -> str:
-    return f"{org_name}-config-recorder"
-
-
-def management_stack_name(org_name: str) -> str:
-    return f"{org_name}-config-recorder"
 
 
 @dataclass
@@ -82,7 +75,7 @@ class ConfigRecorderService:
         dry_run: bool = False,
     ) -> ConfigRecorderReport:
         """Create or update the StackSet, its instances, and the management account stacks."""
-        name = stack_set_name(org_name)
+        name = Stack.CONFIG_RECORDER.for_org(org_name)
         report = ConfigRecorderReport(regions=list(regions))
         if dry_run:
             audit(
@@ -336,7 +329,7 @@ class ConfigRecorderService:
         )
         return self.cfn_service.deploy_stack(
             cfn_client,
-            management_stack_name(org_name),
+            Stack.CONFIG_RECORDER.for_org(org_name),
             template_file,
             parameters,
             tags=tags,
@@ -366,7 +359,7 @@ class ConfigRecorderService:
     def _remove_stack_set(
         self, org_name: str, primary_region: str, management_account_id: str, dry_run: bool
     ) -> list[tuple[str, str, str]]:
-        name = stack_set_name(org_name)
+        name = Stack.CONFIG_RECORDER.for_org(org_name)
         resource = f"StackSet {name}"
         cf = self.session_mgr.get_client("cloudformation", region_name=primary_region)
         try:
@@ -401,7 +394,7 @@ class ConfigRecorderService:
     def _remove_management_stack(
         self, org_name: str, region: str, management_account_id: str, dry_run: bool
     ) -> tuple[str, str, str]:
-        stack = management_stack_name(org_name)
+        stack = Stack.CONFIG_RECORDER.for_org(org_name)
         resource = f"Stack {stack} ({region})"
         try:
             cfn_client = self.session_mgr.get_member_client(

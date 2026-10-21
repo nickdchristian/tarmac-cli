@@ -7,6 +7,7 @@ from botocore.exceptions import ClientError
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
+from ..core.stack_names import Stack
 from .identity import IdentityService
 from .scp import SCPService
 from .teardown_base import STACK, TeardownBase
@@ -24,7 +25,7 @@ class GovernanceTeardown(TeardownBase):
         """Tear down SCP CloudFormation stack and detach/delete direct SCPs."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
-        stack_name = f"{bundle.org.organization.name}-organization-scps"
+        stack_name = Stack.ORGANIZATION_SCPS.for_org(bundle.org.organization.name)
 
         try:
             cfn_client = self.session_mgr.get_client(
@@ -138,8 +139,8 @@ class GovernanceTeardown(TeardownBase):
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
         stack_names = [
-            f"{bundle.org.organization.name}-sso-permission-sets",
-            f"{bundle.org.organization.name}-permission-sets",
+            Stack.PERMISSION_SETS.for_org(bundle.org.organization.name),
+            Stack.LEGACY_PERMISSION_SETS.for_org(bundle.org.organization.name),
         ]
         id_cfg = bundle.identity.identity_center if bundle.identity else None
         identity_service, inst_arn, candidate_regions = self._resolve_identity_teardown_context(

@@ -17,6 +17,7 @@ from typing import Any
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AWS_ERRORS
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .ou import OUService
@@ -303,14 +304,14 @@ class DriftService:
         self,
         friendly_name: str,
         account_name: str,
-        stack_suffix: str,
+        stack: Stack,
         live_accts: dict[str, dict[str, Any]],
         target_region: str,
         prefix: str,
         report: DriftReport,
     ) -> None:
         """Audit status of a member account CloudFormation stack."""
-        stack_name = f"{prefix}-{stack_suffix}"
+        stack_name = stack.for_org(prefix)
         acct_id = self._resolve_id(account_name, live_accts)
         if not acct_id:
             status = "ACCOUNT_MISSING"
@@ -335,7 +336,7 @@ class DriftService:
         prefix = bundle.org.organization.name
         mgmt_cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
 
-        ct_stack = f"{prefix}-organization-cloudtrail"
+        ct_stack = Stack.CLOUDTRAIL.for_org(prefix)
         ct_status = stack_status(mgmt_cfn, ct_stack)
         self._record_stack_drift("CloudTrail", ct_status, report)
 
@@ -351,22 +352,22 @@ class DriftService:
             if sso_region == target_region
             else self.session_mgr.get_client("cloudformation", region_name=sso_region)
         )
-        sso_stack = f"{prefix}-sso-permission-sets"
+        sso_stack = Stack.PERMISSION_SETS.for_org(prefix)
         sso_status = stack_status(sso_cfn, sso_stack)
         self._record_stack_drift("SSOPermissionSets", sso_status, report)
 
         stacks_to_check = [
-            ("TerraformBackend", bundle.get_backend_account_name() or "deployment", "terraform-backend"),
+            ("TerraformBackend", bundle.get_backend_account_name() or "deployment", Stack.TERRAFORM_BACKEND),
             (
                 "LogArchiveHardening",
                 bundle.get_log_archive_account_name() or "log-archive",
-                "log-archive-hardening",
+                Stack.LOG_ARCHIVE,
             ),
-            ("AuditHardening", bundle.get_audit_account_name() or "audit", "audit-account-hardening"),
+            ("AuditHardening", bundle.get_audit_account_name() or "audit", Stack.AUDIT_ACCOUNT),
         ]
-        for friendly_name, acct_name, suffix in stacks_to_check:
+        for friendly_name, acct_name, stack in stacks_to_check:
             self._audit_member_stack(
-                friendly_name, acct_name, suffix, live_accts, target_region, prefix, report
+                friendly_name, acct_name, stack, live_accts, target_region, prefix, report
             )
 
     def _audit_budgets(

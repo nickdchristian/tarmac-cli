@@ -21,13 +21,14 @@ from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_schema import ConfigRecorderConfig, SecurityServicesConfig
 from tarmac.core.exceptions import GovernanceError
 from tarmac.core.models import TAG_MANAGED_BY, StackDeployReport
-from tarmac.services.config_recorder import ConfigRecorderService, stack_set_name
+from tarmac.core.stack_names import Stack
+from tarmac.services.config_recorder import ConfigRecorderService
 from tarmac.services.teardown import TeardownService
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / "src/tarmac/templates/cloudformation" / "config-recorder.yaml"
 MGMT = "111111111111"
-NAME = stack_set_name("acme")
+NAME = Stack.CONFIG_RECORDER.for_org("acme")
 PARAMS = {
     "DeliveryBucketName": "acme-org-cloudtrail-logs-222222222222",
     "DeliveryKmsKeyArn": "",

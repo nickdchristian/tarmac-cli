@@ -5,6 +5,7 @@ from pathlib import Path
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import GovernanceError
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
 from ..services.config_recorder import ConfigRecorderService
@@ -64,7 +65,7 @@ def deploy_config_recorder(
     log_archive_cfn = session_mgr.get_member_client(
         log_archive_id, "cloudformation", region_name=target_region
     )
-    outputs = cfn_service._fetch_stack_outputs(log_archive_cfn, f"{org_name}-log-archive-hardening")
+    outputs = cfn_service._fetch_stack_outputs(log_archive_cfn, Stack.LOG_ARCHIVE.for_org(org_name))
     bucket_name = outputs.get("ConfigBucketName", "")
     if not bucket_name:
         raise GovernanceError(

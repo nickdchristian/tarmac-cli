@@ -17,6 +17,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
 from ..core.exceptions import GovernanceError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
 
@@ -281,7 +282,7 @@ class SCPService:
             outputs_dir.mkdir(parents=True, exist_ok=True)
             (outputs_dir / "managed-scps.yaml").write_text(template_body, encoding="utf-8")
 
-        stack_name = f"{org_name}-organization-scps"
+        stack_name = Stack.ORGANIZATION_SCPS.for_org(org_name)
         cfn_client = self.session_mgr.get_client("cloudformation")
         cfn_service = CloudFormationService(self.session_mgr)
 

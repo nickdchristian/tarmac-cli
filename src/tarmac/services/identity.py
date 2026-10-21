@@ -16,6 +16,7 @@ from ..core.config_schema import GroupDef, IdentityCenterConfig, PermissionSetDe
 from ..core.exceptions import DeploymentError, IdentityCenterError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, IdentitySyncReport
 from ..core.org_accounts import active_account_ids
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
 
@@ -387,7 +388,7 @@ class IdentityService:
             outputs_dir.mkdir(parents=True, exist_ok=True)
             (outputs_dir / "sso-permission-sets.yaml").write_text(template_body, encoding="utf-8")
 
-        stack_name = f"{org_name}-sso-permission-sets"
+        stack_name = Stack.PERMISSION_SETS.for_org(org_name)
         cfn_client = self.session_mgr.get_client("cloudformation", region_name=self.region)
         cfn_service = CloudFormationService(self.session_mgr)
 

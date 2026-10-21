@@ -9,6 +9,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
+from ..core.stack_names import Stack
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
@@ -26,7 +27,7 @@ class LoggingTeardown(TeardownBase):
         """Tear down Organization CloudTrail stack and direct trail."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
-        stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
+        stack_name = Stack.CLOUDTRAIL.for_org(bundle.org.organization.name)
         trail_name = bundle.org.cloudtrail.trail_name
 
         try:
@@ -129,7 +130,7 @@ class LoggingTeardown(TeardownBase):
         accts = account_id_map or self._get_active_accounts()
         acct_name = bundle.get_log_archive_account_name() or "log-archive"
         acct_id = bundle.resolve_account_id(acct_name, accts) or ""
-        stack_name = f"{bundle.org.organization.name}-log-archive-hardening"
+        stack_name = Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name)
 
         if not acct_id:
             results.append(
@@ -286,7 +287,7 @@ class LoggingTeardown(TeardownBase):
         """Delete the management account root activity alert stack in every Region it may have been deployed to."""
         results: list[TeardownItemReport] = []
         mgmt_id = self._get_management_account_id()
-        stack_name = f"{bundle.org.organization.name}-management-root-alert"
+        stack_name = Stack.ROOT_ALERT.for_org(bundle.org.organization.name)
         regions = list(
             dict.fromkeys(["us-east-1", target_region, *bundle.org.organization.additional_regions])
         )
@@ -322,7 +323,7 @@ class LoggingTeardown(TeardownBase):
         accts = account_id_map or self._get_active_accounts()
         acct_name = bundle.get_audit_account_name() or "audit"
         acct_id = bundle.resolve_account_id(acct_name, accts) or ""
-        stack_name = f"{bundle.org.organization.name}-audit-account-hardening"
+        stack_name = Stack.AUDIT_ACCOUNT.for_org(bundle.org.organization.name)
 
         if not acct_id:
             results.append(

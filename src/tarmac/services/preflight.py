@@ -13,21 +13,12 @@ from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 from ..core.org_accounts import active_account_ids, is_active, iter_accounts
 from ..core.placeholders import find_placeholder_values
+from ..core.stack_names import ACCESS_STACK, TARMAC_STACK_SUFFIXES
 from ..core.templates import resolve_resource_path
 
 logger = logging.getLogger(__name__)
 
-# Stacks Tarmac creates are named "<organization.name>-<suffix>".
-TARMAC_STACK_SUFFIXES = (
-    "organization-scps",
-    "organization-cloudtrail",
-    "log-archive-hardening",
-    "terraform-backend",
-    "audit-account-hardening",
-    "sso-permission-sets",
-)
-# The stack 'tarmac access bootstrap' creates by default, and the region it defaults to.
-ACCESS_STACK = "tarmac-access"
+# The template 'tarmac access bootstrap' deploys, and the region it defaults to.
 ACCESS_TEMPLATE = "cloudformation/tarmac-access.yaml"
 ACCESS_DEFAULT_REGION = "us-east-1"
 _LIVE_STACK_STATUSES = [

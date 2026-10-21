@@ -4,16 +4,13 @@ from pathlib import Path
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
 from .ui import print_info, print_warning
 
 ROOT_SIGN_IN_REGION = "us-east-1"
 TEMPLATE_PATH = "cloudformation/management-root-alert.yaml"
-
-
-def root_alert_stack_name(bundle: ConfigBundle) -> str:
-    return f"{bundle.org.organization.name}-management-root-alert"
 
 
 def root_alert_regions(bundle: ConfigBundle, primary_region: str) -> list[str]:
@@ -54,7 +51,7 @@ def deploy_management_root_alert(
     for region in regions:
         cfn_service.deploy_stack(
             session_mgr.get_client("cloudformation", region_name=region),
-            root_alert_stack_name(bundle),
+            Stack.ROOT_ALERT.for_org(bundle.org.organization.name),
             template_file,
             {
                 "OrgName": bundle.org.organization.name,

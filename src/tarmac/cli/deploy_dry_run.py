@@ -11,6 +11,7 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.config_schema import AccountBaselineConfig, Contact, OUDef
+from ..core.stack_names import Stack
 from ..services.accounts import AccountService
 from ..services.ou import OUService
 from .deploy_config_recorder import warn_if_config_recorder_missing
@@ -236,7 +237,7 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     table.add_column("Planned Action", style="bold green", justify="center")
 
     trail_cfg = bundle.org.cloudtrail
-    stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
+    stack_name = Stack.CLOUDTRAIL.for_org(bundle.org.organization.name)
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     if trail_cfg.enable_kms is None:
         kms_desc = "Unset: SSE-S3 for a new deployment; an existing KMS key is kept"
@@ -246,7 +247,7 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     table.add_row("CloudFormation Stack", stack_name, "DEPLOY STACK")
     table.add_row(
         "Log Archive Hardening",
-        f"{bundle.org.organization.name}-log-archive-hardening",
+        Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
         "DEPLOY S3 & KMS SINK",
     )
     table.add_row("Organization Trail", trail_cfg.trail_name, "CREATE MULTI-REGION")
@@ -365,7 +366,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     backend_cfg = bundle.org.terraform_backend
     backend_params = f"BucketPrefix: {backend_cfg.bucket_prefix}, Locking: {_locking_label(backend_cfg)}"
     table.add_row(
-        f"{bundle.org.organization.name}-terraform-backend",
+        Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name),
         backend_name,
         backend_params,
         "DEPLOY CFN STACK",
@@ -373,7 +374,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
 
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     table.add_row(
-        f"{bundle.org.organization.name}-log-archive-hardening",
+        Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
         log_archive_name,
         "Log Vault Bucket Policy, Retention, Cross-Account Aggregation",
         "DEPLOY CFN STACK",
@@ -383,7 +384,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     alert_email = str(bundle.org.contacts.security.email) if bundle.org.contacts.security.email else "None"
     audit_params = f"Config Delegated Admin, Security Alerts SNS ({alert_email})"
     table.add_row(
-        f"{bundle.org.organization.name}-audit-account-hardening",
+        Stack.AUDIT_ACCOUNT.for_org(bundle.org.organization.name),
         audit_name,
         audit_params,
         "DEPLOY CFN STACK",
@@ -424,7 +425,7 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
 
     root_alert = sec_services.root_alert
     table.add_row(
-        f"{bundle.org.organization.name}-management-root-alert",
+        Stack.ROOT_ALERT.for_org(bundle.org.organization.name),
         "Management",
         f"Root activity alert to {alert_email}, in us-east-1 and the primary Region"
         + (" and every declared Region" if root_alert.all_regions else ""),
@@ -605,8 +606,8 @@ def _build_dry_run_plan_dict(
 
     if 3 in phases_to_run:
         phases_data["3_cloudtrail"] = {
-            "stack_name": f"{bundle.org.organization.name}-organization-cloudtrail",
-            "log_archive_stack": f"{bundle.org.organization.name}-log-archive-hardening",
+            "stack_name": Stack.CLOUDTRAIL.for_org(bundle.org.organization.name),
+            "log_archive_stack": Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
             "trail_name": bundle.org.cloudtrail.trail_name,
             "primary_region": target_region,
             "log_archive_account": bundle.get_log_archive_account_name() or "log-archive",
@@ -629,7 +630,7 @@ def _build_dry_run_plan_dict(
         audit_name = bundle.get_audit_account_name() or "audit"
         phases_data["5_foundation"] = {
             "terraform_backend": {
-                "stack_name": f"{bundle.org.organization.name}-terraform-backend",
+                "stack_name": Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name),
                 "account": bundle.get_backend_account_name() or "deployment",
                 "bucket_prefix": bundle.org.terraform_backend.bucket_prefix,
                 "dynamodb_table_name": bundle.org.terraform_backend.dynamodb_table_name,
@@ -637,11 +638,11 @@ def _build_dry_run_plan_dict(
                 "locking": _locking_label(bundle.org.terraform_backend),
             },
             "log_archive_hardening": {
-                "stack_name": f"{bundle.org.organization.name}-log-archive-hardening",
+                "stack_name": Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
                 "account": bundle.get_log_archive_account_name() or "log-archive",
             },
             "audit_account_hardening": {
-                "stack_name": f"{bundle.org.organization.name}-audit-account-hardening",
+                "stack_name": Stack.AUDIT_ACCOUNT.for_org(bundle.org.organization.name),
                 "account": audit_name,
                 "alert_email": (
                     str(bundle.org.contacts.security.email) if bundle.org.contacts.security.email else None
@@ -666,7 +667,7 @@ def _build_dry_run_plan_dict(
             },
             "root_alert": {
                 "enabled": bundle.org.security_services.root_alert.enabled,
-                "stack_name": f"{bundle.org.organization.name}-management-root-alert",
+                "stack_name": Stack.ROOT_ALERT.for_org(bundle.org.organization.name),
                 "all_regions": bundle.org.security_services.root_alert.all_regions,
             },
         }

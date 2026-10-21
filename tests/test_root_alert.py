@@ -10,11 +10,11 @@ import yaml
 from tarmac.cli.deploy_root_alert import (
     deploy_management_root_alert,
     root_alert_regions,
-    root_alert_stack_name,
 )
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_loader import ConfigBundle, load_all_configs
 from tarmac.core.config_schema import RootAlertConfig
+from tarmac.core.stack_names import Stack
 from tarmac.services.teardown import TeardownService
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +83,7 @@ def test_it_deploys_one_stack_per_region(test_bundle):
 
     assert cfn_service.deploy_stack.call_count == 2
     names = {call.args[1] for call in cfn_service.deploy_stack.call_args_list}
-    assert names == {root_alert_stack_name(bundle)}
+    assert names == {Stack.ROOT_ALERT.for_org(bundle.org.organization.name)}
     params = cfn_service.deploy_stack.call_args_list[0].args[3]
     assert params["AlertEmail"] == "sec@example.com"
 

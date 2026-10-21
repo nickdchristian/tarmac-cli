@@ -10,6 +10,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.inventory import Inventory
 from ..core.models import TeardownItemReport
+from ..core.stack_names import Stack
 from .teardown_base import TeardownBase, TeardownReport
 from .teardown_config import ConfigRecorderTeardown
 from .teardown_everything import EverythingTeardown
@@ -127,7 +128,7 @@ class TeardownService(
                 items.append(
                     TeardownItemReport(
                         resource_type="CloudFormation Stack",
-                        resource_name=f"{bundle.org.organization.name}-terraform-backend",
+                        resource_name=Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name),
                         account_name=bundle.get_backend_account_name() or "deployment",
                         account_id="",
                         action="SKIPPED",

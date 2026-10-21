@@ -8,6 +8,7 @@ import typer
 
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import GovernanceError
+from ..core.stack_names import ACCESS_STACK
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
 from .ui import console, error_console, print_header, print_info, print_success
@@ -42,9 +43,7 @@ def _write_role_profile(
 
 @app.command("bootstrap")
 def access_bootstrap(
-    stack_name: Annotated[
-        str, typer.Option("--stack-name", help="CloudFormation stack name")
-    ] = "tarmac-access",
+    stack_name: Annotated[str, typer.Option("--stack-name", help="CloudFormation stack name")] = ACCESS_STACK,
     role_name: Annotated[
         str, typer.Option("--role-name", help="Name of the tarmac role")
     ] = "TarmacDeploymentRole",
