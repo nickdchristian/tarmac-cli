@@ -267,7 +267,9 @@ point you can copy into your project's `policies/scp/` and reference from `organ
 3. Keep the `TarmacDeploymentRole` and `OrganizationAccountAccessRole` exemption. Tarmac removes default VPCs in
    every enabled region of each member account, and Phase 2 (SCPs) runs before the Phase 4 baseline, so without
    the exemption that cleanup fails in the regions you blocked. Drop `OrganizationAccountAccessRole` from the
-   exemption only if you set `delete_default_vpc: false` (or have already cleaned those VPCs).
+   exemption only if you set `delete_default_vpc: false` (or have already cleaned those VPCs). The example names the
+   default role, `TarmacDeploymentRole`; if you bootstrapped with `--role-name`, change the exemption to that name, or
+   tarmac is locked out of the regions you blocked.
 
 SCPs do not apply to the management account. Test it on one OU before attaching it to the root.
 
