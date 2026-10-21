@@ -16,6 +16,7 @@ from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.cloudformation import CloudFormationService
 from ..services.identity import IdentityService
+from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.preflight import PreflightService
@@ -245,6 +246,9 @@ def _deploy_log_archive_hardening_stack(
             for b in set(buckets):
                 cleanup_orphaned_bucket(s3_client, b, account_id=log_archive_id)
 
+    if not dry_run:
+        resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
+
     return cfn_service.deploy_stack(
         cfn_client,
         f"{bundle.org.organization.name}-log-archive-hardening",
@@ -330,6 +334,9 @@ def _run_phase_3_cloudtrail(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
     stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
+
+    if not dry_run:
+        resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
 
     params = {
         "OrgName": bundle.org.organization.name,

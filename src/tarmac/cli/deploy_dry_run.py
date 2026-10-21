@@ -202,7 +202,10 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     trail_cfg = bundle.org.cloudtrail
     stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
-    kms_desc = "Enabled (Customer Managed Key)" if trail_cfg.enable_kms else "Disabled (SSE-S3 AES-256)"
+    if trail_cfg.enable_kms is None:
+        kms_desc = "Unset: SSE-S3 for a new deployment; an existing KMS key is kept"
+    else:
+        kms_desc = "Enabled (Customer Managed Key)" if trail_cfg.enable_kms else "Disabled (SSE-S3 AES-256)"
 
     table.add_row("CloudFormation Stack", stack_name, "DEPLOY STACK")
     table.add_row(
@@ -214,7 +217,13 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
     table.add_row("Primary Region", target_region, "STACK REGION")
     table.add_row("Log Archive Account", log_archive_name, "AGGREGATE S3 SINK")
     table.add_row(
-        "KMS Encryption", kms_desc, "CONSTRUCT KEY POLICY" if trail_cfg.enable_kms else "NO KEY NEEDED"
+        "KMS Encryption",
+        kms_desc,
+        "CONSTRUCT KEY POLICY"
+        if trail_cfg.enable_kms
+        else "KEEP EXISTING KEY, ELSE NONE"
+        if trail_cfg.enable_kms is None
+        else "NO KEY NEEDED",
     )
     if trail_cfg.retention_days:
         table.add_row(

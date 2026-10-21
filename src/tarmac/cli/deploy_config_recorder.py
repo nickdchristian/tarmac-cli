@@ -74,7 +74,8 @@ def deploy_config_recorder(
                 "Run `tarmac deploy run --phase 3` (or the full pipeline) first, then phase 5."
             ),
         )
-    kms_key_arn = outputs.get("KmsKeyArn", "") if bundle.org.cloudtrail.enable_kms else ""
+    # The key output exists only when the log archive stack actually has the key, which is what the bucket needs.
+    kms_key_arn = outputs.get("KmsKeyArn", "")
 
     regions = config_recorder_regions(bundle, target_region)
     print_info(f"Deploying AWS Config recorders to {len(regions)} Region(s) of every account...")

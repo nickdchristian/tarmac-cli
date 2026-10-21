@@ -13,6 +13,7 @@ from ..core.models import StackDeployReport
 from ..core.templates import resolve_resource_path
 from ..services.baseline import BaselineService
 from ..services.cloudformation import CloudFormationService
+from ..services.log_encryption import resolve_log_encryption
 from .common import (
     get_active_account_id_map,
     load_configs_or_exit,
@@ -54,10 +55,15 @@ def deploy_cloudtrail(
         )
         stack_name = f"{bundle.org.organization.name}-organization-cloudtrail"
 
-        enable_kms = False if sse_s3 else bundle.org.cloudtrail.enable_kms
         accts = get_active_account_id_map(session_mgr)
         log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
         log_archive_id = bundle.resolve_account_id(log_archive_name, accts) or ""
+        if sse_s3:
+            enable_kms = False
+        elif dry_run:
+            enable_kms = bool(bundle.org.cloudtrail.enable_kms)
+        else:
+            enable_kms = resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
 
         params = {
             "OrgName": bundle.org.organization.name,
@@ -166,6 +172,8 @@ def _deploy_log_archive_stack(
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=bundle.config_dir.parent
     )
+    if not dry_run:
+        resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
     params = log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", "")))
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     report = service.deploy_stack(

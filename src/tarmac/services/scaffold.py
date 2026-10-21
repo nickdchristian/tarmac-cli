@@ -76,7 +76,7 @@ cloudtrail:
   trail_name: "myorg-organization-trail"
   bucket_prefix: "myorg-cloudtrail"
   log_archive_account: "Log-Archive"
-  enable_kms: true
+  # enable_kms: true   # Unset = SSE-S3 for a new deployment (cheaper). true adds a KMS key (about $1/month), which CIS and Security Hub CloudTrail.2 ask for.
   # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
   # RECOMMENDED: S3 Object Lock on the log bucket, so logs cannot be deleted or overwritten for a year.
   # Off unless set, and S3 cannot turn it off again once it is on. `object_lock: null` hides the deploy warning.

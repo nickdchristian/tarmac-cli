@@ -458,7 +458,12 @@ configuration before disabling Security Hub.
 
 ### Encryption of the log archive
 
-`cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.
+CloudTrail encrypts delivered logs with SSE-S3 (AES256) by default, and AWS describes a customer managed KMS key as "an added layer of security". The key costs about $1 a month plus request charges, so Tarmac leaves it off for a new deployment.
+
+* `cloudtrail.enable_kms` unset (the default): a new deployment uses SSE-S3. A deployment that already has the key keeps it, so upgrading never lowers its encryption.
+* `enable_kms: true` adds the key. Set it if you follow the CIS benchmark or Security Hub, whose CloudTrail checks (CloudTrail.2, CIS 3.5) ask for SSE-KMS.
+* `enable_kms: false` switches an existing deployment back to SSE-S3 for new logs. The key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.
+* If Tarmac cannot read the existing log archive stack to find out, it stops and says so instead of guessing.
 
 ### Existing resources with the same name
 

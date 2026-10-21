@@ -94,11 +94,13 @@ class ObjectLockConfig(BaseModel):
 class CloudTrailConfig(BaseModel):
     trail_name: str = Field(default="organization-trail")
     bucket_prefix: str = Field(default="org-cloudtrail")
-    enable_kms: bool = Field(
-        default=True,
+    enable_kms: bool | None = Field(
+        default=None,
         description=(
-            "Encrypt CloudTrail logs with a customer managed KMS key. False uses SSE-S3 (AES256) for the "
-            "trail and the log bucket and skips the key (about $1/month plus request charges)."
+            "Encrypt CloudTrail logs with a customer managed KMS key (about $1/month plus request charges). "
+            "Unset: a new deployment uses SSE-S3 (AES256), which CloudTrail applies by default, and a deployment "
+            "that already has the key keeps it. True adds the key, which Security Hub control CloudTrail.2 and the "
+            "CIS benchmark ask for; false switches an existing deployment back to SSE-S3 for new logs."
         ),
     )
     log_archive_account: str | None = Field(
