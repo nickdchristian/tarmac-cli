@@ -212,6 +212,12 @@ def test_preview_reports_no_change_when_template_parameters_and_tags_match():
     cfn.get_template.assert_called_once_with(StackName="s", TemplateStage="Original")
 
 
+def test_preview_compares_non_ascii_text_as_cloudformation_stores_it():
+    service = CloudFormationService(MagicMock())
+    cfn = _cfn("UPDATE_COMPLETE", {}, "Description: a ? b\n", merge_tags())
+    assert service.preview_stack(cfn, "s", template_body="Description: a — b") == ("NO CHANGE", "")
+
+
 def test_preview_names_what_would_change():
     service = CloudFormationService(MagicMock())
     cfn = _cfn("CREATE_COMPLETE", {"A": "1"}, "old", merge_tags())

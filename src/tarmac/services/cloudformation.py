@@ -24,6 +24,11 @@ UNUSABLE_STACK_STATES = frozenset(
 )
 
 
+def _as_stored(template: str) -> str:
+    """The template as GetTemplate returns it: CloudFormation stores each non-ASCII character as '?'."""
+    return template.strip().encode("ascii", "replace").decode("ascii")
+
+
 def lock_table_wanted(cfn_client: Any, stack_name: str, configured: bool | None) -> tuple[bool, str | None]:
     """Decide whether the Terraform backend stack should have a DynamoDB lock table.
 
@@ -162,7 +167,7 @@ class CloudFormationService:
         live_body = cfn_client.get_template(StackName=stack_name, TemplateStage="Original").get(
             "TemplateBody"
         )
-        if not isinstance(live_body, str) or live_body.strip() != template_body.strip():
+        if not isinstance(live_body, str) or _as_stored(live_body) != _as_stored(template_body):
             changes.append("template")
         live_tags = {str(tag["Key"]): str(tag["Value"]) for tag in stack.get("Tags", [])}
         if live_tags != merge_tags(org_tags, account_tags, tags):
