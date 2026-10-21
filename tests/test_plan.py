@@ -73,6 +73,26 @@ def test_a_missing_scp_stack_that_would_take_over_existing_policies_is_an_import
     assert declared in detail
 
 
+@pytest.mark.parametrize(("in_stack", "expected"), [({"PolicyX"}, "NO CHANGE"), ({"Other"}, "IMPORT")])
+def test_an_existing_policy_the_scp_stack_does_not_manage_yet_is_an_import(bundle, in_stack, expected):
+    planner = _planner(bundle)
+    declared = bundle.org.service_control_policies.policies[0].name  # type: ignore[union-attr]
+    with (
+        patch("tarmac.services.plan.OUService") as ous,
+        patch("tarmac.services.plan.SCPService") as scps,
+        patch.object(CloudFormationService, "preview_stack", return_value=("NO CHANGE", "")),
+        patch.object(CloudFormationService, "resource_ids", return_value=in_stack),
+    ):
+        ous.return_value.list_all_ous.return_value = {}
+        scps.return_value.synthesize_template.return_value = {}
+        scps.return_value.list_existing_scps.return_value = {declared: {"Id": "p-1"}}
+        scps.return_value._logical_ids_for_policies.return_value = {declared: "PolicyX"}
+        items = _items(planner.build([2]), 2)
+
+    action, _ = next(v for k, v in items.items() if k.endswith("organization-scps"))
+    assert action == expected
+
+
 def test_phase_4_compares_accounts_tags_and_budgets(bundle):
     planner = _planner(bundle)
     names = [a.name for a in bundle.accounts.accounts]
@@ -226,3 +246,20 @@ def test_preview_names_what_would_change():
     )
     assert action == "UPDATE"
     assert detail == "A: 1 -> 2; B: (unset) -> x; template; tags"
+
+
+def test_preview_ignores_key_order_but_not_content():
+    service = CloudFormationService(MagicMock())
+    live = "Resources:\n  B:\n    Type: X\n    Properties: {Name: !Ref A, Size: 1}\n"
+    local = "Resources:\n  B:\n    Properties:\n      Size: 1\n      Name: !Ref A\n    Type: X\n"
+    assert service.preview_stack(
+        _cfn("UPDATE_COMPLETE", {}, live, merge_tags()), "s", template_body=local
+    ) == (
+        "NO CHANGE",
+        "",
+    )
+    changed = local.replace("!Ref A", "!Ref C")
+    action, detail = service.preview_stack(
+        _cfn("UPDATE_COMPLETE", {}, live, merge_tags()), "s", template_body=changed
+    )
+    assert (action, detail) == ("UPDATE", "template")

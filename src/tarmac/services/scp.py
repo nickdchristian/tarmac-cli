@@ -19,7 +19,7 @@ from ..core.exceptions import GovernanceError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, SCPReconciliationResult
 from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
-from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
+from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
 
@@ -287,80 +287,41 @@ class SCPService:
         declared_names = {p.name for p in config.policies}
         pre_existing = declared_names.intersection(existing_scps.keys())
 
-        if pre_existing:
-            stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
-            if (
-                stack_status is None
-                or stack_status == "DELETE_COMPLETE"
-                or stack_status in UNUSABLE_STACK_STATES
-            ):
-                self._require_declared_policies_adoptable(config, existing_scps, project_root)
-                resources_to_import: list[dict[str, Any]] = []
-                for scp_def in config.policies:
-                    if scp_def.name in existing_scps:
-                        logical_id = logical_ids[scp_def.name]
-                        policy_id = existing_scps[scp_def.name]["Id"]
-                        resources_to_import.append(
-                            {
-                                "ResourceType": "AWS::Organizations::Policy",
-                                "LogicalResourceId": logical_id,
-                                "ResourceIdentifier": {"Id": policy_id},
-                            }
-                        )
-
-                logger.debug(
-                    "Importing pre-existing SCPs %s into CloudFormation stack '%s'...",
-                    sorted(pre_existing),
-                    stack_name,
-                )
-                import_template_dict = self.synthesize_template(
-                    config, root_id, ou_map, project_root, include_ownership_tag=False
-                )
-                import_template_dict["Resources"] = {
-                    logical_ids[p.name]: import_template_dict["Resources"][logical_ids[p.name]]
-                    for p in config.policies
-                    if p.name in existing_scps
-                }
-                import_template_body = yaml.dump(import_template_dict, sort_keys=False)
-                cfn_report = cfn_service.import_resources_and_deploy_stack(
-                    cfn_client=cfn_client,
-                    stack_name=stack_name,
-                    template_body=import_template_body,
-                    resources_to_import=resources_to_import,
-                    tags=tags,
-                    org_tags=org_tags,
-                )
-                # The policies are stack-managed now: apply the full template (adds ownership tags and any new SCPs).
-                cfn_service.deploy_stack(
-                    cfn_client=cfn_client,
-                    stack_name=stack_name,
-                    parameters={},
-                    tags=tags,
-                    org_tags=org_tags,
-                    template_body=template_body,
-                )
-                import_results: list[SCPReconciliationResult] = []
-                for scp_def in config.policies:
-                    targets_for_policy: list[str] = []
-                    unresolved: list[str] = []
-                    for target in scp_def.targets:
-                        resolved = self._resolve_target_id(target, root_id, ou_map)
-                        if resolved:
-                            targets_for_policy.append(f"{resolved[1]} ({resolved[0]})")
-                        else:
-                            unresolved.append(target)
-                    import_results.append(
-                        SCPReconciliationResult(
-                            name=scp_def.name,
-                            policy_id=existing_scps.get(scp_def.name, {}).get("Id"),
-                            action_taken=cfn_report.action,
-                            attached_targets=targets_for_policy,
-                            newly_attached_targets=[],
-                            status="FAILED" if unresolved else "SUCCEEDED",
-                            unresolved_targets=unresolved,
-                        )
-                    )
-                return import_results
+        in_stack = (
+            cfn_service.resource_ids(cfn_client, stack_name)
+            if pre_existing and cfn_service.is_usable(cfn_client, stack_name)
+            else set()
+        )
+        to_adopt = [
+            p for p in config.policies if p.name in pre_existing and logical_ids[p.name] not in in_stack
+        ]
+        if to_adopt:
+            adopting = {p.name: existing_scps[p.name] for p in to_adopt}
+            self._require_declared_policies_adoptable(config, adopting, project_root)
+            logger.debug("Importing pre-existing SCPs %s into stack '%s'...", sorted(adopting), stack_name)
+            import_template_dict = self.synthesize_template(
+                config, root_id, ou_map, project_root, include_ownership_tag=False
+            )
+            adopted = {
+                logical_ids[p.name]: import_template_dict["Resources"][logical_ids[p.name]] for p in to_adopt
+            }
+            cfn_service.import_resources_and_deploy_stack(
+                cfn_client=cfn_client,
+                stack_name=stack_name,
+                template_body=cfn_service.import_template(
+                    cfn_client, stack_name, import_template_dict, adopted
+                ),
+                resources_to_import=[
+                    {
+                        "ResourceType": "AWS::Organizations::Policy",
+                        "LogicalResourceId": logical_ids[p.name],
+                        "ResourceIdentifier": {"Id": existing_scps[p.name]["Id"]},
+                    }
+                    for p in to_adopt
+                ],
+                tags=tags,
+                org_tags=org_tags,
+            )
 
         cfn_report = cfn_service.deploy_stack(
             cfn_client=cfn_client,

@@ -18,7 +18,7 @@ from ..core.models import TAG_MANAGED_BY, IdentitySyncReport
 from ..core.org_accounts import active_account_ids
 from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
-from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
+from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
 
@@ -381,73 +381,57 @@ class IdentityService:
         declared_names = {ps_def.name for ps_def in permission_sets}
         pre_existing = declared_names.intersection(existing_ps.keys())
 
-        if pre_existing:
-            stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
-            if (
-                stack_status is None
-                or stack_status in ("DELETE_COMPLETE", "REVIEW_IN_PROGRESS")
-                or stack_status in UNUSABLE_STACK_STATES
-            ):
-                resources_to_import: list[dict[str, Any]] = []
-                for ps_def in permission_sets:
-                    if ps_def.name in existing_ps:
-                        logical_id = logical_ids[ps_def.name]
-                        resources_to_import.append(
-                            {
-                                "ResourceType": "AWS::SSO::PermissionSet",
-                                "LogicalResourceId": logical_id,
-                                "ResourceIdentifier": {
-                                    "InstanceArn": instance_arn,
-                                    "PermissionSetArn": existing_ps[ps_def.name],
-                                },
-                            }
-                        )
-
-                import_template_dict = self.synthesize_permission_sets_template(
-                    instance_arn, permission_sets, project_root=project_root, include_ownership_tag=False
-                )
-                import_template_dict["Resources"] = {
-                    logical_ids[ps.name]: import_template_dict["Resources"][logical_ids[ps.name]]
-                    for ps in permission_sets
-                    if ps.name in existing_ps
+        in_stack = (
+            cfn_service.resource_ids(cfn_client, stack_name)
+            if pre_existing and cfn_service.is_usable(cfn_client, stack_name)
+            else set()
+        )
+        to_adopt = [
+            ps for ps in permission_sets if ps.name in pre_existing and logical_ids[ps.name] not in in_stack
+        ]
+        if to_adopt:
+            adopting = sorted(ps.name for ps in to_adopt)
+            resources_to_import: list[dict[str, Any]] = [
+                {
+                    "ResourceType": "AWS::SSO::PermissionSet",
+                    "LogicalResourceId": logical_ids[ps.name],
+                    "ResourceIdentifier": {
+                        "InstanceArn": instance_arn,
+                        "PermissionSetArn": existing_ps[ps.name],
+                    },
                 }
-                import_template_body = yaml.dump(import_template_dict, sort_keys=False)
-                logger.debug(
-                    "Importing pre-existing Permission Sets %s into CloudFormation stack '%s'...",
-                    sorted(pre_existing),
-                    stack_name,
+                for ps in to_adopt
+            ]
+            import_template_dict = self.synthesize_permission_sets_template(
+                instance_arn, permission_sets, project_root=project_root, include_ownership_tag=False
+            )
+            adopted = {
+                logical_ids[ps.name]: import_template_dict["Resources"][logical_ids[ps.name]]
+                for ps in to_adopt
+            }
+            logger.debug("Importing pre-existing Permission Sets %s into stack '%s'...", adopting, stack_name)
+            try:
+                cfn_service.import_resources_and_deploy_stack(
+                    cfn_client=cfn_client,
+                    stack_name=stack_name,
+                    template_body=cfn_service.import_template(
+                        cfn_client, stack_name, import_template_dict, adopted
+                    ),
+                    resources_to_import=resources_to_import,
+                    tags=tags,
+                    org_tags=org_tags,
                 )
-                try:
-                    cfn_service.import_resources_and_deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        template_body=import_template_body,
-                        resources_to_import=resources_to_import,
-                        tags=tags,
-                        org_tags=org_tags,
-                    )
-                    # Now that the sets are stack-managed, apply the full template (adds ownership tags and any new sets).
-                    cfn_service.deploy_stack(
-                        cfn_client=cfn_client,
-                        stack_name=stack_name,
-                        parameters={},
-                        tags=tags,
-                        template_body=template_body,
-                        org_tags=org_tags,
-                    )
-                    return self.list_permission_sets(instance_arn)
-                except (DeploymentError, ClientError) as e:
-                    # Never delete permission sets we did not create: removing one also removes every
-                    # account assignment on it, which can lock people out of AWS accounts.
-                    raise IdentityCenterError(
-                        f"Could not adopt pre-existing permission set(s) {sorted(pre_existing)} into "
-                        f"stack '{stack_name}'.",
-                        details=(
-                            f"{e}\nNo permission sets were deleted. Resolve the CloudFormation import "
-                            "error, or rename the permission set(s) in identity.yaml so tarmac creates "
-                            "new ones alongside the existing ones."
-                        ),
-                    ) from e
+            except (DeploymentError, ClientError) as e:
+                # Never delete permission sets we did not create: removing one also removes every
+                # account assignment on it, which can lock people out of AWS accounts.
+                raise IdentityCenterError(
+                    f"Could not adopt pre-existing permission set(s) {adopting} into stack '{stack_name}'.",
+                    details=(
+                        f"{e}\nNo permission sets were deleted. Resolve the CloudFormation import "
+                        "error, or rename the permission set(s) in identity.yaml so tarmac creates "
+                        "new ones alongside the existing ones."
+                    ),
+                ) from e
 
         cfn_service.deploy_stack(
             cfn_client=cfn_client,

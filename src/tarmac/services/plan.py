@@ -199,6 +199,15 @@ class Planner:
             account,
         )
 
+    def _adoptions(
+        self, cfn_client: Any, stack_name: str, action: str, existing: set[str], logical_ids: dict[str, str]
+    ) -> str:
+        """Declared names that exist in AWS but not in the stack, which a deploy imports first ("" if none)."""
+        if not existing:
+            return ""
+        in_stack = set() if action in ("CREATE", "REPLACE") else self.cfn.resource_ids(cfn_client, stack_name)
+        return ", ".join(sorted(name for name in existing if logical_ids.get(name) not in in_stack))
+
     @cached_property
     def management_id(self) -> str:
         return str(self.session_mgr.get_caller_identity().get("Account", ""))
@@ -346,18 +355,24 @@ class Planner:
         body = yaml.dump(
             service.synthesize_template(scps, self.root_id, self.ou_map, self.project_root), sort_keys=False
         )
+        cfn_client = self.session_mgr.get_client("cloudformation")
         action, detail = self.cfn.preview_stack(
-            self.session_mgr.get_client("cloudformation"),
+            cfn_client,
             stack_name,
             template_body=body,
             parameters={},
             tags=self.custom_tags,
             org_tags=self.org_tags,
         )
-        if action in ("CREATE", "REPLACE"):
-            adopted = sorted({p.name for p in scps.policies} & set(service.list_existing_scps()))
-            if adopted:
-                return "IMPORT", "adopts existing SCP(s) " + ", ".join(adopted)
+        adopted = self._adoptions(
+            cfn_client,
+            stack_name,
+            action,
+            {p.name for p in scps.policies} & set(service.list_existing_scps()),
+            service._logical_ids_for_policies(scps.policies),
+        )
+        if adopted:
+            action, detail = "IMPORT", "; ".join(filter(None, ["adopts existing SCP(s) " + adopted, detail]))
         new_ous = sorted({t for p in scps.policies for t in p.targets} - set(self.ou_map) - {"Root", "root"})
         if new_ous:
             detail = "; ".join(filter(None, [detail, f"targets {', '.join(new_ous)} once created"]))
@@ -715,18 +730,25 @@ class Planner:
             identity.synthesize_permission_sets_template(instance_arn, sets, project_root=self.project_root),
             sort_keys=False,
         )
+        cfn_client = session.get_client("cloudformation", region_name=self.identity_region)
+        stack_name = Stack.PERMISSION_SETS.for_org(self.org_name)
         action, detail = self.cfn.preview_stack(
-            session.get_client("cloudformation", region_name=self.identity_region),
-            Stack.PERMISSION_SETS.for_org(self.org_name),
+            cfn_client,
+            stack_name,
             template_body=body,
             parameters={},
             tags=self.custom_tags,
             org_tags=self.org_tags,
         )
-        if action in ("CREATE", "REPLACE"):
-            adopted = sorted({ps.name for ps in sets} & set(identity.list_permission_sets(instance_arn)))
-            if adopted:
-                return "IMPORT", "adopts existing permission set(s) " + ", ".join(adopted)
+        adopted = self._adoptions(
+            cfn_client,
+            stack_name,
+            action,
+            {ps.name for ps in sets} & set(identity.list_permission_sets(instance_arn)),
+            identity._logical_ids_for_permission_sets(sets),
+        )
+        if adopted:
+            return "IMPORT", "; ".join(filter(None, ["adopts existing permission set(s) " + adopted, detail]))
         return action, detail or ", ".join(ps.name for ps in sets)
 
     def _assignment(

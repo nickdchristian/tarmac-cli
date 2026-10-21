@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from botocore.exceptions import ClientError
 
 from tarmac.core.config_schema import (
@@ -234,6 +235,9 @@ def test_identity_sync_identity():
     mock_cfn.describe_stacks.return_value = {
         "Stacks": [{"StackName": "organization-sso-permission-sets", "StackStatus": "CREATE_COMPLETE"}]
     }
+    mock_cfn.get_paginator.return_value.paginate.return_value = [
+        {"StackResourceSummaries": [{"LogicalResourceId": "PermissionSetAdministratorAccess"}]}
+    ]
 
     def client_side_effect(service_name: str, **kwargs: Any) -> MagicMock:
         if service_name == "sso-admin":
@@ -749,3 +753,48 @@ def test_identity_delete_permission_set_returns_false_on_client_error():
         {"Error": {"Code": "ConflictException", "Message": "Still assigned"}}, "DeletePermissionSet"
     )
     assert service.delete_permission_set("arn:inst", "arn:ps") is False
+
+
+def test_existing_sets_missing_from_an_existing_stack_are_imported_into_it(tmp_path: Path):
+    """A stack that manages some sets imports the other pre-existing ones, keeping its live template."""
+    session_mgr, sso, cfn = MagicMock(), MagicMock(), MagicMock()
+    session_mgr.get_client.side_effect = lambda name, **kw: {"sso-admin": sso, "cloudformation": cfn}.get(
+        name, MagicMock()
+    )
+    sso.list_instances.return_value = {
+        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-live", "IdentityStoreId": "d-live"}]
+    }
+    arns = {
+        "Admin": "arn:aws:sso:::permissionSet/ssoins-live/ps-1",
+        "Deploy": "arn:aws:sso:::permissionSet/ssoins-live/ps-2",
+    }
+    sso.get_paginator.return_value.paginate.return_value = [{"PermissionSets": list(arns.values())}]
+    sso.describe_permission_set.side_effect = lambda **kw: {
+        "PermissionSet": {
+            "Name": next(n for n, a in arns.items() if a == kw["PermissionSetArn"]),
+            "PermissionSetArn": kw["PermissionSetArn"],
+        }
+    }
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "UPDATE_ROLLBACK_COMPLETE"}]}
+    cfn.get_paginator.return_value.paginate.return_value = [
+        {"StackResourceSummaries": [{"LogicalResourceId": "PermissionSetAdmin"}]}
+    ]
+    live = "Resources:\n  PermissionSetAdmin:\n    Type: AWS::SSO::PermissionSet\n    Properties: {Name: Admin}\n"
+    cfn.get_template.return_value = {"TemplateBody": live}
+
+    IdentityService(session_mgr).sync_permission_sets_via_cloudformation(
+        permission_sets=[PermissionSetDef(name="Admin"), PermissionSetDef(name="Deploy")],
+        project_root=tmp_path,
+        org_name="myorg",
+    )
+
+    change_set = cfn.create_change_set.call_args.kwargs
+    assert change_set["ChangeSetType"] == "IMPORT"
+    assert [r["LogicalResourceId"] for r in change_set["ResourcesToImport"]] == ["PermissionSetDeploy"]
+    resources = yaml.safe_load(change_set["TemplateBody"])["Resources"]
+    assert resources["PermissionSetAdmin"] == {
+        "Type": "AWS::SSO::PermissionSet",
+        "Properties": {"Name": "Admin"},
+    }
+    assert resources["PermissionSetDeploy"]["Properties"]["Name"] == "Deploy"
+    cfn.update_stack.assert_called()
