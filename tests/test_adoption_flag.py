@@ -1,5 +1,6 @@
 """--adopt-existing reaches the services, and is off unless asked for."""
 
+import re
 from unittest.mock import patch
 
 import pytest
@@ -28,4 +29,5 @@ def test_scp_commands_pass_the_flag(args, flag, expected):
 
 def test_help_describes_the_flag():
     result = runner.invoke(app, ["deploy", "run", "--help"])
-    assert "--adopt-existing" in result.output
+    # CI sets GITHUB_ACTIONS, which makes Typer colour the help and split the option name with escape codes.
+    assert "--adopt-existing" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
