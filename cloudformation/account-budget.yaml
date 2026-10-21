@@ -20,6 +20,14 @@ Parameters:
     MinValue: 1
     MaxValue: 100
     Description: Percentage threshold to trigger alert
+  ForecastThresholdPercent:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 1000
+    Description: >-
+      (Optional) Also alert when the forecasted spend reaches this percentage of the limit. 0 disables it.
+      AWS needs about 5 weeks of usage history before a forecast alert can fire.
   NotificationEmail:
     Type: String
     Default: ''
@@ -31,6 +39,7 @@ Parameters:
     AllowedPattern: '^(https://.*)?$'
 
 Conditions:
+  HasForecastAlert: !Not [!Equals [!Ref ForecastThresholdPercent, 0]]
   HasNotificationEmail: !Not [!Equals [!Ref NotificationEmail, '']]
   HasWebhookEndpoint: !Not [!Equals [!Ref IncidentResponseWebhookUrl, '']]
 
@@ -99,6 +108,17 @@ Resources:
           Subscribers:
             - SubscriptionType: SNS
               Address: !Ref BudgetAlertsTopic
+        - !If
+          - HasForecastAlert
+          - Notification:
+              NotificationType: FORECASTED
+              ComparisonOperator: GREATER_THAN
+              Threshold: !Ref ForecastThresholdPercent
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: SNS
+                Address: !Ref BudgetAlertsTopic
+          - !Ref AWS::NoValue
 
 Outputs:
   BudgetName:

@@ -285,7 +285,7 @@ def test_log_archive_template_hardening(base: str):
 
     enc = res["AccessLogsBucket"]["Properties"]["BucketEncryption"]["ServerSideEncryptionConfiguration"]
     assert enc[0]["ServerSideEncryptionByDefault"]["SSEAlgorithm"] == "AES256"
-    sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"]]
+    sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"] if isinstance(s, dict)]
     assert "AllowS3LogDeliveryEncrypt" not in sids
 
 
@@ -323,3 +323,58 @@ def test_example_config_is_not_rewritten_by_tests(project_root: Path):
     text = (project_root / "examples" / "config" / "organization.yaml").read_text(encoding="utf-8")
     assert text.startswith("# ====")
     assert "# Organization-wide CloudTrail configuration" in text
+
+
+def test_example_region_scp_is_valid_and_keeps_tarmac_working():
+    """The region SCP example must fit the SCP size limit, exempt global services and the roles tarmac uses."""
+    path = (
+        Path(__file__).resolve().parent.parent / "examples" / "policies" / "scp" / "deny-unused-regions.json"
+    )
+    text = path.read_text(encoding="utf-8")
+    import json
+
+    doc = json.loads(text)
+
+    assert len(text.encode()) < 5120
+    (stmt,) = doc["Statement"]
+    assert stmt["Effect"] == "Deny"
+    assert {"iam:*", "organizations:*", "sts:*", "route53:*", "cloudfront:*", "support:*"} <= set(
+        stmt["NotAction"]
+    )
+    assert "Action" not in stmt
+    assert "aws:RequestedRegion" in stmt["Condition"]["StringNotEquals"]
+    exempt = " ".join(stmt["Condition"]["ArnNotLike"]["aws:PrincipalARN"])
+    assert "TarmacDeploymentRole" in exempt
+    assert (
+        "OrganizationAccountAccessRole" in exempt
+    )  # default-VPC cleanup in blocked regions assumes this role
+
+
+def test_example_security_services_scp_blocks_disabling_but_not_configuring():
+    """It denies only the actions that turn GuardDuty or Security Hub off, and exempts the roles tarmac uses."""
+    import json
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "examples"
+        / "policies"
+        / "scp"
+        / "protect-security-services.json"
+    )
+    text = path.read_text(encoding="utf-8")
+    doc = json.loads(text)
+
+    assert len(text.encode()) < 5120
+    (stmt,) = doc["Statement"]
+    assert stmt["Effect"] == "Deny"
+    assert "NotAction" not in stmt
+    actions = set(stmt["Action"])
+    assert {"guardduty:DeleteDetector", "securityhub:DisableSecurityHub"} <= actions
+    assert all(a.split(":")[0] in {"guardduty", "securityhub"} for a in actions)
+    # Configuring and reading must stay possible for everyone, otherwise tarmac itself is blocked.
+    assert not any(
+        a.split(":")[1].startswith(("Update", "Create", "Enable", "Get", "List", "Describe")) for a in actions
+    )
+    exempt = " ".join(stmt["Condition"]["ArnNotLike"]["aws:PrincipalARN"])
+    assert "OrganizationAccountAccessRole" in exempt  # tarmac works in member accounts through this role
+    assert "TarmacDeploymentRole" in exempt
