@@ -105,6 +105,7 @@ Resources:
               - cloudformation:CreateStack
               - cloudformation:UpdateStack
               - cloudformation:DeleteStack
+              - cloudformation:UpdateTerminationProtection
               - cloudformation:CreateChangeSet
               - cloudformation:ExecuteChangeSet
               - cloudformation:DeleteChangeSet

@@ -327,6 +327,16 @@ tarmac deploy destroy --dry-run
 tarmac deploy destroy --preserve-backend
 ```
 
+### Termination protection
+
+The stacks that hold data or access are created with CloudFormation termination protection: the organization trail, the
+log-archive and audit-account hardening stacks, the Terraform state backend and the `tarmac-access` stack. A stray
+`aws cloudformation delete-stack` is refused for them. `tarmac deploy destroy` is the deliberate way to remove them: it turns
+protection off on each stack just before deleting it and prints a warning saying so (and `--dry-run` shows what it would
+delete). `--preserve-backend` leaves the state backend, and its protection, untouched. Enabling protection needs
+`cloudformation:UpdateTerminationProtection`, so re-run `tarmac access bootstrap` once to refresh the access role; until then
+a deploy reports that protection could not be turned on and carries on.
+
 ### Starting over
 
 A full `tarmac deploy destroy` removes everything tarmac deployed (stacks, buckets, budgets, SCPs, permission

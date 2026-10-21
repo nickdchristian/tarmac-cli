@@ -272,7 +272,9 @@ class WorkloadTeardown(TeardownBase):
                     self._notify_progress(
                         f"Deleting CloudFormation stack '{stack_name}' in {backend_acct_name} (waiting for AWS)..."
                     )
-                    self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
+                    self.cfn_service.delete_stack(
+                        cfn_client, stack_name, on_progress=self.on_progress, release_protection=True
+                    )
                     results.append(
                         TeardownItemReport(
                             resource_type="CloudFormation Stack",
