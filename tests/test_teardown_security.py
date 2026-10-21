@@ -57,7 +57,12 @@ def test_security_teardown_issues_valid_calls_in_a_safe_order(bundle):
     svc = _security_service({"guardduty": gd, "securityhub": sh, "organizations": org})
 
     with Stubber(gd) as gds, Stubber(sh) as shs, Stubber(org) as orgs:
-        # Security Hub: stop auto-enable, drop aggregator, deregister admin, disable the hub.
+        # Security Hub: leave central configuration (not used here), stop auto-enable, drop aggregator,
+        # deregister admin, disable the hub.
+        shs.add_response(
+            "describe_organization_configuration",
+            {"OrganizationConfiguration": {"ConfigurationType": "LOCAL", "Status": "ENABLED"}},
+        )
         shs.add_response(
             "update_organization_configuration", {}, {"AutoEnable": False, "AutoEnableStandards": "NONE"}
         )
@@ -103,7 +108,65 @@ def test_security_teardown_issues_valid_calls_in_a_safe_order(bundle):
         orgs.assert_no_pending_responses()
 
     assert not [r for r in reports if r.action == "FAILED"]
-    assert [r.action for r in reports].count("DELETED") == len(reports)
+    not_used = [r.resource_type for r in reports if r.action == "NOT_FOUND"]
+    assert not_used == ["Security Hub central configuration"]  # this organization used local configuration
+    assert [r.action for r in reports].count("DELETED") == len(reports) - 1
+
+
+def test_security_teardown_removes_the_central_policy_before_touching_settings(bundle):
+    from tarmac.services.security_central import POLICY_NAME
+
+    sh, org = _real("securityhub"), _real("organizations")
+    svc = _security_service({"securityhub": sh, "organizations": org})
+    bundle.org.security_services.guardduty.enabled = False
+
+    with Stubber(sh) as shs, Stubber(org) as orgs:
+        shs.add_response(
+            "describe_organization_configuration",
+            {"OrganizationConfiguration": {"ConfigurationType": "CENTRAL", "Status": "ENABLED"}},
+        )
+        shs.add_response(
+            "list_configuration_policies",
+            {
+                "ConfigurationPolicySummaries": [
+                    {"Id": "pol-1", "Name": POLICY_NAME},
+                    {"Id": "pol-other", "Name": "someone-elses-policy"},
+                ]
+            },
+        )
+        orgs.add_response("list_roots", {"Roots": [{"Id": "r-abcd"}]})
+        shs.add_response(
+            "start_configuration_policy_disassociation",
+            {},
+            {"ConfigurationPolicyIdentifier": "pol-1", "Target": {"RootId": "r-abcd"}},
+        )
+        shs.add_response("delete_configuration_policy", {}, {"Identifier": "pol-1"})
+        shs.add_response(
+            "update_organization_configuration",
+            {},
+            {"AutoEnable": False, "OrganizationConfiguration": {"ConfigurationType": "LOCAL"}},
+        )
+        shs.add_response(
+            "update_organization_configuration", {}, {"AutoEnable": False, "AutoEnableStandards": "NONE"}
+        )
+        shs.add_response("list_finding_aggregators", {"FindingAggregators": []})
+        shs.add_response("list_organization_admin_accounts", {"AdminAccounts": []})
+        shs.add_response("disable_security_hub", {})
+        shs.add_response("disable_security_hub", {})
+        for principal in ("config-multiaccountsetup.amazonaws.com", "config.amazonaws.com"):
+            orgs.add_response(
+                "list_delegated_administrators",
+                {"DelegatedAdministrators": []},
+                {"ServicePrincipal": principal},
+            )
+
+        reports = svc.teardown_security_services(bundle, "us-east-1", {_audit_name(bundle): AUDIT})
+
+        shs.assert_no_pending_responses()
+
+    central = next(r for r in reports if r.resource_type == "Security Hub central configuration")
+    assert central.action == "DELETED"
+    assert not [r for r in reports if r.action == "FAILED"]
 
 
 def test_security_teardown_dry_run_makes_no_changes(bundle):

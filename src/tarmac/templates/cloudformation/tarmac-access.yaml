@@ -186,6 +186,18 @@ Resources:
               - iam:ListUsers
               - iam:ListAccountAliases
             Resource: '*'
+          - Sid: ManagementAccountDefaultVpcCleanup
+            Effect: Allow
+            Action:
+              - ec2:DescribeVpcs
+              - ec2:DescribeSubnets
+              - ec2:DescribeInternetGateways
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DetachInternetGateway
+              - ec2:DeleteInternetGateway
+              - ec2:DeleteSubnet
+              - ec2:DeleteVpc
+            Resource: '*'
           - Sid: RootAccessManagement
             Effect: Allow
             Action:

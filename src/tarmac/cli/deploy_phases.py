@@ -147,6 +147,18 @@ def _run_phase_1_org(
             for r in vpc_reports:
                 if not r.skipped and r.deleted_vpc:
                     print_success(f"Management Account: Purged default VPC ({r.vpc_id}) in {r.region}")
+            vpc_failures = [f"{r.region}: {r.message}" for r in vpc_reports if r.error]
+            if vpc_failures and not dry_run:
+                for failure in vpc_failures:
+                    print_warning(f"Management Account default VPC cleanup failed in {failure}")
+                raise GovernanceError(
+                    f"Phase 1 incomplete: default VPC cleanup failed in {len(vpc_failures)} region(s).",
+                    details=(
+                        "Fix the cause (the role needs ec2:DescribeVpcs/Subnets/InternetGateways/"
+                        "NetworkInterfaces and the matching Detach/Delete actions), or set "
+                        "organization.delete_default_vpc: false to leave the management account's VPCs alone."
+                    ),
+                )
             if not dry_run:
                 baseliner.mark_account_baselined(mgmt_id)
 
