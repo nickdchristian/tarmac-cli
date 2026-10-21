@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from botocore.exceptions import ClientError
 
+from ..core.adoption import ADOPT_HINT, adopt_existing
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import SCPDef, ServiceControlPoliciesConfig
@@ -131,6 +132,33 @@ class SCPService:
         except ClientError as e:
             logger.warning("Could not tag policy %s: %s", policy_id, e)
 
+    def require_adoptable(
+        self, name: str, policy_id: str, normalized_current: str, normalized_new: str
+    ) -> None:
+        """Refuse to overwrite an SCP tarmac did not create, unless its content already matches or --adopt-existing.
+
+        A policy that happens to share the name could be someone else's guardrail attached elsewhere; replacing
+        its content silently changes what it allows or denies.
+        """
+        if adopt_existing() or normalized_current == normalized_new or self.is_tarmac_managed(policy_id):
+            return
+        raise GovernanceError(
+            f"SCP '{name}' ({policy_id}) already exists, was not created by tarmac, and differs from the policy file.",
+            details=f"{self._describe_difference(normalized_current, normalized_new)}\n{ADOPT_HINT}",
+        )
+
+    @staticmethod
+    def _describe_difference(normalized_current: str, normalized_new: str) -> str:
+        def sids(doc: str) -> list[str]:
+            try:
+                stmts = json.loads(doc).get("Statement", [])
+            except (ValueError, AttributeError):
+                return []
+            stmts = [stmts] if isinstance(stmts, dict) else stmts
+            return sorted(str(st.get("Sid", "(no Sid)")) for st in stmts if isinstance(st, dict))
+
+        return f"Live statements: {sids(normalized_current) or 'unreadable'}; policy file statements: {sids(normalized_new)}."
+
     def sync_policy(
         self,
         name: str,
@@ -150,6 +178,8 @@ class SCPService:
             if normalized_new == normalized_current:
                 logger.debug("SCP '%s' (%s) is up-to-date.", name, pol_id)
                 return pol_id, "NOOP"
+
+            self.require_adoptable(name, pol_id, normalized_current, normalized_new)
 
             if dry_run:
                 audit(
@@ -404,6 +434,27 @@ class SCPService:
             "Resources": resources,
         }
 
+    def _require_declared_policies_adoptable(
+        self,
+        config: ServiceControlPoliciesConfig,
+        existing_scps: dict[str, dict[str, Any]],
+        project_root: Path,
+    ) -> None:
+        """Before importing pre-existing SCPs into the stack, check each one may be taken over."""
+        for scp_def in config.policies:
+            if scp_def.name not in existing_scps:
+                continue
+            policy_id = existing_scps[scp_def.name]["Id"]
+            file_content = resolve_resource_path(scp_def.policy_file, project_root=project_root).read_text(
+                encoding="utf-8"
+            )
+            self.require_adoptable(
+                scp_def.name,
+                policy_id,
+                self._normalize_json(self.get_policy_content(policy_id)),
+                self._normalize_json(file_content),
+            )
+
     def reconcile_via_cloudformation(
         self,
         config: ServiceControlPoliciesConfig,
@@ -447,6 +498,7 @@ class SCPService:
                     or stack_status == "DELETE_COMPLETE"
                     or stack_status in UNUSABLE_STACK_STATES
                 ):
+                    self._require_declared_policies_adoptable(config, existing_scps, project_root)
                     resources_to_import: list[dict[str, Any]] = []
                     for scp_def in config.policies:
                         if scp_def.name in existing_scps:
