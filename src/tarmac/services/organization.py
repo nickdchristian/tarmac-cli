@@ -180,6 +180,20 @@ class OrganizationService:
         features = response.get("EnabledFeatures", []) if isinstance(response, dict) else []
         return {str(f) for f in features} if isinstance(features, list) else set()
 
+    def missing_trusted_services(self, services: list[str] | None = None) -> list[str]:
+        """The services that do not have trusted access yet (all of them when it cannot be read)."""
+        enabled = self._enabled_service_principals()
+        return [s for s in services or DEFAULT_TRUSTED_SERVICES if s not in enabled]
+
+    def delegated_administrator_ids(self, service_principal: str) -> set[str]:
+        """Account IDs registered as delegated administrator for the service. AWS errors propagate."""
+        paginator = self.org_client.get_paginator("list_delegated_administrators")
+        return {
+            str(admin.get("Id", ""))
+            for page in paginator.paginate(ServicePrincipal=service_principal)
+            for admin in page.get("DelegatedAdministrators", [])
+        }
+
     def enable_trusted_services(self, services: list[str] | None = None) -> list[str]:
         """Enable trusted service access for foundational AWS services in Organizations."""
         target_services = services or DEFAULT_TRUSTED_SERVICES
@@ -504,6 +518,17 @@ class OrganizationService:
         except ClientError as e:
             logger.warning("Could not mark landing zone ready on management account: %s", e)
 
+    def inactive_cost_allocation_tags(self, tag_keys: list[str]) -> list[str]:
+        """The given tag keys that Cost Explorer knows about but has not activated. AWS errors propagate."""
+        ce = self.session_mgr.get_client("ce", region_name="us-east-1")
+        wanted = set(tag_keys)
+        return [
+            str(tag.get("TagKey", ""))
+            for page in ce.get_paginator("list_cost_allocation_tags").paginate(Status="Inactive")
+            for tag in page.get("CostAllocationTags", [])
+            if str(tag.get("TagKey", "")) in wanted
+        ]
+
     def activate_cost_allocation_tags(self, tag_keys: list[str]) -> list[str]:
         """Activate user-defined and AWS-generated cost allocation tags in AWS Cost Explorer.
 
@@ -513,19 +538,9 @@ class OrganizationService:
         if not tag_keys:
             return []
 
-        target_keys = set(tag_keys)
-
         try:
             ce = self.session_mgr.get_client("ce", region_name="us-east-1")
-            paginator = ce.get_paginator("list_cost_allocation_tags")
-            to_activate: list[str] = []
-
-            for page in paginator.paginate(Status="Inactive"):
-                for tag in page.get("CostAllocationTags", []):
-                    k = str(tag.get("TagKey", ""))
-                    if k in target_keys:
-                        to_activate.append(k)
-
+            to_activate = self.inactive_cost_allocation_tags(tag_keys)
             if not to_activate:
                 logger.debug("No inactive cost allocation tags matching target keys found to activate.")
                 return []

@@ -1,4 +1,4 @@
-"""CLI-level tests for `tarmac account list`, `suspend` and `export` (services patched)."""
+"""CLI-level tests for `tarmac account list` and `suspend` (services patched)."""
 
 import json
 from pathlib import Path
@@ -130,19 +130,3 @@ def test_suspend_close_failure_exits_1(cfg: Path, services):
     res = runner.invoke(app, ["suspend", "old-sandbox", "--close", "--yes", "-c", str(cfg)])
     assert res.exit_code == 1
     assert acct.suspend_account.call_args.kwargs["close"] is True
-
-
-def test_export_writes_next_to_config_and_reports_path(cfg: Path, services):
-    _, acct = services
-    acct.export_inventory.return_value = cfg.parent / "outputs" / "inventory.json"
-    res = runner.invoke(app, ["export", "-c", str(cfg)])
-    assert res.exit_code == 0, res.output
-    assert "inventory.json" in res.output.replace("\n", "")
-    assert acct.export_inventory.call_args.args[2] == cfg.parent / "outputs"
-
-
-def test_export_governance_error_exits_1(cfg: Path, services):
-    services[1].export_inventory.side_effect = GovernanceError("cannot write")
-    res = runner.invoke(app, ["export", "-c", str(cfg)])
-    assert res.exit_code == 1
-    assert "Export Failed" in res.output

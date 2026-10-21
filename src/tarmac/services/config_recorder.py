@@ -34,6 +34,16 @@ OPERATION_PREFERENCES = {
 }
 
 
+def service_linked_role_arn(session_mgr: AwsSessionManager, management_account_id: str) -> str:
+    """The ARN of AWSServiceRoleForConfig in the management account, in the caller's partition."""
+    arn = str(session_mgr.get_caller_identity().get("Arn", ""))
+    partition = arn.split(":")[1] if arn.startswith("arn:") else "aws"
+    return (
+        f"arn:{partition}:iam::{management_account_id}:role/aws-service-role/"
+        "config.amazonaws.com/AWSServiceRoleForConfig"
+    )
+
+
 @dataclass
 class ConfigRecorderReport:
     stack_set_action: str = "UNCHANGED"
@@ -131,12 +141,7 @@ class ConfigRecorderService:
                 raise GovernanceError(
                     "Could not create the AWS Config service-linked role", details=aws_error_message(e)
                 ) from e  # InvalidInput is IAM's answer when the service-linked role already exists
-        arn = str(self.session_mgr.get_caller_identity().get("Arn", ""))
-        partition = arn.split(":")[1] if arn.startswith("arn:") else "aws"
-        return (
-            f"arn:{partition}:iam::{management_account_id}:role/aws-service-role/"
-            "config.amazonaws.com/AWSServiceRoleForConfig"
-        )
+        return service_linked_role_arn(self.session_mgr, management_account_id)
 
     def _activate_organizations_access(self, cf: Any) -> None:
         """Trusted access for service-managed StackSets; safe to repeat."""

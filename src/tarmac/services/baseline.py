@@ -27,6 +27,29 @@ from .cloudformation import CloudFormationService
 logger = logging.getLogger(__name__)
 
 
+BUDGET_TEMPLATE = "cloudformation/account-budget.yaml"
+
+
+def budget_stack_name(account_name: str) -> str:
+    return f"{account_name}-monthly-budget"
+
+
+def budget_parameters(account_name: str, budget_cfg: BudgetConfig) -> dict[str, str]:
+    """CloudFormation parameters for an account's budget stack (account-budget.yaml)."""
+    emails = list(budget_cfg.notification_emails)
+    parameters = {
+        "AccountName": account_name,
+        "MonthlyLimitUSD": str(budget_cfg.monthly_limit_usd),
+        "AlertThresholdPercent": str(budget_cfg.alert_threshold_percent),
+        "NotificationEmail": str(emails[0]) if emails else "",
+    }
+    if budget_cfg.forecast_alert_threshold_percent is not None:
+        parameters["ForecastThresholdPercent"] = str(budget_cfg.forecast_alert_threshold_percent)
+    if budget_cfg.incident_response_webhook_url:
+        parameters["IncidentResponseWebhookUrl"] = str(budget_cfg.incident_response_webhook_url)
+    return parameters
+
+
 class BaselineService:
     """Applies security and operational baselines to AWS member accounts."""
 
@@ -234,7 +257,7 @@ class BaselineService:
         dry_run: bool = False,
     ) -> BudgetReport:
         """Create or update a monthly cost budget in the member account via CloudFormation."""
-        budget_name = f"{account_name}-monthly-budget"
+        budget_name = budget_stack_name(account_name)
 
         def budget_report(status: str, message: str) -> BudgetReport:
             return BudgetReport(
@@ -277,22 +300,13 @@ class BaselineService:
                 emails[0],
             )
 
-        parameters: dict[str, str] = {
-            "AccountName": account_name,
-            "MonthlyLimitUSD": str(budget_cfg.monthly_limit_usd),
-            "AlertThresholdPercent": str(budget_cfg.alert_threshold_percent),
-            "NotificationEmail": str(emails[0]) if emails else "",
-        }
-        if budget_cfg.forecast_alert_threshold_percent is not None:
-            parameters["ForecastThresholdPercent"] = str(budget_cfg.forecast_alert_threshold_percent)
-        if budget_cfg.incident_response_webhook_url:
-            parameters["IncidentResponseWebhookUrl"] = str(budget_cfg.incident_response_webhook_url)
+        parameters = budget_parameters(account_name, budget_cfg)
 
         try:
             cfn_client = self.session_mgr.get_member_client(
                 account_id, "cloudformation", region_name=self.session_mgr.default_region
             )
-            template_path = resolve_resource_path("cloudformation/account-budget.yaml")
+            template_path = resolve_resource_path(BUDGET_TEMPLATE)
             cfn_service = CloudFormationService(self.session_mgr)
 
             cfn_report = cfn_service.deploy_stack(

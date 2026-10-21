@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 from helpers import make_config
 from typer.testing import CliRunner
 
-from tarmac.cli.deploy import app
+from tarmac.cli.main import app
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_loader import load_all_configs
 from tarmac.core.exceptions import AWSAuthenticationError, GovernanceError

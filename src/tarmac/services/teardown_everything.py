@@ -1,4 +1,4 @@
-"""Teardown of what ``tarmac deploy destroy`` normally keeps, used by ``--everything``.
+"""Teardown of what ``tarmac destroy`` normally keeps, used by ``--everything``.
 
 Only things recorded in the inventory (see ``core/inventory.py``) or tagged as Tarmac's are removed. Member
 accounts are never closed here: ``tarmac account suspend --close`` does that one account at a time.

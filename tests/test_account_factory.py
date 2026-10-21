@@ -100,7 +100,7 @@ def test_export_inventory(tmp_path: Path):
     assert data[1]["name"] == "Production"
     assert data[1]["account_id"] is None
 
-    env_file = tmp_path / "env.sh"
+    env_file = tmp_path / "accounts.env"
     assert env_file.exists()
     content = env_file.read_text()
     assert 'export DEPLOYMENT_ACCOUNT_ID="111111111111"' in content
@@ -662,7 +662,7 @@ def test_export_inventory_sanitizes_env_var_names_and_values(tmp_path):
     )
     service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
 
-    env_content = (tmp_path / "env.sh").read_text(encoding="utf-8")
+    env_content = (tmp_path / "accounts.env").read_text(encoding="utf-8")
     assert 'export ACCT_123_PROD_WHOAMI_ACCOUNT_ID="111111111111"' in env_content
     assert "$(" not in env_content
 
@@ -733,7 +733,9 @@ def test_export_inventory_escapes_shell_metacharacters_in_values(tmp_path):
     service.export_inventory(catalog, {"Workloads": "ou-1"}, tmp_path)
 
     line = next(
-        ln for ln in (tmp_path / "env.sh").read_text(encoding="utf-8").splitlines() if "PROD_ACCOUNT_ID" in ln
+        ln
+        for ln in (tmp_path / "accounts.env").read_text(encoding="utf-8").splitlines()
+        if "PROD_ACCOUNT_ID" in ln
     )
     assert line == 'export PROD_ACCOUNT_ID="1\\$(id)\\`id\\`\\"\\\\"'
 

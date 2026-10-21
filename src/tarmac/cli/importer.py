@@ -39,7 +39,7 @@ def import_command(
     """Read the live organization (read-only) and write matching Tarmac configuration.
 
     Run it as a role with read access to AWS Organizations (and Identity Center, unless --no-identity).
-    Nothing in AWS is changed. Review the files, then run `tarmac validate` and `tarmac deploy run --dry-run`.
+    Nothing in AWS is changed. Review the files, then run `tarmac validate` and `tarmac deploy --dry-run`.
     """
     print_header("Import Existing Organization")
     try:
@@ -77,7 +77,7 @@ def import_command(
     console.print("\n[bold cyan]Next:[/bold cyan]")
     console.print(f"  1. Review the files in [bold]{config_dir}/[/bold]")
     console.print(
-        "  2. [bold]tarmac validate[/bold]   3. [bold]tarmac status --detail[/bold]   4. [bold]tarmac deploy run --dry-run[/bold]"
+        "  2. [bold]tarmac validate[/bold]   3. [bold]tarmac status --detail[/bold]   4. [bold]tarmac deploy --dry-run[/bold]"
     )
     if report.validation_errors:
         raise typer.Exit(code=1)

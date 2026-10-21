@@ -7,7 +7,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from tarmac.cli.deploy import app
+from tarmac.cli.main import app
 from tarmac.core.models import StackDeployReport
 
 runner = CliRunner()
@@ -85,7 +85,7 @@ def test_deploy_passes_the_setting_to_the_log_archive_stack(
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: MagicMock())
     monkeypatch.setattr("tarmac.cli.deploy_phases.OrganizationService", lambda sm: MagicMock())
 
-    res = runner.invoke(app, ["run", "--config-dir", str(writable_config_dir), "--phase", "3", "--yes"])
+    res = runner.invoke(app, ["deploy", "--config-dir", str(writable_config_dir), "--phase", "3", "--yes"])
 
     assert res.exit_code == 0, res.output
     archive = next(p for name, p in params_by_stack.items() if name.endswith("log-archive-hardening"))

@@ -62,7 +62,7 @@ def _probe_region_for_instance(session_mgr: AwsSessionManager, region: str) -> t
             store_id = instances[0].get("IdentityStoreId")
             if arn and store_id:
                 return str(arn), str(store_id)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.debug("Could not probe sso-admin in region %s: %s", region, e)
     return None
 
@@ -593,6 +593,27 @@ class IdentityService:
                 f"Could not create Identity Center group '{group_def.name}': {e}",
             )
             raise IdentityCenterError(f"Failed to create group '{group_def.name}'", details=str(e)) from e
+
+    def get_group_id_by_name(self, name: str) -> str | None:
+        """Fetch GroupId for a group display name from Identity Store (None when absent). AWS errors propagate."""
+        _, store_id = self.get_instance_details()
+        groups = self.identitystore_client.list_groups(
+            IdentityStoreId=store_id, Filters=[{"AttributePath": "DisplayName", "AttributeValue": name}]
+        ).get("Groups", [])
+        return str(groups[0]["GroupId"]) if groups else None
+
+    def is_group_member(self, group_id: str, user_id: str) -> bool:
+        """Whether the user is already in the group. AWS errors other than not-found propagate."""
+        _, store_id = self.get_instance_details()
+        try:
+            self.identitystore_client.get_group_membership_id(
+                IdentityStoreId=store_id, GroupId=group_id, MemberId={"UserId": user_id}
+            )
+        except ClientError as e:
+            if aws_error_code(e) == "ResourceNotFoundException":
+                return False
+            raise
+        return True
 
     def get_user_id_by_username(self, username: str) -> str | None:
         """Fetch UserId for a given username from Identity Store."""

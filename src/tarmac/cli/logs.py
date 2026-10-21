@@ -128,13 +128,11 @@ def logs_command(
         ),
     ] = None,
     run: Annotated[
-        str | None, typer.Option("--run", "-r", help="Show one run: 'latest', a run id or an id prefix")
+        str | None, typer.Option("--run", help="Show one run: 'latest', a run id or an id prefix")
     ] = None,
     outcome: Annotated[
         list[str] | None,
-        typer.Option(
-            "--outcome", "-o", help="Only actions with this outcome (repeatable): succeeded, failed, ..."
-        ),
+        typer.Option("--outcome", help="Only actions with this outcome (repeatable): succeeded, failed, ..."),
     ] = None,
     phase: Annotated[
         str | None, typer.Option("--phase", help="Only records from phases matching this text")

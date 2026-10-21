@@ -1,4 +1,4 @@
-"""End-to-End Orchestrated Pipeline Deployment."""
+"""The deploy, destroy and inventory commands."""
 
 import json
 import logging
@@ -13,10 +13,13 @@ from rich.text import Text
 from ..core import inventory as inventory_mod
 from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
-from ..core.config_loader import get_default_config_dir
+from ..core.config_loader import ConfigBundle, get_default_config_dir
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
+from ..core.models import PreflightCheckStatus
 from ..services.organization import OrganizationService
+from ..services.plan import Planner
+from ..services.preflight import PreflightService
 from ..services.teardown import TeardownItemReport, TeardownService
 from .common import (
     AdoptExistingOption,
@@ -30,12 +33,7 @@ from .common import (
     parse_tags_or_exit,
     require_credentials_or_exit,
 )
-from .deploy_dry_run import (
-    _build_dry_run_plan_dict,
-    _render_dry_run_summary,
-)
 from .deploy_phases import (
-    _run_phase_0_preflight,
     _run_phase_1_org,
     _run_phase_2_ou,
     _run_phase_3_cloudtrail,
@@ -43,6 +41,7 @@ from .deploy_phases import (
     _run_phase_5_hardening,
     _run_phase_6_identity,
 )
+from .plan_view import render_plan
 from .ui import (
     console,
     create_table,
@@ -54,7 +53,6 @@ from .ui import (
 )
 
 PHASE_NAMES = {
-    0: "preflight",
     1: "organization",
     2: "organizational-units",
     3: "cloudtrail",
@@ -62,11 +60,10 @@ PHASE_NAMES = {
     5: "hardening",
     6: "identity",
 }
+ALL_PHASES = list(PHASE_NAMES)
+REQUIRED_MILESTONES = {"org", "ou", "cloudtrail", "accounts", "hardening", "identity"}
 
 logger = logging.getLogger(__name__)
-
-app = typer.Typer(help="End-to-end orchestrated governance deployment.")
-
 
 PRODUCTION_ENV_VALUES = frozenset({"production", "prod", "prd"})
 PRODUCTION_ENV_TAG_KEYS = ("environment", "env", "stage")
@@ -91,25 +88,23 @@ def _require_yes_for_json(dry_run: bool, yes: bool, json_output: bool) -> None:
         raise typer.Exit(code=2)
 
 
+def _usage_error(message: str) -> typer.Exit:
+    error_console.print(f"[red]✗ {message}[/red]")
+    return typer.Exit(code=2)
+
+
 def _validate_phase(phase: int | None, allowed: range) -> None:
     """Reject phase numbers outside the supported range instead of silently doing nothing."""
     if phase is not None and phase not in allowed:
-        error_console.print(
-            f"[red]✗ Invalid phase: {phase}. Must be between {allowed.start} and {allowed.stop - 1}.[/red]"
-        )
-        raise typer.Exit(code=2)
+        raise _usage_error(f"Invalid phase: {phase}. Must be between {allowed.start} and {allowed.stop - 1}.")
 
 
-def _refuse_root_identity(
-    session_mgr: AwsSessionManager, dry_run: bool = False, allow_root: bool = False
-) -> None:
-    """Stop live runs with unusable credentials, or with root credentials (they cannot assume member roles).
+def _refuse_root_identity(session_mgr: AwsSessionManager, allow_root: bool = False) -> None:
+    """Stop with unusable credentials, or with root credentials (they cannot assume member roles).
 
     ``allow_root`` is for phase 1 on its own: it only touches the management account, so a brand-new account can
     create its organization from CloudShell as root before any other identity exists.
     """
-    if dry_run:
-        return
     require_credentials_or_exit(session_mgr)
     if allow_root:
         return
@@ -132,162 +127,150 @@ def _refuse_root_identity(
         raise typer.Exit(code=1)
 
 
-def _resolve_phases_to_run(phase: int | None, skip_preflight: bool) -> list[int]:
-    """Determine the list of phases to execute based on flags."""
-    if phase is not None:
-        return [phase]
-    return [1, 2, 3, 4, 5, 6] if skip_preflight else [0, 1, 2, 3, 4, 5, 6]
+def _preflight_gate(session_mgr: AwsSessionManager, bundle: ConfigBundle, json_output: bool) -> None:
+    """Run the `tarmac preflight` checks before a full deployment and stop on blocking failures."""
+    report = PreflightService(session_mgr, bundle).run_all_checks()
+    if report.failures:
+        failures = [c for c in report.checks if c.status == PreflightCheckStatus.FAIL]
+        raise GovernanceError(
+            f"Pre-flight found {report.failures} blocking problem(s); nothing was deployed.",
+            details="\n".join(f"{c.name}: {c.action_required}" for c in failures)
+            + "\nRun `tarmac preflight` for the full report, or re-run with --skip-preflight to bypass.",
+        )
+    if report.warnings and not json_output:
+        print_warning(f"Pre-flight passed with {report.warnings} warning(s); `tarmac preflight` lists them.")
 
 
-def _resolve_management_account_id(session_mgr: AwsSessionManager, *, dry_run: bool) -> str:
-    """Return the caller's account ID; during a dry-run, tolerate missing credentials."""
-    if not dry_run:
-        return str(session_mgr.get_caller_identity().get("Account", ""))
-    try:
-        if session_mgr._root_session.get_credentials() is not None:
-            return str(session_mgr.get_caller_identity().get("Account", ""))
-    except Exception as e:
-        logger.debug("Caller identity unavailable during dry-run: %s", e)
-    return ""
+def _check_deploy_options(
+    phase: int | None, accounts: list[str] | None, skip_preflight: bool, bundle: ConfigBundle
+) -> None:
+    if accounts and phase != 4:
+        raise _usage_error("--account only applies to phase 4; add --phase 4.")
+    if skip_preflight and phase is not None:
+        raise _usage_error("--skip-preflight applies to a full deployment; --phase never runs pre-flight.")
+    unknown = [name for name in accounts or [] if bundle.get_account(name) is None]
+    if unknown:
+        raise _usage_error(f"Not declared in accounts.yaml: {', '.join(unknown)}.")
 
 
-@app.command("run")
-def run_pipeline(
-    phase: Annotated[int | None, typer.Option("--phase", "-p", help="Specific phase to run (0-6)")] = None,
+def _run_phases(
+    phases: list[int],
+    session_mgr: AwsSessionManager,
+    bundle: ConfigBundle,
+    target_region: str,
+    region_override: str | None,
+    custom_tags: dict[str, str],
+    accounts: list[str] | None,
+) -> None:
+    project_root = bundle.config_dir.parent
+    runners = {
+        1: lambda: _run_phase_1_org(session_mgr, bundle),
+        2: lambda: _run_phase_2_ou(session_mgr, bundle, project_root, custom_tags=custom_tags),
+        3: lambda: _run_phase_3_cloudtrail(
+            session_mgr, bundle, target_region, project_root, custom_tags=custom_tags
+        ),
+        4: lambda: _run_phase_4_accounts(
+            session_mgr, bundle, project_root, custom_tags=custom_tags, only=accounts
+        ),
+        5: lambda: _run_phase_5_hardening(
+            session_mgr,
+            bundle,
+            target_region,
+            project_root,
+            custom_tags=custom_tags,
+            skip_log_archive_hardening=3 in phases,
+        ),
+        6: lambda: _run_phase_6_identity(
+            session_mgr, bundle, project_root, region_override=region_override, custom_tags=custom_tags
+        ),
+    }
+    for number in phases:
+        with bind(phase=PHASE_NAMES[number]):
+            runners[number]()
+
+
+def deploy_command(
+    phase: Annotated[int | None, typer.Option("--phase", help="Run only this phase (1-6)")] = None,
+    accounts: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--account",
+            "-a",
+            help="With --phase 4: provision, tag and baseline only this declared account (repeatable)",
+        ),
+    ] = None,
     config_dir: ConfigDirOption = None,
     region: RegionOption = None,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Simulate pipeline without executing changes")
+        bool, typer.Option("--dry-run", help="Show what each phase would change, using read-only AWS calls")
     ] = False,
     yes: YesOption = False,
     skip_preflight: Annotated[
-        bool, typer.Option("--skip-preflight", help="Bypass pre-flight readiness checks")
+        bool,
+        typer.Option("--skip-preflight", help="Do not run the pre-flight checks before a full deployment"),
     ] = False,
     json_output: JsonOption = False,
     tags: TagsOption = None,
     adopt_existing: AdoptExistingOption = False,
 ) -> None:
-    """Run end-to-end deployment or a specific phase in deterministic order."""
+    """Deploy the landing zone: every phase in order, or one phase with --phase."""
     set_adopt_existing(adopt_existing)
-    _validate_phase(phase, range(0, 7))
+    _validate_phase(phase, range(1, 7))
     _require_yes_for_json(dry_run, yes, json_output)
+    bundle = load_configs_or_exit(config_dir)
+    _check_deploy_options(phase, accounts, skip_preflight, bundle)
     confirm_or_exit(
         "Are you sure you want to run the live multi-account deployment?",
         yes=yes,
         dry_run=dry_run,
         cancelled="Deployment cancelled by user.",
     )
-
-    bundle = load_configs_or_exit(config_dir)
     custom_tags = parse_tags_or_exit(tags)
 
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
-    phases_to_run = _resolve_phases_to_run(phase, skip_preflight)
-    _refuse_root_identity(session_mgr, dry_run, allow_root=phases_to_run == [1])
-    project_root = bundle.config_dir.parent
-    org_service = OrganizationService(session_mgr)
-
-    if json_output and dry_run:
-        plan_dict = _build_dry_run_plan_dict(
-            phases_to_run,
-            bundle,
-            session_mgr,
-            target_region,
-            region_override=region,
-        )
-        print(json.dumps(plan_dict, indent=2))
-        return
-
-    if not json_output:
-        if dry_run:
-            console.print(
-                Panel(
-                    "[bold yellow]Tarmac Landing Zone: Dry-Run Execution Plan (Simulation Mode)[/bold yellow]\n"
-                    "[dim]Validating configuration files and simulating pipeline actions without modifying AWS resources.[/dim]",
-                    border_style="yellow",
-                    padding=(0, 2),
-                    expand=False,
-                )
-            )
-        else:
-            print_header("AWS Governance: End-to-End Deployment")
-
-    mgmt_id = _resolve_management_account_id(session_mgr, dry_run=dry_run)
-
-    if mgmt_id and not dry_run and not json_output:
-        completed_milestones = org_service.get_completed_phases(mgmt_id)
-        if completed_milestones:
-            print_info(f"⚡ Discovered completed milestones: {', '.join(sorted(completed_milestones))}")
+    phases = [phase] if phase is not None else ALL_PHASES
+    _refuse_root_identity(session_mgr, allow_root=phases == [1])
 
     try:
-        phase_runners = {
-            0: lambda: _run_phase_0_preflight(session_mgr, bundle, dry_run),
-            1: lambda: _run_phase_1_org(session_mgr, bundle, dry_run),
-            2: lambda: _run_phase_2_ou(session_mgr, bundle, project_root, dry_run, custom_tags=custom_tags),
-            3: lambda: _run_phase_3_cloudtrail(
-                session_mgr, bundle, target_region, project_root, dry_run, custom_tags=custom_tags
-            ),
-            4: lambda: _run_phase_4_accounts(
-                session_mgr, bundle, project_root, dry_run, custom_tags=custom_tags
-            ),
-            5: lambda: _run_phase_5_hardening(
+        if dry_run:
+            plan = Planner(
                 session_mgr,
                 bundle,
                 target_region,
-                project_root,
-                dry_run,
+                bundle.config_dir.parent,
                 custom_tags=custom_tags,
-                skip_log_archive_hardening=(3 in phases_to_run),
-            ),
-            6: lambda: _run_phase_6_identity(
-                session_mgr,
-                bundle,
-                project_root,
-                dry_run,
-                region_override=region,
-                custom_tags=custom_tags,
-            ),
-        }
-
-        for p in phases_to_run:
-            runner = phase_runners.get(p)
-            if runner:
-                with bind(phase=PHASE_NAMES.get(p, str(p))):
-                    runner()
+                identity_region=region,
+                only_accounts=accounts,
+            ).build(phases)
+            if json_output:
+                print(json.dumps(plan.to_dict(), indent=2))
             else:
-                if json_output:
-                    print(json.dumps({"status": "FAILED", "error": f"Invalid phase: {p}"}, indent=2))
-                else:
-                    error_console.print(f"[red]✗[/red] Invalid phase: {p}. Must be 0 to 6.")
-                raise typer.Exit(code=1)
+                render_plan(plan)
+            return
 
-        if dry_run:
-            _render_dry_run_summary(phases_to_run, bundle)
-        elif json_output:
-            result_payload = {
-                "dry_run": False,
-                "status": "COMPLETED",
-                "phases_executed": phases_to_run,
-                "management_account_id": mgmt_id,
-            }
-            print(json.dumps(result_payload, indent=2))
+        if not json_output:
+            print_header("AWS Governance: End-to-End Deployment")
+        if phase is None and not skip_preflight:
+            _preflight_gate(session_mgr, bundle, json_output)
+        _run_phases(phases, session_mgr, bundle, target_region, region, custom_tags, accounts)
+
+        mgmt_id = str(session_mgr.get_caller_identity().get("Account", ""))
+        org_service = OrganizationService(session_mgr)
+        if mgmt_id and REQUIRED_MILESTONES.issubset(org_service.get_completed_phases(mgmt_id)):
+            org_service.mark_deployment_ready(mgmt_id)
+        if json_output:
+            payload = {"status": "COMPLETED", "phases_executed": phases, "management_account_id": mgmt_id}
+            print(json.dumps(payload, indent=2))
         else:
-            if mgmt_id:
-                completed = org_service.get_completed_phases(mgmt_id)
-                required_phases = {"org", "ou", "cloudtrail", "accounts", "hardening", "identity"}
-                if required_phases.issubset(completed):
-                    org_service.mark_deployment_ready(mgmt_id)
-            print_success("Deployment pipeline completed successfully!")
-
+            print_success("Deployment completed successfully!")
     except GovernanceError as e:
         if json_output:
             print(json.dumps({"status": "FAILED", "error": str(e)}, indent=2))
         else:
-            error_console.print(
-                Panel(str(e), title="[bold red]Deployment Failed[/bold red]", border_style="red")
-            )
-        raise typer.Exit(code=1)
+            title = "Plan Failed" if dry_run else "Deployment Failed"
+            error_console.print(Panel(str(e), title=f"[bold red]{title}[/bold red]", border_style="red"))
+        raise typer.Exit(code=1) from e
 
 
 _TEARDOWN_FAILED_STYLE = "[bold red]FAILED[/bold red]"
@@ -453,11 +436,8 @@ def _confirm_teardown(
         raise typer.Exit(code=0)
 
 
-@app.command("destroy")
-def destroy_pipeline(
-    phase: Annotated[
-        int | None, typer.Option("--phase", "-p", help="Specific phase to tear down (2-6)")
-    ] = None,
+def destroy_command(
+    phase: Annotated[int | None, typer.Option("--phase", help="Tear down only this phase (2-6)")] = None,
     config_dir: ConfigDirOption = None,
     region: RegionOption = None,
     dry_run: Annotated[
@@ -502,10 +482,7 @@ def destroy_pipeline(
     _validate_phase(phase, range(2, 7))
     _require_yes_for_json(dry_run, yes, json_output)
     if everything and phase is not None:
-        error_console.print(
-            "[red]✗[/red] --everything removes the whole deployment and cannot be combined with --phase."
-        )
-        raise typer.Exit(code=2)
+        raise _usage_error("--everything removes the whole deployment and cannot be combined with --phase.")
     bundle = load_configs_or_exit(config_dir)
 
     _enforce_production_lock(bundle, dry_run=dry_run, force=force)
@@ -601,8 +578,7 @@ def destroy_pipeline(
             print_info("Add --everything to also remove OUs, users, groups, settings and the access role.")
 
 
-@app.command("inventory")
-def show_inventory(
+def inventory_command(
     config_dir: ConfigDirOption = None,
     from_log: Annotated[
         Path | None,
@@ -610,7 +586,7 @@ def show_inventory(
     ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output the inventory as JSON")] = False,
 ) -> None:
-    """Show what tarmac recorded as created by it (used by `destroy --everything`)."""
+    """Show what tarmac recorded as created by it (used by `tarmac destroy --everything`)."""
     inv = _load_inventory(config_dir, from_log)
     if json_output:
         print(json.dumps(inv.entries, indent=2, sort_keys=True))

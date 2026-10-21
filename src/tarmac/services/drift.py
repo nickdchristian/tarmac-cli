@@ -20,6 +20,7 @@ from ..core.exceptions import AWS_ERRORS
 from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
+from .baseline import budget_stack_name
 from .ou import OUService
 from .scp import SCPService
 from .status import stack_status
@@ -112,7 +113,7 @@ class DriftService:
                     declared="Present",
                     live=f"Present ({live_ous[ou_name]})" if in_sync else "Missing",
                     status="IN_SYNC" if in_sync else "MISSING",
-                    remediation="" if in_sync else "tarmac deploy run --phase 2",
+                    remediation="" if in_sync else "tarmac deploy --phase 2",
                 )
             )
 
@@ -135,7 +136,7 @@ class DriftService:
                         declared=f"OU: {acct.ou}",
                         live="Not Provisioned",
                         status="MISSING",
-                        remediation="tarmac deploy run --phase 4",
+                        remediation="tarmac deploy --phase 4",
                     )
                 )
                 continue
@@ -153,7 +154,7 @@ class DriftService:
                         declared=f"OU: {acct.ou}",
                         live=f"OU: {parent_name}",
                         status="DRIFTED",
-                        remediation="tarmac deploy run --phase 4",
+                        remediation="tarmac deploy --phase 4",
                     )
                 )
             else:
@@ -203,7 +204,7 @@ class DriftService:
                     declared=f"{len(expected_tags)} tags",
                     live=live_desc,
                     status=status,
-                    remediation="tarmac account sync-tags" if drifted_keys else "",
+                    remediation="tarmac deploy --phase 4" if drifted_keys else "",
                 )
             )
 
@@ -234,7 +235,7 @@ class DriftService:
                         declared="Attached",
                         live="Missing in AWS",
                         status="MISSING",
-                        remediation="tarmac deploy run --phase 2",
+                        remediation="tarmac deploy --phase 2",
                     )
                 )
                 continue
@@ -257,7 +258,7 @@ class DriftService:
                             declared="File content",
                             live="Policy drifted",
                             status="DRIFTED",
-                            remediation="tarmac deploy run --phase 2",
+                            remediation="tarmac deploy --phase 2",
                         )
                     )
                     continue
@@ -285,7 +286,7 @@ class DriftService:
                         declared=f"Attached to {policy_def.targets}",
                         live=f"Unattached to {missing_targets}",
                         status="DRIFTED",
-                        remediation="tarmac deploy run --phase 2",
+                        remediation="tarmac deploy --phase 2",
                     )
                 )
             else:
@@ -381,7 +382,7 @@ class DriftService:
         for acct in bundle.accounts.accounts:
             if not (acct.baseline and acct.baseline.budget):
                 continue
-            budget_name = f"{acct.name}-monthly-budget"
+            budget_name = budget_stack_name(acct.name)
             acct_id = self._resolve_id(acct.name, live_accts)
             if not acct_id:
                 status = "ACCOUNT_MISSING"
@@ -439,7 +440,7 @@ class DriftService:
                         if in_sync
                         else "Missing in Identity Center",
                         status="IN_SYNC" if in_sync else "MISSING",
-                        remediation="" if in_sync else "tarmac deploy run --phase 6",
+                        remediation="" if in_sync else "tarmac deploy --phase 6",
                     )
                 )
         except AWS_ERRORS as e:
@@ -456,10 +457,10 @@ class DriftService:
             item_status, remediation = "IN_SYNC", ""
             declared = "CREATE_COMPLETE"
         elif status in ["NOT_FOUND", "ACCOUNT_MISSING"]:
-            item_status, remediation = "MISSING", "tarmac deploy run"
+            item_status, remediation = "MISSING", "tarmac deploy"
             declared = "Deployed"
         else:
-            item_status, remediation = "DRIFTED", "tarmac deploy run"
+            item_status, remediation = "DRIFTED", "tarmac deploy"
             declared = "CREATE_COMPLETE"
 
         report.items.append(

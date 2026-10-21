@@ -7,14 +7,12 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from tarmac.cli.deploy_root_alert import (
-    deploy_management_root_alert,
-    root_alert_regions,
-)
+from tarmac.cli.deploy_root_alert import deploy_management_root_alert
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_loader import ConfigBundle, load_all_configs
 from tarmac.core.config_schema import RootAlertConfig
 from tarmac.core.stack_names import Stack
+from tarmac.services.stack_parameters import root_alert_regions
 from tarmac.services.teardown import TeardownService
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +51,7 @@ def _bundle(test_bundle, *, email: str | None = "sec@example.com", **root_alert:
 def _deploy(bundle) -> MagicMock:
     mgr = MagicMock(spec=AwsSessionManager)
     cfn_service = MagicMock()
-    deploy_management_root_alert(mgr, cfn_service, bundle, "eu-west-1", ROOT, dry_run=False)
+    deploy_management_root_alert(mgr, cfn_service, bundle, "eu-west-1", ROOT)
     return cfn_service
 
 

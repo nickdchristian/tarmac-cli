@@ -47,7 +47,7 @@ def test_failed_cleanup_stops_phase_1_and_records_no_milestone(bundle: ConfigBun
     _patch_services(monkeypatch, baseliner, org_service)
 
     with pytest.raises(GovernanceError, match="default VPC cleanup failed"):
-        deploy_phases._run_phase_1_org(_session(), bundle, dry_run=False)
+        deploy_phases._run_phase_1_org(_session(), bundle)
 
     baseliner.mark_account_baselined.assert_not_called()
     org_service.record_phase_completed.assert_not_called()
@@ -58,7 +58,7 @@ def test_clean_run_still_completes_phase_1(bundle: ConfigBundle, monkeypatch):
     baseliner.cleanup_default_vpcs.return_value = [VpcCleanupReport(region="us-east-1", skipped=True)]
     _patch_services(monkeypatch, baseliner, org_service)
 
-    deploy_phases._run_phase_1_org(_session(), bundle, dry_run=False)
+    deploy_phases._run_phase_1_org(_session(), bundle)
 
     baseliner.mark_account_baselined.assert_called_once_with("111111111111")
     org_service.record_phase_completed.assert_called_once_with("111111111111", "org")
@@ -76,7 +76,7 @@ def test_deploy_phase_1_exits_nonzero_when_cleanup_fails(tmp_path: Path, monkeyp
     baseliner.cleanup_default_vpcs.return_value = [_failed()]
     _patch_services(monkeypatch, baseliner, org_service)
 
-    result = CliRunner().invoke(app, ["deploy", "run", "--phase", "1", "--yes", "-c", str(tmp_path)])
+    result = CliRunner().invoke(app, ["deploy", "--phase", "1", "--yes", "-c", str(tmp_path)])
 
     assert result.exit_code == 1
     assert "AccessDenied" in result.output

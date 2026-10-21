@@ -137,6 +137,53 @@ class CloudFormationService:
 
         return StackDeployReport(stack_name=stack_name, action=action, outputs=outputs, status="SUCCEEDED")
 
+    def preview_stack(
+        self,
+        cfn_client: Any,
+        stack_name: str,
+        template_file: Path | None = None,
+        parameters: dict[str, str] | None = None,
+        tags: dict[str, str] | None = None,
+        org_tags: dict[str, str] | None = None,
+        account_tags: dict[str, str] | None = None,
+        template_body: str | None = None,
+    ) -> tuple[str, str]:
+        """What deploy_stack would do, read-only: (action, detail).
+
+        The action is CREATE, REPLACE (the stack is in a state that forces delete and recreate), UPDATE or
+        NO CHANGE. An update names what differs: the template text, which of the given parameters, or the tags.
+        Parameters the stack has but that are not given here are not compared.
+        """
+        if template_body is None:
+            if template_file is None:
+                raise DeploymentError("Either template_file or template_body must be provided.")
+            template_body = template_file.read_text(encoding="utf-8")
+
+        status = self._get_stack_status(cfn_client, stack_name)
+        if status in (None, "DELETE_COMPLETE"):
+            return "CREATE", ""
+        if status in UNUSABLE_STACK_STATES:
+            return "REPLACE", f"stack is {status}; it is deleted and created again"
+
+        stack = cfn_client.describe_stacks(StackName=stack_name)["Stacks"][0]
+        live_params = {
+            str(p["ParameterKey"]): str(p.get("ParameterValue", "")) for p in stack.get("Parameters", [])
+        }
+        changes = [
+            f"{key}: {live_params.get(key, '(unset)')} -> {value}"
+            for key, value in (parameters or {}).items()
+            if live_params.get(key) != str(value)
+        ]
+        live_body = cfn_client.get_template(StackName=stack_name, TemplateStage="Original").get(
+            "TemplateBody"
+        )
+        if not isinstance(live_body, str) or live_body.strip() != template_body.strip():
+            changes.append("template")
+        live_tags = {str(tag["Key"]): str(tag["Value"]) for tag in stack.get("Tags", [])}
+        if live_tags != merge_tags(org_tags, account_tags, tags):
+            changes.append("tags")
+        return ("UPDATE", "; ".join(changes)) if changes else ("NO CHANGE", "")
+
     def protect_stack(self, cfn_client: Any, stack_name: str) -> None:
         """Turn on termination protection. Failing to do so never fails a deployment; it is reported instead."""
         try:

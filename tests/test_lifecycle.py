@@ -148,7 +148,7 @@ def test_phase_3_fails_clearly_when_log_archive_account_is_closed(bundle, tmp_pa
         patch("tarmac.cli.deploy_phases.CloudFormationService") as cfn,
         pytest.raises(GovernanceError, match="closed/suspended"),
     ):
-        deploy_phases._run_phase_3_cloudtrail(mgr, bundle, "us-east-1", tmp_path, dry_run=False)
+        deploy_phases._run_phase_3_cloudtrail(mgr, bundle, "us-east-1", tmp_path)
 
     # It must not go on to assume a role into the closed account or deploy any stack.
     mgr.get_member_client.assert_not_called()
@@ -188,7 +188,7 @@ def test_phase_4_skips_baselining_closed_accounts_and_warns(bundle, tmp_path):
         patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
         patch("tarmac.cli.deploy_phases.print_warning") as warn,
     ):
-        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path, dry_run=False)
+        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path)
 
     baselined = {c.args[0].name for c in baseliner.baseline_account.call_args_list}
     assert names[-1] not in baselined
@@ -232,7 +232,7 @@ def test_phase_4_does_not_report_success_when_a_baseline_step_failed(bundle, tmp
         patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
         pytest.raises(AccountProvisioningError, match="failed baseline step"),
     ):
-        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path, dry_run=False)
+        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path)
 
     org.record_phase_completed.assert_not_called()
 
@@ -251,7 +251,7 @@ def test_security_delegation_failure_fails_the_phase(bundle):
         patch("tarmac.cli.deploy_phases.SecurityServicesService", return_value=sec),
         pytest.raises(GovernanceError, match="security service delegation") as exc,
     ):
-        deploy_phases._delegate_security_services(MagicMock(), bundle, "us-east-1", {}, dry_run=False)
+        deploy_phases._delegate_security_services(MagicMock(), bundle, "us-east-1", {})
 
     assert "not subscribed" in str(exc.value.details if hasattr(exc.value, "details") else exc.value)
 
@@ -269,7 +269,7 @@ def test_phase_5_warns_when_backend_and_audit_accounts_are_missing(bundle, tmp_p
         patch("tarmac.cli.deploy_phases.print_warning") as warn,
     ):
         sec.return_value.configure_security_services.return_value = []
-        deploy_phases._run_phase_5_hardening(mgr, bundle, "us-east-1", tmp_path, dry_run=False)
+        deploy_phases._run_phase_5_hardening(mgr, bundle, "us-east-1", tmp_path)
 
     messages = " ".join(str(c.args[0]) for c in warn.call_args_list)
     assert "Backend account" in messages
@@ -282,7 +282,7 @@ def test_phase_5_warns_when_backend_and_audit_accounts_are_missing(bundle, tmp_p
 def test_full_teardown_lists_what_it_does_not_remove(tmp_path):
     from typer.testing import CliRunner
 
-    from tarmac.cli.deploy import app
+    from tarmac.cli.main import app
     from tarmac.services.scaffold import scaffold_project
     from tarmac.services.teardown import TeardownItemReport, TeardownReport
 
@@ -323,7 +323,6 @@ def test_phase_5_stops_before_audit_stack_when_delegated_admin_registration_fail
             tmp_path,
             "o-abc1234567",
             accounts,
-            dry_run=False,
             skip_log_archive_hardening=True,
         )
 
@@ -371,7 +370,7 @@ def test_phase_4_stops_when_an_ou_does_not_exist_yet(bundle, tmp_path):
         patch("tarmac.cli.deploy_phases.BaselineService"),
         pytest.raises(GovernanceError, match="do not exist yet"),
     ):
-        deploy_phases._run_phase_4_accounts(MagicMock(), bundle, tmp_path, dry_run=False)
+        deploy_phases._run_phase_4_accounts(MagicMock(), bundle, tmp_path)
 
     ou_service.sync_ou_structure.assert_not_called()
     accounts.provision_accounts.assert_not_called()
@@ -391,6 +390,6 @@ def test_phase_4_applies_organization_tags_to_accounts(bundle, tmp_path):
         patch("tarmac.cli.deploy_phases.BaselineService", return_value=baseliner),
         patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
     ):
-        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path, dry_run=False)
+        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path)
 
     assert accounts.provision_accounts.call_args.kwargs["org_tags"] == bundle.get_organization_tags()

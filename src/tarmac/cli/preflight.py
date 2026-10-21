@@ -110,7 +110,7 @@ def _evaluate_cli_report(report: PreflightReport, strict: bool) -> None:
 
     print_success(f"\n{summary_msg}")
     if report.warnings > 0:
-        print_info("Ready to proceed with warnings. Review yellow items above before 'tarmac deploy run'.\n")
+        print_info("Ready to proceed with warnings. Review yellow items above before 'tarmac deploy'.\n")
     else:
         print_success("All pre-flight checks passed! Environment is fully ready for deployment.\n")
 

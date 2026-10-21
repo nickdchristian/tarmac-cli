@@ -9,7 +9,7 @@ import pytest
 from botocore.exceptions import ClientError
 from typer.testing import CliRunner
 
-from tarmac.cli.deploy import app
+from tarmac.cli.main import app
 from tarmac.core import inventory as inv_mod
 from tarmac.core.audit import Outcome, audit
 from tarmac.core.inventory import Inventory

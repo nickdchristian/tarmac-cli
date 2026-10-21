@@ -12,17 +12,18 @@ import pytest
 import yaml
 from botocore.stub import ANY, Stubber
 
-from tarmac.cli.deploy_config_recorder import (
-    config_recorder_regions,
-    deploy_config_recorder,
-    warn_if_config_recorder_missing,
-)
+from tarmac.cli.deploy_config_recorder import deploy_config_recorder
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_schema import ConfigRecorderConfig, SecurityServicesConfig
 from tarmac.core.exceptions import GovernanceError
 from tarmac.core.models import TAG_MANAGED_BY, StackDeployReport
 from tarmac.core.stack_names import Stack
 from tarmac.services.config_recorder import ConfigRecorderService
+from tarmac.services.stack_parameters import (
+    config_recorder_advice,
+    config_recorder_regions,
+    log_archive_parameters,
+)
 from tarmac.services.teardown import TeardownService
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -511,15 +512,11 @@ def test_regions_are_primary_first_without_repeats():
         ({"securityhub": {"enabled": False}}, False),  # nothing needs it
     ],
 )
-def test_warns_about_security_hub_without_a_recorder_only_while_unset(monkeypatch, security, warns):
-    messages: list[str] = []
-    monkeypatch.setattr("tarmac.cli.deploy_config_recorder.print_warning", messages.append)
+def test_warns_about_security_hub_without_a_recorder_only_while_unset(security, warns):
     bundle = MagicMock()
     bundle.org.security_services = SecurityServicesConfig(**security)
 
-    warn_if_config_recorder_missing(bundle)
-
-    assert bool(messages) is warns
+    assert bool(config_recorder_advice(bundle)) is warns
 
 
 def test_nothing_is_deployed_while_the_feature_is_off(monkeypatch):
@@ -726,8 +723,6 @@ def test_config_bucket_is_only_created_when_enabled_and_needs_the_management_acc
 
 @pytest.mark.parametrize(("enabled", "expected"), [(False, ("false", "")), (True, ("true", MGMT))])
 def test_log_archive_stack_parameters_turn_on_config_delivery_only_when_enabled(enabled, expected):
-    from tarmac.cli.common import log_archive_parameters
-
     params = log_archive_parameters(_bundle(config={"enabled": enabled}), "o-abc1234567", MGMT)  # type: ignore[arg-type]
 
     assert (params["EnableConfigDelivery"], params["ManagementAccountId"]) == expected

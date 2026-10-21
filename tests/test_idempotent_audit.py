@@ -1,7 +1,6 @@
 """A run that changes nothing must say so: reads before writes, UNCHANGED outcomes and quiet handled errors."""
 
 import logging
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -9,7 +8,6 @@ import pytest
 from botocore.exceptions import ClientError, WaiterError
 
 from tarmac.core.aws_audit import DRY_RUN_ALLOWED, is_benign_error
-from tarmac.core.config_loader import load_all_configs
 from tarmac.core.config_schema import Contact, ContactsConfig
 from tarmac.core.exceptions import DeploymentError
 from tarmac.services.accounts import AccountService
@@ -199,16 +197,3 @@ def test_failed_change_set_reports_its_status_reason_and_owning_stack():
     details = str(exc_info.value.details)
     assert "p-123 already exists in stack" in details
     assert "organization.name" in details
-
-
-def test_deploy_dry_run_records_that_the_plan_was_previewed(sample_config_dir: Path, caplog):
-    from tarmac.cli.deploy_dry_run import _render_phase_2_dry_run
-
-    bundle, _ = load_all_configs(sample_config_dir)
-    assert bundle is not None
-
-    _render_phase_2_dry_run(bundle)
-
-    (event,) = _events(caplog)
-    assert event["outcome"] == "simulated"
-    assert event["resource"] == "phase:2"

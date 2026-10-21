@@ -1,7 +1,7 @@
 """Brown-field import: read a live AWS Organization and describe it as Tarmac configuration.
 
 Everything here is read-only. The result is a set of YAML files (plus SCP and permission-set policy
-documents) that match what already exists, so the first `tarmac deploy run` adopts the organization
+documents) that match what already exists, so the first `tarmac deploy` adopts the organization
 instead of fighting it. Anything that cannot be derived is written as a clearly marked placeholder and
 reported in `ImportReport.todos`.
 """

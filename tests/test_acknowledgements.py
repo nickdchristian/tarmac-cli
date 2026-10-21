@@ -11,10 +11,9 @@ from typing import Any
 import pytest
 import yaml
 
-from tarmac.cli.common import warn_if_object_lock_unset
-from tarmac.cli.deploy_config_recorder import warn_if_config_recorder_missing
 from tarmac.core.config_loader import ConfigBundle, load_all_configs
 from tarmac.services.scaffold import scaffold_project
+from tarmac.services.stack_parameters import config_recorder_advice, object_lock_advice
 
 
 def _load(config_dir: Path, *, cloudtrail: dict[str, Any], security: dict[str, Any]) -> ConfigBundle:
@@ -33,44 +32,38 @@ def _load(config_dir: Path, *, cloudtrail: dict[str, Any], security: dict[str, A
     return bundle
 
 
-def _warnings(monkeypatch: pytest.MonkeyPatch, bundle: ConfigBundle) -> tuple[list[str], list[str]]:
-    lock: list[str] = []
-    recorder: list[str] = []
-    monkeypatch.setattr("tarmac.cli.common.print_warning", lock.append)
-    monkeypatch.setattr("tarmac.cli.deploy_config_recorder.print_warning", recorder.append)
-    warn_if_object_lock_unset(bundle)
-    warn_if_config_recorder_missing(bundle)
-    return lock, recorder
+def _warnings(bundle: ConfigBundle) -> tuple[str | None, str | None]:
+    return object_lock_advice(bundle), config_recorder_advice(bundle)
 
 
 SECURITY_HUB_ON = {"securityhub": {"enabled": True}}
 
 
-def test_both_warnings_fire_while_neither_key_is_in_the_file(writable_config_dir, monkeypatch):
+def test_both_warnings_fire_while_neither_key_is_in_the_file(writable_config_dir):
     bundle = _load(writable_config_dir, cloudtrail={}, security=SECURITY_HUB_ON)
-    lock, recorder = _warnings(monkeypatch, bundle)
+    lock, recorder = _warnings(bundle)
     assert lock
     assert recorder
 
 
 @pytest.mark.parametrize("recorder_value", [None, {"enabled": False}, {"enabled": True}])
 def test_writing_either_key_down_acknowledges_it_after_a_round_trip_through_yaml(
-    writable_config_dir, monkeypatch, recorder_value
+    writable_config_dir, recorder_value
 ):
     bundle = _load(
         writable_config_dir,
         cloudtrail={"object_lock": None},
         security={**SECURITY_HUB_ON, "config_recorder": recorder_value},
     )
-    lock, recorder = _warnings(monkeypatch, bundle)
-    assert lock == []
-    assert recorder == []
+    lock, recorder = _warnings(bundle)
+    assert lock is None
+    assert recorder is None
 
 
-def test_acknowledging_one_option_does_not_acknowledge_the_other(writable_config_dir, monkeypatch):
+def test_acknowledging_one_option_does_not_acknowledge_the_other(writable_config_dir):
     bundle = _load(writable_config_dir, cloudtrail={"object_lock": None}, security=SECURITY_HUB_ON)
-    lock, recorder = _warnings(monkeypatch, bundle)
-    assert lock == []
+    lock, recorder = _warnings(bundle)
+    assert lock is None
     assert recorder
 
 

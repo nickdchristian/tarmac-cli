@@ -45,17 +45,18 @@ def _assert_stopped(result, mgr: MagicMock) -> None:
     assert mgr.get_member_client.call_count == 0
 
 
-def test_live_deploy_run_stops_on_bad_credentials(monkeypatch, project: Path):
+@pytest.mark.parametrize("flags", [["--yes"], ["--dry-run"]])
+def test_deploy_and_its_plan_stop_on_bad_credentials(monkeypatch, project: Path, flags: list[str]):
     mgr = _expired()
     monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: mgr)
-    _assert_stopped(runner.invoke(app, ["deploy", "run", "-c", str(project), "--yes"]), mgr)
+    _assert_stopped(runner.invoke(app, ["deploy", "-c", str(project), *flags]), mgr)
 
 
 @pytest.mark.parametrize("flags", [[], ["--dry-run"]])
 def test_destroy_stops_on_bad_credentials(monkeypatch, project: Path, flags: list[str]):
     mgr = _expired()
     monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: mgr)
-    _assert_stopped(runner.invoke(app, ["deploy", "destroy", "-c", str(project), "--yes", *flags]), mgr)
+    _assert_stopped(runner.invoke(app, ["destroy", "-c", str(project), "--yes", *flags]), mgr)
 
 
 def test_import_stops_on_bad_credentials(monkeypatch, tmp_path: Path):

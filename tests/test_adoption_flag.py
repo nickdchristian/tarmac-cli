@@ -14,8 +14,8 @@ runner = CliRunner()
 
 
 COMMANDS = [
-    (["deploy", "run", "--dry-run"], "tarmac.cli.deploy.load_configs_or_exit"),
-    (["account", "baseline", "--dry-run"], "tarmac.cli.account.load_configs_or_exit"),
+    (["deploy", "--dry-run"], "tarmac.cli.deploy.load_configs_or_exit"),
+    (["deploy", "--yes", "--phase", "4"], "tarmac.cli.deploy.load_configs_or_exit"),
 ]
 
 
@@ -37,6 +37,6 @@ def test_commands_pass_the_flag(args, loader, flag, expected):
 
 
 def test_help_describes_the_flag():
-    result = runner.invoke(app, ["deploy", "run", "--help"])
+    result = runner.invoke(app, ["deploy", "--help"])
     # CI sets GITHUB_ACTIONS, which makes Typer colour the help and split the option name with escape codes.
     assert "--adopt-existing" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)

@@ -1,20 +1,15 @@
 """`cloudtrail.retention_days` bounds how long CloudTrail logs are kept."""
 
-from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 import yaml
 from pydantic import ValidationError
-from rich.console import Console
 from typer.testing import CliRunner
 
-from tarmac.cli import deploy_dry_run
-from tarmac.cli.deploy import app
-from tarmac.core.config_schema import CloudTrailConfig, SecurityServicesConfig
+from tarmac.cli.main import app
+from tarmac.core.config_schema import CloudTrailConfig
 from tarmac.core.models import StackDeployReport
 
 runner = CliRunner()
@@ -111,35 +106,8 @@ def test_deploy_passes_retention_to_the_log_archive_stack(
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: MagicMock())
     monkeypatch.setattr("tarmac.cli.deploy_phases.OrganizationService", lambda sm: MagicMock())
 
-    res = runner.invoke(app, ["run", "--config-dir", str(writable_config_dir), "--phase", "3", "--yes"])
+    res = runner.invoke(app, ["deploy", "--config-dir", str(writable_config_dir), "--phase", "3", "--yes"])
 
     assert res.exit_code == 0, res.output
     archive = next(p for name, p in captured.items() if name.endswith("log-archive-hardening"))
     assert archive["LogRetentionDays"] == expected
-
-
-@pytest.mark.parametrize(("retention", "needle"), [(None, "NO EXPIRATION"), (45, "APPLY LIFECYCLE RULE")])
-def test_dry_run_plan_says_what_will_happen_to_old_logs(monkeypatch, retention, needle):
-    buffer = StringIO()
-    monkeypatch.setattr(deploy_dry_run, "console", Console(file=buffer, width=160))
-    bundle = SimpleNamespace(
-        org=SimpleNamespace(
-            organization=SimpleNamespace(name="acme"),
-            security_services=SecurityServicesConfig(),
-            cloudtrail=SimpleNamespace(
-                enable_kms=False,
-                retention_days=retention,
-                trail_name="trail",
-                bucket_prefix="p",
-                object_lock=None,
-            ),
-        ),
-        get_log_archive_account_name=lambda: "log-archive",
-    )
-
-    deploy_dry_run._render_phase_3_dry_run(cast(Any, bundle), "eu-west-1")
-
-    out = buffer.getvalue()
-    assert needle in out
-    assert ("Keep indefinitely" if retention is None else f"Delete after {retention} days") in out
-    assert "NO KEY NEEDED" in out

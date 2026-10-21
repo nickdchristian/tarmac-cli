@@ -16,7 +16,17 @@ def test_cli_help_and_subcommand_helps():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "Tarmac: Enterprise AWS Governance & Multi-Account Landing Zone CLI" in result.stdout
-    for subcmd in ["access", "ou", "account", "identity", "deploy", "preflight", "status", "info"]:
+    for subcmd in [
+        "access",
+        "account",
+        "deploy",
+        "destroy",
+        "inventory",
+        "preflight",
+        "status",
+        "info",
+        "logs",
+    ]:
         sub_res = runner.invoke(app, [subcmd, "--help"])
         assert sub_res.exit_code == 0
 
@@ -95,7 +105,6 @@ def test_cli_deploy_run_with_custom_tags(sample_config_dir, monkeypatch):
         app,
         [
             "deploy",
-            "run",
             "--config-dir",
             str(sample_config_dir),
             "--phase",
@@ -145,7 +154,6 @@ def test_cli_deploy_phase_3_deploys_log_archive_hardening_before_trail(sample_co
         app,
         [
             "deploy",
-            "run",
             "--config-dir",
             str(sample_config_dir),
             "--phase",
@@ -313,7 +321,7 @@ def test_cli_status_with_drift(sample_config_dir, monkeypatch):
     # Rich wraps long cells; compare against the text with table borders and line breaks removed.
     flat = " ".join(re.sub(r"[│┃╭╮╰╯─━]", " ", result.stdout).split())
     for phase in (2, 3, 4, 5, 6):
-        assert f"tarmac deploy run --phase {phase}" in flat
+        assert f"tarmac deploy --phase {phase}" in flat
 
 
 def test_cli_deploy_run_prompts_and_yes(sample_config_dir, monkeypatch):
@@ -325,7 +333,7 @@ def test_cli_deploy_run_prompts_and_yes(sample_config_dir, monkeypatch):
     # When user cancels prompt (input 'n')
     result_cancel = runner.invoke(
         app,
-        ["deploy", "run", "--config-dir", str(sample_config_dir), "--phase", "1"],
+        ["deploy", "--config-dir", str(sample_config_dir), "--phase", "1"],
         input="n\n",
     )
     assert result_cancel.exit_code == 0
@@ -338,10 +346,10 @@ def test_cli_deploy_run_prompts_and_yes(sample_config_dir, monkeypatch):
 
     result_yes = runner.invoke(
         app,
-        ["deploy", "run", "--config-dir", str(sample_config_dir), "--phase", "1", "--yes"],
+        ["deploy", "--config-dir", str(sample_config_dir), "--phase", "1", "--yes"],
     )
     assert result_yes.exit_code == 0
-    assert "Deployment pipeline completed successfully!" in result_yes.stdout
+    assert "Deployment completed successfully!" in result_yes.stdout
 
 
 def test_cli_global_profile(monkeypatch):
@@ -364,67 +372,42 @@ def test_cli_global_profile(monkeypatch):
     assert os.environ.get("AWS_PROFILE") == "test-profile"
 
 
-def test_cli_identity_status(monkeypatch, sample_config_dir):
+def test_cli_info_shows_identity_store_and_portal(monkeypatch):
     mock_session_mgr = MagicMock()
-    mock_service = MagicMock()
-    mock_service.get_instance_details.return_value = (
-        "arn:aws:sso:::instance/ssoins-test",
-        "d-teststore",
-    )
-    mock_service.region = "us-east-1"
-
-    monkeypatch.setattr("tarmac.cli.identity.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.identity.IdentityService", lambda *a, **kw: mock_service)
-
-    result = runner.invoke(app, ["identity", "status", "--config-dir", str(sample_config_dir)])
-    assert result.exit_code == 0
-    assert "arn:aws:sso:::instance/ssoins-test" in result.stdout
-    assert "d-teststore" in result.stdout
-
-
-def test_cli_anomaly_status(monkeypatch, sample_config_dir):
-    mock_session_mgr = MagicMock()
-    mock_baseliner = MagicMock()
-    mock_baseliner.get_anomaly_overview.return_value = (
-        [{"MonitorName": "flumen-prod-cost-anomaly-monitor", "MonitorType": "CUSTOM"}],
-        [
-            {
-                "SubscriptionName": "flumen-prod-anomaly-alerts",
-                "Threshold": 100.0,
-                "Frequency": "DAILY",
-                "Subscribers": [{"Address": "alerts@example.com"}],
-            }
-        ],
-    )
-
-    monkeypatch.setattr("tarmac.cli.account.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.account.BaselineService", lambda sm: mock_baseliner)
-
-    result = runner.invoke(app, ["account", "anomaly-status", "--config-dir", str(sample_config_dir)])
-    assert result.exit_code == 0
-    assert "flumen-prod-cost-anomaly-monitor" in result.stdout
-    assert "flumen-prod-anomaly-alerts" in result.stdout
-
-
-def test_cli_account_sync_tags(monkeypatch, sample_config_dir):
-    mock_session_mgr = MagicMock()
-    mock_service = MagicMock()
-    mock_service.list_existing_accounts.return_value = {
-        "deployment": {"Id": "111111111111", "Name": "deployment"},
+    mock_session_mgr.get_caller_identity.return_value = {
+        "Account": "111111111111",
+        "Arn": "arn:aws:iam::1:role/x",
     }
-    mock_service.find_existing_account.return_value = {"Id": "111111111111", "Name": "deployment"}
-    mock_service.sync_account_tags.return_value = True
+    mock_session_mgr.default_region = "us-east-1"
+    mock_session_mgr.is_root_identity.return_value = False
+    mock_sso = MagicMock()
+    mock_sso.list_instances.return_value = {
+        "Instances": [{"InstanceArn": "arn:aws:sso:::instance/ssoins-test", "IdentityStoreId": "d-teststore"}]
+    }
+    mock_session_mgr.get_client.side_effect = lambda name, **kw: (
+        mock_sso if name == "sso-admin" else MagicMock()
+    )
+    monkeypatch.setattr("tarmac.cli.main.AwsSessionManager", lambda **kw: mock_session_mgr)
 
-    monkeypatch.setattr("tarmac.cli.account.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.account.AccountService", lambda sm: mock_service)
-
-    result = runner.invoke(app, ["account", "sync-tags", "--config-dir", str(sample_config_dir)])
+    result = runner.invoke(app, ["info", "--json"])
     assert result.exit_code == 0
-    assert "Account Tag Sync" in result.stdout
-    assert "deployment" in result.stdout
-    assert "111111111111" in result.stdout
-    assert "UPDATED" in result.stdout
-    mock_service.sync_account_tags.assert_called()
+    data = json.loads(result.stdout)
+    assert data["identity_center_arn"] == "arn:aws:sso:::instance/ssoins-test"
+    assert data["identity_store_id"] == "d-teststore"
+    assert data["access_portal_url"] == "https://d-teststore.awsapps.com/start"
+
+
+def test_cli_removed_commands_are_gone():
+    for argv in (
+        ["identity", "status"],
+        ["ou", "list"],
+        ["account", "anomaly-status"],
+        ["account", "sync-tags"],
+        ["account", "baseline"],
+        ["account", "export"],
+        ["deploy", "run"],
+    ):
+        assert runner.invoke(app, argv).exit_code != 0, argv
 
 
 def test_cli_account_suspend(monkeypatch, sample_config_dir):
@@ -619,9 +602,9 @@ def test_cli_deploy_run_preflight_failure(monkeypatch, sample_config_dir):
     monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: MagicMock())
     monkeypatch.setattr("tarmac.services.preflight.PreflightService.run_all_checks", lambda self: mock_report)
 
-    result = runner.invoke(app, ["deploy", "run", "--config-dir", str(sample_config_dir), "--yes"])
+    result = runner.invoke(app, ["deploy", "--config-dir", str(sample_config_dir), "--yes"])
     assert result.exit_code == 1
-    assert "Pre-flight failed" in result.output
+    assert "Pre-flight found 1 blocking problem(s)" in result.output
     assert "--skip-preflight" in result.output
 
 
@@ -702,7 +685,7 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
                 declared="OU: NonProduction",
                 live="Missing",
                 status="MISSING",
-                remediation="tarmac deploy run --phase 4",
+                remediation="tarmac deploy --phase 4",
             ),
         ],
         has_drift=True,
@@ -713,6 +696,22 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
 
     monkeypatch.setattr("tarmac.cli.main.AwsSessionManager", lambda **kw: mock_session_mgr)
     monkeypatch.setattr("tarmac.cli.main.DriftService", lambda sm: mock_drift_service)
+    mock_ou_service = MagicMock()
+    mock_ou_service.list_all_ous.return_value = {"Security": "ou-sec-1"}
+    monkeypatch.setattr("tarmac.cli.main.OUService", lambda sm: mock_ou_service)
+    mock_baseliner = MagicMock()
+    mock_baseliner.get_anomaly_overview.return_value = (
+        [{"MonitorName": "flumen-prod-cost-anomaly-monitor", "MonitorType": "CUSTOM"}],
+        [
+            {
+                "SubscriptionName": "flumen-prod-anomaly-alerts",
+                "Threshold": 100.0,
+                "Frequency": "DAILY",
+                "Subscribers": [{"Address": "alerts@example.com"}],
+            }
+        ],
+    )
+    monkeypatch.setattr("tarmac.cli.main.BaselineService", lambda sm: mock_baseliner)
     mock_status_service = MagicMock()
     mock_status_service.inspect.return_value = LandingZoneStatus(
         org_id="o-test12345",
@@ -738,85 +737,103 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
     assert "Security" in res.stdout
     assert "dev-app" in res.stdout
     assert "MISSING" in res.stdout
+    assert "ou-sec-1" in res.stdout
+    assert "flumen-prod-cost-anomaly-monitor" in res.stdout
+    assert "flumen-prod-anomaly-alerts" in res.stdout
 
     res_json = runner.invoke(app, ["status", "--detail", "--config-dir", str(sample_config_dir), "--json"])
     assert res_json.exit_code == 0
     payload = json.loads(res_json.stdout)
     assert payload["org_id"] == "o-test12345"
     assert payload["drift"]["has_drift"] is True
+    assert payload["organizational_units"] == {"Security": "ou-sec-1"}
+    assert payload["cost_anomaly"]["subscriptions"][0]["Threshold"] == 100.0
 
     res_strict = runner.invoke(app, ["status", "--config-dir", str(sample_config_dir), "--strict"])
     assert res_strict.exit_code == 1
 
 
-def test_cli_deploy_run_dry_run_full(sample_config_dir, monkeypatch):
-    """Verify that deploy run --dry-run outputs clean structured plan tables and summary."""
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-    result = runner.invoke(app, ["deploy", "run", "--dry-run", "--config-dir", str(sample_config_dir)])
-    assert result.exit_code == 0
-    assert "Dry-Run Execution Plan (Simulation Mode)" in result.stdout
-    assert "Phase 0 Plan: Pre-Flight Operational Readiness Scope" in result.stdout
-    assert "Phase 1 Plan: Organization Bootstrap & Management Baseline" in result.stdout
-    assert "Phase 2 Plan: Organizational Units Hierarchy" in result.stdout
-    assert "Phase 2 Plan: Service Control Policies (SCPs)" in result.stdout
-    assert "Phase 3 Plan: Foundational Organization CloudTrail" in result.stdout
-    assert "Phase 4 Plan: Account Factory Provisioning & Baselining" in result.stdout
-    assert "Phase 5 Plan: Foundation Infrastructure & Security Delegation" in result.stdout
-    assert "Phase 6 Plan: IAM Identity Center Permission Sets" in result.stdout
-    assert "Phase 6 Plan: Identity Center Users & Groups" in result.stdout
-    assert "Dry-Run Plan Summary" in result.stdout
-    assert "Simulation Scope:" in result.stdout
-    assert "tarmac deploy run" in result.stdout
+def _fake_plan(phases):
+    from tarmac.services.plan import DeploymentPlan, PhasePlan, PlanItem
+
+    plan = DeploymentPlan(region="eu-west-1")
+    for number in phases:
+        plan.phases.append(
+            PhasePlan(
+                number,
+                f"Title {number}",
+                [PlanItem("stack", f"stack-{number}", "NO CHANGE")],
+                [f"note {number}"],
+            )
+        )
+    plan.phases[0].items.append(PlanItem("OU", "Workloads", "CREATE", "under Root"))
+    return plan
 
 
-def test_cli_deploy_run_dry_run_single_phase(sample_config_dir, monkeypatch):
-    """Verify that deploy run --dry-run --phase 4 executes only Phase 4 and renders its plan table."""
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
+def _patch_planner(monkeypatch):
+    built: dict[str, object] = {}
+
+    class FakePlanner:
+        def __init__(self, *args, **kwargs):
+            built["kwargs"] = kwargs
+
+        def build(self, phases):
+            built["phases"] = phases
+            return _fake_plan(phases)
+
+    monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: MagicMock())
+    monkeypatch.setattr("tarmac.cli.deploy.Planner", FakePlanner)
+    return built
+
+
+def test_cli_deploy_dry_run_renders_every_phase(sample_config_dir, monkeypatch):
+    built = _patch_planner(monkeypatch)
+    result = runner.invoke(app, ["deploy", "--dry-run", "--config-dir", str(sample_config_dir)])
+    assert result.exit_code == 0, result.output
+    assert built["phases"] == [1, 2, 3, 4, 5, 6]
+    for number in range(1, 7):
+        assert f"Phase {number}: Title {number}" in result.stdout
+    assert "Workloads" in result.stdout
+    assert "1 CREATE" in result.stdout
+    assert "6 NO CHANGE" in result.stdout
+
+
+def test_cli_deploy_dry_run_single_phase_json(sample_config_dir, monkeypatch):
+    built = _patch_planner(monkeypatch)
     result = runner.invoke(
-        app, ["deploy", "run", "--dry-run", "--phase", "4", "--config-dir", str(sample_config_dir)]
+        app, ["deploy", "--dry-run", "--phase", "4", "--json", "--config-dir", str(sample_config_dir)]
     )
-    assert result.exit_code == 0
-    assert "Phase 4 Plan: Account Factory Provisioning & Baselining" in result.stdout
-    assert "Simulation Scope: Phase 4" in result.stdout
-    assert "Phase 1 Plan:" not in result.stdout
-
-
-def test_cli_deploy_run_dry_run_json(sample_config_dir, monkeypatch):
-    """Verify that deploy run --dry-run --json outputs structured, machine-readable JSON."""
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-    result = runner.invoke(
-        app, ["deploy", "run", "--dry-run", "--json", "--config-dir", str(sample_config_dir)]
-    )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
+    assert built["phases"] == [4]
     data = json.loads(result.stdout)
     assert data["dry_run"] is True
-    assert "target_region" in data
-    assert "organization" in data
-    assert "phases" in data
-    assert "summary" in data
-    assert data["summary"]["outcome"] == "SUCCESS"
-    assert set(data["summary"]["phases_simulated"]) == {0, 1, 2, 3, 4, 5, 6}
-    assert "0_preflight" in data["phases"]
-    assert "1_org" in data["phases"]
-    assert "2_ou" in data["phases"]
-    assert "3_cloudtrail" in data["phases"]
-    assert "4_accounts" in data["phases"]
-    assert "5_foundation" in data["phases"]
-    assert "6_identity" in data["phases"]
+    assert [p["phase"] for p in data["phases"]] == [4]
+    assert data["summary"] == {"NO CHANGE": 1, "CREATE": 1}
 
 
-def test_cli_deploy_run_dry_run_json_single_phase(sample_config_dir, monkeypatch):
-    """Verify that deploy run --dry-run --phase 4 --json outputs JSON scoped only to Phase 4."""
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
+def test_cli_deploy_account_filter_needs_phase_4(sample_config_dir):
     result = runner.invoke(
-        app, ["deploy", "run", "--dry-run", "--phase", "4", "--json", "--config-dir", str(sample_config_dir)]
+        app, ["deploy", "--dry-run", "--account", "deployment", "--config-dir", str(sample_config_dir)]
     )
-    assert result.exit_code == 0
-    data = json.loads(result.stdout)
-    assert data["dry_run"] is True
-    assert data["summary"]["phases_simulated"] == [4]
-    assert list(data["phases"].keys()) == ["4_accounts"]
-    assert len(data["phases"]["4_accounts"]) > 0
+    assert result.exit_code == 2
+    assert "--phase 4" in result.output
+
+
+def test_cli_deploy_account_filter_rejects_undeclared_accounts(sample_config_dir):
+    result = runner.invoke(
+        app,
+        ["deploy", "--dry-run", "--phase", "4", "-a", "nope", "--config-dir", str(sample_config_dir)],
+    )
+    assert result.exit_code == 2
+    assert "Not declared in accounts.yaml: nope" in result.output
+
+
+def test_cli_deploy_skip_preflight_only_for_a_full_run(sample_config_dir):
+    result = runner.invoke(
+        app,
+        ["deploy", "--yes", "--phase", "2", "--skip-preflight", "--config-dir", str(sample_config_dir)],
+    )
+    assert result.exit_code == 2
 
 
 def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_dir, monkeypatch):
@@ -858,7 +875,7 @@ def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_
 
     result = runner.invoke(
         app,
-        ["deploy", "run", "--config-dir", str(sample_config_dir), "--phase", "4", "--yes"],
+        ["deploy", "--config-dir", str(sample_config_dir), "--phase", "4", "--yes"],
     )
     assert result.exit_code != 0
     mock_org_service.record_phase_completed.assert_not_called()
@@ -895,7 +912,6 @@ def test_deploy_hardening_stacks_skips_log_archive_when_requested(sample_config_
         sample_config_dir.parent,
         "o-test123",
         accts,
-        dry_run=False,
         skip_log_archive_hardening=True,
     )
 

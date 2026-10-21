@@ -8,6 +8,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
 from ..core.stack_names import Bucket, Stack
+from .baseline import budget_stack_name
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
@@ -30,7 +31,7 @@ class WorkloadTeardown(TeardownBase):
         for acct_def in bundle.accounts.accounts:
             acct_name = acct_def.name
             acct_id = bundle.resolve_account_id(acct_name, accts) or ""
-            budget_name = f"{acct_name}-monthly-budget"
+            budget_name = budget_stack_name(acct_name)
 
             if not acct_id:
                 message = "Account not resolved in active accounts"

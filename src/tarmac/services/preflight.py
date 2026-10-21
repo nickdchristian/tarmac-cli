@@ -130,7 +130,7 @@ class PreflightService:
                 target="Management Account",
                 status=PreflightCheckStatus.INFO,
                 live_value="Not Initialized / Inaccessible",
-                action_required="Run 'tarmac deploy run --phase 1' or check AWS Organizations permissions",
+                action_required="Run 'tarmac deploy --phase 1' or check AWS Organizations permissions",
             )
 
     def check_root_mfa(self) -> PreflightCheckResult:
@@ -219,7 +219,7 @@ class PreflightService:
                             target="Management Account",
                             status=PreflightCheckStatus.WARN,
                             live_value="Not Configured",
-                            action_required="Run 'tarmac deploy run --phase 1' to configure",
+                            action_required="Run 'tarmac deploy --phase 1' to configure",
                         )
                     )
         except AWS_ERRORS as e:
@@ -357,7 +357,7 @@ class PreflightService:
                 live_value=f"{len(active_keys)} active (missing: {missing_str})",
                 action_required=(
                     f"Activate missing tag(s) ({missing_str}) in Billing & Cost Management console "
-                    "or run: tarmac deploy run --phase 1"
+                    "or run: tarmac deploy --phase 1"
                 ),
             )
         except ClientError as e:

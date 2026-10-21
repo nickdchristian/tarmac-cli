@@ -147,7 +147,7 @@ def test_deploy_binds_the_phase_name_while_a_phase_runs(tmp_path):
     from helpers import make_config
     from typer.testing import CliRunner
 
-    from tarmac.cli.deploy import app
+    from tarmac.cli.main import app
     from tarmac.core.logging import current_context
 
     seen: list[str | None] = []
@@ -159,7 +159,7 @@ def test_deploy_binds_the_phase_name_while_a_phase_runs(tmp_path):
             side_effect=lambda *a, **k: seen.append(current_context().get("phase")),
         ),
     ):
-        res = CliRunner().invoke(app, ["run", "--yes", "--phase", "1", "-c", str(cfg)])
+        res = CliRunner().invoke(app, ["deploy", "--yes", "--phase", "1", "-c", str(cfg)])
 
     assert res.exit_code == 0, res.output
     assert seen == ["organization"]
