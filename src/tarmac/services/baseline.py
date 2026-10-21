@@ -6,10 +6,11 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.adoption import ADOPT_HINT, adopt_existing
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import AccountDef, AnomalyDetectionConfig, BudgetConfig
-from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
+from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
 from ..core.logging import bind, with_current_context
 from ..core.models import (
     BASELINE_COMPLETED,
@@ -298,6 +299,7 @@ class BaselineService:
             cfn_service = CloudFormationService(self.session_mgr)
 
             def _cleanup_orphan_budget() -> None:
+                conflict: GovernanceError | None = None
                 try:
                     budgets_client = self.session_mgr.get_member_client(
                         account_id, "budgets", region_name="us-east-1"
@@ -311,6 +313,19 @@ class BaselineService:
                             account_name,
                             account_id,
                         )
+                        previous = resp["Budget"]
+                        limit = previous.get("BudgetLimit") or {}
+                        if not adopt_existing():
+                            conflict = GovernanceError(
+                                f"A budget named '{budget_name}' already exists in account '{account_name}' "
+                                f"({account_id}) and tarmac did not create it.",
+                                details=(
+                                    f"Its limit is {limit.get('Amount', '?')} {limit.get('Unit', '')}"
+                                    f" ({previous.get('TimeUnit', '?')}). Tarmac would delete it and create "
+                                    f"its own. {ADOPT_HINT} Or rename/delete it yourself first."
+                                ),
+                            )
+                            raise conflict
                         budgets_client.delete_budget(AccountId=account_id, BudgetName=budget_name)
                         audit(
                             "delete",
@@ -319,12 +334,18 @@ class BaselineService:
                             f"Deleted unmanaged budget '{budget_name}' in account '{account_name}' "
                             "so CloudFormation can manage it",
                             account_id=account_id,
+                            # Kept so the replaced budget can be recreated by hand if it mattered.
+                            previous_limit=f"{limit.get('Amount', '?')} {limit.get('Unit', '')}".strip(),
+                            previous_time_unit=previous.get("TimeUnit"),
+                            previous_budget_type=previous.get("BudgetType"),
                         )
                 except ClientError as e:
                     code = e.response.get("Error", {}).get("Code", "")
                     if code not in ("NotFoundException", "ResourceNotFoundException"):
                         logger.debug("Error checking existing budget in %s: %s", account_name, e)
                 except AWS_ERRORS as e:
+                    if e is conflict:
+                        raise
                     logger.debug("Could not inspect existing budget in %s: %s", account_name, e)
 
             cfn_report = cfn_service.deploy_stack(

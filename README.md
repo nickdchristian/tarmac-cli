@@ -307,9 +307,56 @@ cloudtrail:
 
 Deleted objects are purged for good seven days later and cannot be recovered, so pick a value that meets your audit and compliance requirements (many frameworks ask for a year or more). `tarmac deploy run --dry-run` shows the retention that will be applied. The setting is applied to the log archive stack; changing it re-deploys that stack.
 
+### Security Hub standards for every account
+
+```yaml
+security_services:
+  delegated_account: audit
+  securityhub:
+    enabled: true
+    standards: [aws-foundational-security-best-practices]
+    central_configuration: true   # default; false = per-Region local configuration
+```
+
+With `central_configuration` (the default, used when `auto_enable_members` is true) the audit account switches Security
+Hub to [central configuration](https://docs.aws.amazon.com/securityhub/latest/userguide/start-central-configuration.html)
+and applies one policy, `tarmac-security-baseline`, to the organization root. Existing and new accounts then get Security
+Hub with exactly the standards you list, in the primary Region (the aggregation Region) and the Regions linked to the
+finding aggregator. The old local mode left new accounts with Security Hub on but no standards.
+
+The linked Regions are exactly the Regions you declare (the primary Region aggregates; the rest are linked, or none for a
+single-Region deployment). A central policy turns Security Hub on in every linked Region of every account, so tarmac
+never links "all Regions" in this mode. An existing aggregator is narrowed to match.
+
+Switching an existing organization is guarded. tarmac stops, rather than guess, when Security Hub already has member
+accounts configured one by one, or when the root already uses a configuration policy tarmac did not create, because a
+policy can replace what those accounts enabled themselves. Review the difference and re-run with `--adopt-existing`, or
+set `central_configuration: false` to keep local configuration. The home Region (`organization.primary_region`) cannot be an
+opt-in Region such as `af-south-1` or `me-south-1`, because Security Hub does not allow it; tarmac checks this and stops
+before changing anything. This behaviour has not been verified against a live organization yet.
+
+Notes: policies can only be managed from the primary Region, which must not be an opt-in Region. In central mode the
+per-account settings are managed by the policy, so change standards in `organization.yaml` rather than by hand.
+`tarmac deploy destroy --disable-security-services` removes the policy and returns the organization to local
+configuration before disabling Security Hub.
+
 ### Encryption of the log archive
 
 `cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.
+
+### Existing resources with the same name
+
+Tarmac will not overwrite or delete something it did not create. If an SCP or a budget it would manage already
+exists with the same name:
+
+* **SCP** that is not tagged `tarmac:managed-by=tarmac` and whose content differs from your policy file: the run stops
+  and lists the live and declared statement IDs. (An untagged SCP that already matches is taken over quietly, which is
+  what happens after `tarmac import`.)
+* **Budget** named `<account>-monthly-budget` that tarmac did not create: the account's budget step fails with its
+  current limit. Tarmac would otherwise delete it and create its own.
+
+After reviewing, re-run with `--adopt-existing` (on `deploy run`, `org scp plan|apply`, `account apply` and
+`account baseline`) to let tarmac take it over. The old budget's limit and period are recorded in the audit log.
 
 ## Safe Teardown
 

@@ -56,3 +56,11 @@ def no_credential_check(monkeypatch: pytest.MonkeyPatch) -> None:
     """CLI tests run without AWS credentials; the up-front check has its own tests (test_credentials_fail_fast)."""
     for module in ("deploy", "importer"):
         monkeypatch.setattr(f"tarmac.cli.{module}.require_credentials_or_exit", lambda _mgr: None)
+
+
+@pytest.fixture(autouse=True)
+def reset_adopt_existing() -> None:
+    """--adopt-existing lives in a context variable; never let one test's setting leak into the next."""
+    from tarmac.core.adoption import set_adopt_existing
+
+    set_adopt_existing(False)

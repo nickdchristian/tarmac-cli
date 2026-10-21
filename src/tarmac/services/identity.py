@@ -457,6 +457,13 @@ class IdentityService:
             users = resp.get("Users", [])
             if users:
                 logger.debug("User '%s' already exists.", user_def.username)
+                audit(
+                    "create",
+                    f"identity-user:{user_def.username}",
+                    Outcome.UNCHANGED,
+                    f"Identity Center user '{user_def.username}' already exists",
+                    dry_run=dry_run,
+                )
                 return users[0]["UserId"]
         except ClientError as e:
             logger.warning("Error checking user '%s': %s", user_def.username, e)
@@ -509,6 +516,13 @@ class IdentityService:
             groups = resp.get("Groups", [])
             if groups:
                 logger.debug("Group '%s' already exists.", group_def.name)
+                audit(
+                    "create",
+                    f"identity-group:{group_def.name}",
+                    Outcome.UNCHANGED,
+                    f"Identity Center group '{group_def.name}' already exists",
+                    dry_run=dry_run,
+                )
                 return groups[0]["GroupId"]
         except ClientError as e:
             logger.warning("Error checking group '%s': %s", group_def.name, e)

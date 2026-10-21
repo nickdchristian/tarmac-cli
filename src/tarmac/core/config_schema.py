@@ -181,6 +181,15 @@ class GuardDutyConfig(BaseModel):
 class SecurityHubConfig(BaseModel):
     enabled: bool = False
     auto_enable_members: bool = True
+    central_configuration: bool = Field(
+        default=True,
+        description=(
+            "Manage Security Hub with one central configuration policy applied to the whole organization "
+            "from the primary Region (the standards below reach every account, existing and new). Used when "
+            "auto_enable_members is true. False keeps Region-by-Region local configuration, where new member "
+            "accounts join Security Hub with no standards."
+        ),
+    )
     standards: list[str] = Field(default_factory=lambda: ["aws-foundational-security-best-practices"])
 
 
