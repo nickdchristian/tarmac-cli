@@ -1,5 +1,6 @@
 """Service Control Policy (SCP) management service."""
 
+import hashlib
 import json
 import logging
 import re
@@ -382,6 +383,23 @@ class SCPService:
 
         return results
 
+    @staticmethod
+    def _logical_ids_for_policies(policies: list[SCPDef]) -> dict[str, str]:
+        """Build unique, CloudFormation-valid logical resource IDs for declared SCPs."""
+        bases: dict[str, str] = {p.name: "Scp" + re.sub(r"[^a-zA-Z0-9]", "", p.name) for p in policies}
+        counts: dict[str, int] = {}
+        for base in bases.values():
+            counts[base] = counts.get(base, 0) + 1
+        result: dict[str, str] = {}
+        for p in policies:
+            base = bases[p.name]
+            if base == "Scp" or counts[base] > 1:
+                digest = hashlib.sha256(p.name.encode("utf-8")).hexdigest()[:8].capitalize()
+                result[p.name] = f"{base}{digest}"
+            else:
+                result[p.name] = base
+        return result
+
     def synthesize_template(
         self,
         config: ServiceControlPoliciesConfig,
@@ -396,6 +414,7 @@ class SCPService:
         applied by a normal stack update right after the import.
         """
         resources: dict[str, Any] = {}
+        logical_ids = self._logical_ids_for_policies(config.policies)
         for scp_def in config.policies:
             policy_path = resolve_resource_path(scp_def.policy_file, project_root=project_root)
             content_str = policy_path.read_text(encoding="utf-8")
@@ -411,7 +430,7 @@ class SCPService:
                         "Target '%s' for policy '%s' not found in OUs or Root", target, scp_def.name
                     )
 
-            resource_logical_id = "Scp" + re.sub(r"[^a-zA-Z0-9]", "", scp_def.name)
+            resource_logical_id = logical_ids[scp_def.name]
             resources[resource_logical_id] = {
                 "Type": "AWS::Organizations::Policy",
                 "DeletionPolicy": "Retain",
@@ -474,6 +493,7 @@ class SCPService:
         if not dry_run:
             self.ensure_scp_enabled(root_id)
 
+        logical_ids = self._logical_ids_for_policies(config.policies)
         template_dict = self.synthesize_template(config, root_id, ou_map, project_root)
         template_body = yaml.dump(template_dict, sort_keys=False)
 
@@ -502,7 +522,7 @@ class SCPService:
                     resources_to_import: list[dict[str, Any]] = []
                     for scp_def in config.policies:
                         if scp_def.name in existing_scps:
-                            logical_id = "Scp" + re.sub(r"[^a-zA-Z0-9]", "", scp_def.name)
+                            logical_id = logical_ids[scp_def.name]
                             policy_id = existing_scps[scp_def.name]["Id"]
                             resources_to_import.append(
                                 {
@@ -517,12 +537,15 @@ class SCPService:
                         sorted(pre_existing),
                         stack_name,
                     )
-                    import_template_body = yaml.dump(
-                        self.synthesize_template(
-                            config, root_id, ou_map, project_root, include_ownership_tag=False
-                        ),
-                        sort_keys=False,
+                    import_template_dict = self.synthesize_template(
+                        config, root_id, ou_map, project_root, include_ownership_tag=False
                     )
+                    import_template_dict["Resources"] = {
+                        logical_ids[p.name]: import_template_dict["Resources"][logical_ids[p.name]]
+                        for p in config.policies
+                        if p.name in existing_scps
+                    }
+                    import_template_body = yaml.dump(import_template_dict, sort_keys=False)
                     cfn_report = cfn_service.import_resources_and_deploy_stack(
                         cfn_client=cfn_client,
                         stack_name=stack_name,
@@ -532,7 +555,7 @@ class SCPService:
                         org_tags=org_tags,
                         dry_run=dry_run,
                     )
-                    # The policies are stack-managed now: apply the full template (adds ownership tags).
+                    # The policies are stack-managed now: apply the full template (adds ownership tags and any new SCPs).
                     cfn_service.deploy_stack(
                         cfn_client=cfn_client,
                         stack_name=stack_name,
@@ -545,10 +568,13 @@ class SCPService:
                     import_results: list[SCPReconciliationResult] = []
                     for scp_def in config.policies:
                         targets_for_policy: list[str] = []
+                        unresolved: list[str] = []
                         for target in scp_def.targets:
                             resolved = self._resolve_target_id(target, root_id, ou_map)
                             if resolved:
                                 targets_for_policy.append(f"{resolved[1]} ({resolved[0]})")
+                            else:
+                                unresolved.append(target)
                         import_results.append(
                             SCPReconciliationResult(
                                 name=scp_def.name,
@@ -556,7 +582,8 @@ class SCPService:
                                 action_taken=cfn_report.action,
                                 attached_targets=targets_for_policy,
                                 newly_attached_targets=[],
-                                status="SUCCEEDED",
+                                status="FAILED" if unresolved else "SUCCEEDED",
+                                unresolved_targets=unresolved,
                             )
                         )
                     return import_results
@@ -575,10 +602,13 @@ class SCPService:
         action = cfn_report.action
         for scp_def in config.policies:
             attached_targets: list[str] = []
+            unresolved_targets: list[str] = []
             for target in scp_def.targets:
                 resolved = self._resolve_target_id(target, root_id, ou_map)
                 if resolved:
                     attached_targets.append(f"{resolved[1]} ({resolved[0]})")
+                else:
+                    unresolved_targets.append(target)
             results.append(
                 SCPReconciliationResult(
                     name=scp_def.name,
@@ -586,7 +616,8 @@ class SCPService:
                     action_taken=action,
                     attached_targets=attached_targets,
                     newly_attached_targets=attached_targets if action == "CREATED" else [],
-                    status="SUCCEEDED",
+                    status="FAILED" if unresolved_targets else "SUCCEEDED",
+                    unresolved_targets=unresolved_targets,
                 )
             )
         return results

@@ -6,6 +6,7 @@ audit account, are touched, and only in the declared regions and declared accoun
 """
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -240,11 +241,26 @@ class SecurityServicesTeardown:
                 sh.start_configuration_policy_disassociation(
                     ConfigurationPolicyIdentifier=policy_id, Target={"RootId": roots[0]["Id"]}
                 )
-            sh.delete_configuration_policy(Identifier=policy_id)
+            self._delete_configuration_policy_with_retry(sh, policy_id)
         sh.update_organization_configuration(
             AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "LOCAL"}
         )
         return True
+
+    @staticmethod
+    def _delete_configuration_policy_with_retry(
+        sh: Any, policy_id: str, max_attempts: int = 15, poll_interval: float = 1.0
+    ) -> None:
+        """Delete a Security Hub configuration policy, retrying while async disassociation finishes."""
+        for attempt in range(max_attempts):
+            try:
+                sh.delete_configuration_policy(Identifier=policy_id)
+                return
+            except ClientError as e:
+                if _code(e) in ("InvalidInputException", "ConflictException") and attempt < max_attempts - 1:
+                    time.sleep(poll_interval)
+                    continue
+                raise
 
     def _disable_hub(self, account_id: str, region: str) -> bool:
         sh = self.session_mgr.get_member_client(account_id, "securityhub", region_name=region)

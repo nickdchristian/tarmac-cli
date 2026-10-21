@@ -1,5 +1,6 @@
 """CLI commands for AWS Organizations and Management Account bootstrap."""
 
+import contextlib
 from pathlib import Path
 
 import typer
@@ -160,8 +161,14 @@ def enable_root_access(
     try:
         session_mgr = AwsSessionManager(region_name=target_region)
         service = OrganizationService(session_mgr)
+        caller = session_mgr.get_caller_identity()
+        mgmt_id = str(caller.get("Account", ""))
         acct_id_map = get_active_account_id_map(session_mgr)
-        results = service.configure_root_access(bundle.org.root_access_management, account_id_map=acct_id_map)
+        results = service.configure_root_access(
+            bundle.org.root_access_management,
+            account_id_map=acct_id_map,
+            management_account_id=mgmt_id,
+        )
         for feature, status in results.items():
             feature_title = feature.replace("_", " ").title()
             if status:
@@ -242,6 +249,23 @@ def _render_scp_results(results: list[SCPReconciliationResult]) -> None:
     console.print(table)
 
 
+def _has_active_scp_stack(session_mgr: AwsSessionManager, org_name: str) -> bool:
+    """Return True if the organization SCP CloudFormation stack is currently active."""
+    with contextlib.suppress(Exception):
+        cfn_client = session_mgr.get_client("cloudformation")
+        resp = cfn_client.describe_stacks(StackName=f"{org_name}-organization-scps")
+        stacks = resp.get("Stacks", [])
+        if stacks and isinstance(stacks, list):
+            status = stacks[0].get("StackStatus")
+            return status in (
+                "CREATE_COMPLETE",
+                "UPDATE_COMPLETE",
+                "IMPORT_COMPLETE",
+                "UPDATE_ROLLBACK_COMPLETE",
+            )
+    return False
+
+
 def _execute_scp_reconciliation(
     config_dir: Path | None,
     region: str | None,
@@ -263,13 +287,24 @@ def _execute_scp_reconciliation(
         root_id = ou_service.get_root_id()
         ou_map = ou_service.list_all_ous(root_id)
 
-        results = scp_service.reconcile_all(
-            config=scp_config,
-            root_id=root_id,
-            ou_map=ou_map,
-            project_root=bundle.config_dir.parent,
-            dry_run=dry_run,
-        )
+        if not dry_run and _has_active_scp_stack(session_mgr, bundle.org.organization.name):
+            results = scp_service.reconcile_via_cloudformation(
+                config=scp_config,
+                root_id=root_id,
+                ou_map=ou_map,
+                project_root=bundle.config_dir.parent,
+                org_name=bundle.org.organization.name,
+                org_tags=bundle.get_organization_tags(),
+                dry_run=dry_run,
+            )
+        else:
+            results = scp_service.reconcile_all(
+                config=scp_config,
+                root_id=root_id,
+                ou_map=ou_map,
+                project_root=bundle.config_dir.parent,
+                dry_run=dry_run,
+            )
         _render_scp_results(results)
         unresolved = {r.name: r.unresolved_targets for r in results if r.unresolved_targets}
         if unresolved:

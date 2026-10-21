@@ -124,6 +124,27 @@ def test_root_access_prints_enabled_and_skipped_features(cfg: Path, org_mocks):
     assert "Enabled Iam Trusted Access" in res.output
     assert "Root Sessions: AccessDenied" in res.output
     assert "Delegated Admin: Skipped or disabled" in res.output
+    assert svc.configure_root_access.call_args.kwargs["management_account_id"] == "111111111111"
+
+
+def test_scp_apply_uses_cloudformation_when_scp_stack_is_active(cfg: Path):
+    with (
+        patch("tarmac.cli.org.AwsSessionManager") as mgr_cls,
+        patch("tarmac.cli.org.OUService") as ou_cls,
+        patch("tarmac.cli.org.SCPService") as scp_cls,
+    ):
+        cfn = MagicMock()
+        cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "UPDATE_COMPLETE"}]}
+        mgr_cls.return_value.get_client.return_value = cfn
+        ou_cls.return_value.get_root_id.return_value = "r-root"
+        ou_cls.return_value.list_all_ous.return_value = {}
+        scp_cls.return_value.reconcile_via_cloudformation.return_value = []
+
+        res = runner.invoke(org_cli.app, ["scp", "apply", "-c", str(cfg)])
+
+    assert res.exit_code == 0, res.output
+    scp_cls.return_value.reconcile_via_cloudformation.assert_called_once()
+    scp_cls.return_value.reconcile_all.assert_not_called()
 
 
 def test_root_access_governance_error_exits_1(cfg: Path, org_mocks):

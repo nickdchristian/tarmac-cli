@@ -776,3 +776,67 @@ def test_is_tarmac_managed_permission_set_fails_closed():
 
     paginator.paginate.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "x")
     assert service.is_tarmac_managed_permission_set("i", "p") is False
+
+
+def test_identity_synthesize_permission_sets_disambiguates_colliding_logical_ids():
+    service = _identity_service(MagicMock(), MagicMock())
+    defs = [
+        PermissionSetDef(name="dev-admin", managed_policies=[]),
+        PermissionSetDef(name="dev_admin", managed_policies=[]),
+        PermissionSetDef(name="---", managed_policies=[]),
+    ]
+    tmpl = service.synthesize_permission_sets_template("arn:inst", defs)
+    resources = tmpl["Resources"]
+    assert len(resources) == 3
+    for logical_id in resources:
+        assert logical_id.isalnum()
+        assert logical_id != "PermissionSet"
+
+
+def test_identity_sync_permission_sets_imports_only_preexisting_when_mixed_with_new(tmp_path: Path):
+    """When only a subset of declared permission sets exist in AWS, IMPORT includes only pre-existing ones."""
+    import yaml
+
+    mock_sso, mock_cfn = MagicMock(), MagicMock()
+    service = _identity_service(mock_sso, mock_cfn)
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {"PermissionSets": ["arn:aws:sso:::permissionSet/ssoins-1/ps-existing"]}
+    ]
+    mock_sso.get_paginator.return_value = paginator
+    mock_sso.describe_permission_set.return_value = {
+        "PermissionSet": {
+            "Name": "ExistingRole",
+            "PermissionSetArn": "arn:aws:sso:::permissionSet/ssoins-1/ps-existing",
+        }
+    }
+    mock_cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+
+    defs = [
+        PermissionSetDef(name="ExistingRole", managed_policies=[]),
+        PermissionSetDef(name="BrandNewRole", managed_policies=[]),
+    ]
+    service.sync_permission_sets_via_cloudformation(defs, project_root=tmp_path, org_name="myorg")
+
+    import_kwargs = mock_cfn.create_change_set.call_args.kwargs
+    import_doc = yaml.safe_load(import_kwargs["TemplateBody"])
+    assert list(import_doc["Resources"].keys()) == ["PermissionSetExistingRole"]
+    assert [r["LogicalResourceId"] for r in import_kwargs["ResourcesToImport"]] == [
+        "PermissionSetExistingRole"
+    ]
+
+    final_kwargs = (mock_cfn.create_stack.call_args or mock_cfn.update_stack.call_args).kwargs
+    final_doc = yaml.safe_load(final_kwargs["TemplateBody"])
+    assert set(final_doc["Resources"].keys()) == {"PermissionSetExistingRole", "PermissionSetBrandNewRole"}
+
+
+def test_identity_delete_permission_set_returns_false_on_client_error():
+    mock_sso = MagicMock()
+    service = _identity_service(mock_sso, MagicMock())
+    service.get_assignments_for_permission_set = MagicMock(return_value=[])  # type: ignore[method-assign]
+    mock_sso.delete_permission_set.side_effect = ClientError(
+        {"Error": {"Code": "ConflictException", "Message": "Still assigned"}}, "DeletePermissionSet"
+    )
+    assert service.delete_permission_set("arn:inst", "arn:ps") is False
