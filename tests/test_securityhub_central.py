@@ -1,7 +1,7 @@
 """Security Hub central configuration, run against botocore Stubber clients so every request is checked against the
 real service model (a misspelled parameter fails here, not in a live account)."""
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import boto3
@@ -302,8 +302,9 @@ def _regions_service(sh: Any, status: str | None) -> SecurityServicesService:
     service = _service(sh)
     ec2 = MagicMock()
     ec2.describe_regions.return_value = {"Regions": [{"RegionName": "af-south-1", "OptInStatus": status}]}
-    original = service.session_mgr.get_client.side_effect
-    service.session_mgr.get_client.side_effect = lambda svc, **k: ec2 if svc == "ec2" else original(svc, **k)
+    get_client = cast(MagicMock, service.session_mgr.get_client)
+    original = get_client.side_effect
+    get_client.side_effect = lambda svc, **k: ec2 if svc == "ec2" else original(svc, **k)
     return service
 
 
