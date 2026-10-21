@@ -1,6 +1,7 @@
 """`cloudtrail.enable_kms` unset: SSE-S3 for a new deployment, an existing KMS key is kept."""
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,7 +32,7 @@ def _cfn(parameter_value: str | None = None, *, missing: bool = False, error: st
     return cfn
 
 
-def _bundle(enable_kms: bool | None) -> SimpleNamespace:
+def _bundle(enable_kms: bool | None) -> Any:
     trail = CloudTrailConfig()
     if enable_kms is not None:
         trail.enable_kms = enable_kms
