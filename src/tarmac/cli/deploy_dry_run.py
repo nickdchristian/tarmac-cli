@@ -13,6 +13,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.config_schema import OUDef
 from ..services.accounts import AccountService
 from ..services.ou import OUService
+from .deploy_config_recorder import warn_if_config_recorder_missing
 from .ui import console, create_table, print_info, print_warning
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,12 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
         )
     else:
         table.add_row("Object Lock", "Off", "RECOMMENDED: GOVERNANCE, 365 DAYS")
+    if bundle.org.security_services.config_recorder.enabled:
+        table.add_row(
+            "AWS Config Bucket",
+            f"{bundle.org.organization.name}-org-config-logs-<log-archive-id>",
+            "CREATE (SEPARATE FROM CLOUDTRAIL, NO OBJECT LOCK)",
+        )
     table.add_row("Trail Scope", "Multi-Region (All accounts in organization)", "APPLY ORG-WIDE")
     console.print(table)
 
@@ -386,7 +393,31 @@ def _render_phase_5_dry_run(bundle: ConfigBundle) -> None:
     sh_params = f"Delegated Admin: {audit_name}, AutoEnable: {sec_services.securityhub.auto_enable_members}"
     table.add_row("Security Hub Service", audit_name, sh_params, sh_action)
 
+    config_cfg = sec_services.config_recorder
+    if config_cfg.enabled:
+        regions = list(
+            dict.fromkeys(
+                [bundle.org.organization.primary_region, *bundle.org.organization.additional_regions]
+            )
+        )
+        scope = (
+            f"global resources in {regions[0]}"
+            if config_cfg.include_global_resources
+            else "no global resources"
+        )
+        table.add_row(
+            "AWS Config recorders",
+            "All accounts (StackSet) + management",
+            f"Regions: {', '.join(regions)}; {scope}; {config_cfg.recording_frequency.lower()} recording",
+            "DEPLOY STACKSET",
+        )
+    else:
+        table.add_row(
+            "AWS Config recorders", "-", "Delivers to the central log bucket", "[dim]DISABLED[/dim]"
+        )
+
     console.print(table)
+    warn_if_config_recorder_missing(bundle)
 
 
 @_records_plan(6)

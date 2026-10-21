@@ -99,14 +99,23 @@ def warn_if_object_lock_unset(bundle: ConfigBundle) -> None:
         )
 
 
-def log_archive_parameters(bundle: ConfigBundle, org_id: str) -> dict[str, str]:
-    """CloudFormation parameters for the log-archive hardening stack (shared by deploy and baseline)."""
+def log_archive_parameters(
+    bundle: ConfigBundle, org_id: str, management_account_id: str = ""
+) -> dict[str, str]:
+    """CloudFormation parameters for the log-archive hardening stack (shared by deploy and baseline).
+
+    ``management_account_id`` is needed only when AWS Config recorders are enabled: the log archive creates a
+    separate bucket for Config history and lets the management account's recorder write to it.
+    """
     cloudtrail = bundle.org.cloudtrail
+    config_recorder = bundle.org.security_services.config_recorder
     params = {
         "OrganizationId": org_id,
         "OrgName": bundle.org.organization.name,
         "EnableKmsEncryption": "true" if cloudtrail.enable_kms else "false",
         "LogRetentionDays": str(cloudtrail.retention_days or 0),
+        "EnableConfigDelivery": "true" if config_recorder.enabled else "false",
+        "ManagementAccountId": management_account_id if config_recorder.enabled else "",
     }
     if cloudtrail.object_lock:
         params["ObjectLockMode"] = cloudtrail.object_lock.mode

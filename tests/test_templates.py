@@ -285,7 +285,7 @@ def test_log_archive_template_hardening(base: str):
 
     enc = res["AccessLogsBucket"]["Properties"]["BucketEncryption"]["ServerSideEncryptionConfiguration"]
     assert enc[0]["ServerSideEncryptionByDefault"]["SSEAlgorithm"] == "AES256"
-    sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"]]
+    sids = [s["Sid"] for s in key["Properties"]["KeyPolicy"]["Statement"] if isinstance(s, dict)]
     assert "AllowS3LogDeliveryEncrypt" not in sids
 
 

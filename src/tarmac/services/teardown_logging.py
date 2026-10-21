@@ -198,6 +198,7 @@ class LoggingTeardown(TeardownBase):
             buckets_to_empty: set[str] = {
                 f"{bundle.org.cloudtrail.bucket_prefix}-{log_acct_id}",
                 f"{bundle.org.organization.name}-org-cloudtrail-logs-{log_acct_id}",
+                f"{bundle.org.organization.name}-org-config-logs-{log_acct_id}",
                 f"{bundle.org.organization.name}-log-archive-access-logs-{log_acct_id}",
             }
             key_id = self._log_archive_key_id(cfn_client, stack_name) if status else None

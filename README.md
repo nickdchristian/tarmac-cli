@@ -331,6 +331,45 @@ This changes teardown. `tarmac deploy destroy` retries locked deletes with the g
 locks do not block it (the audit log records it). COMPLIANCE locks cannot be removed: destroy stops with an error
 and the log bucket stays until the retention period ends. Use `GOVERNANCE` in test organizations.
 
+### AWS Config recorders (optional)
+
+Off by default: AWS Config bills per configuration item, so the cost grows with accounts x Regions x resource changes.
+Turn it on to record resource configuration in every account:
+
+```yaml
+security_services:
+  config_recorder:
+    enabled: true
+    include_global_resources: true   # IAM and similar types, recorded in the primary region only
+    recording_frequency: CONTINUOUS  # DAILY costs less for resources that change often (not for Firewall Manager)
+  # config_recorder: null            # decided against it: hides the Security Hub warning below
+```
+
+Recorders are created in `primary_region` plus `additional_regions`, the same Regions GuardDuty and Security Hub use.
+Member accounts get them from one service-managed StackSet (`<org>-config-recorder`) targeting the organization root, so
+accounts created later receive the recorder without re-running tarmac. StackSets cannot target the management account,
+so it gets the same template as an ordinary stack in each Region, using AWS Config's service-linked role (the
+deployment role is not allowed to create IAM roles). Suspended accounts are left out.
+
+History and snapshots go to their own bucket in the log archive account (`<org>-org-config-logs-<account id>`), created
+by the log archive stack in phase 3 when this is enabled. It is separate from the CloudTrail bucket because AWS Config
+cannot deliver to a bucket with Object Lock default retention, so Config history is **not** locked. It uses the same KMS
+key setting and log expiry (`cloudtrail.retention_days`) as the CloudTrail bucket. Enabling the setting later means
+running phase 3 again before phase 5.
+
+Security Hub CSPM standards need a recorder to evaluate most of their controls (unless the newer AWS Security Hub is also
+enabled, which manages its own). While Security Hub is enabled and `config_recorder` is not mentioned in your
+configuration, `deploy` warns; write `config_recorder: null` (or `enabled: false`) to acknowledge it.
+
+Notes:
+
+* An account and Region can have only one customer-managed recorder. If one already exists (for example from Control
+  Tower), that instance fails and the run reports it; tarmac does not replace recorders it did not create, and it never
+  updates a StackSet that lacks its `tarmac:managed-by` tag. Service-linked recorders (such as Security Hub's) coexist.
+* Re-running with fewer Regions removes the recorders from the dropped Regions.
+* `tarmac deploy destroy` removes the StackSet, its instances and the management stacks before it touches the log
+  buckets. It leaves StackSets trusted access enabled.
+
 ### Encryption of the log archive
 
 `cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.

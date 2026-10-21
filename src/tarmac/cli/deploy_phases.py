@@ -23,6 +23,7 @@ from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
 from ..services.teardown import cleanup_orphaned_bucket
 from .common import get_active_account_id_map, log_archive_parameters, warn_if_object_lock_unset
+from .deploy_config_recorder import deploy_config_recorder
 from .deploy_dry_run import (
     _render_phase_0_dry_run,
     _render_phase_1_dry_run,
@@ -226,6 +227,7 @@ def _deploy_log_archive_hardening_stack(
             buckets = [
                 f"{bundle.org.organization.name}-log-archive-access-logs-{log_archive_id}",
                 f"{bundle.org.organization.name}-org-cloudtrail-logs-{log_archive_id}",
+                f"{bundle.org.organization.name}-org-config-logs-{log_archive_id}",
                 f"{bundle.org.cloudtrail.bucket_prefix}-{log_archive_id}",
             ]
             for b in set(buckets):
@@ -235,7 +237,7 @@ def _deploy_log_archive_hardening_stack(
         cfn_client,
         f"{bundle.org.organization.name}-log-archive-hardening",
         template_file,
-        log_archive_parameters(bundle, org_id),
+        log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", ""))),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
@@ -633,6 +635,10 @@ def _run_phase_5_hardening(
         dry_run,
         custom_tags=custom_tags,
         skip_log_archive_hardening=skip_log_archive_hardening,
+    )
+
+    deploy_config_recorder(
+        session_mgr, cfn_service, bundle, target_region, project_root, accts, custom_tags=custom_tags
     )
 
     _delegate_security_services(session_mgr, bundle, target_region, accts, dry_run)

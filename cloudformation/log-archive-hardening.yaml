@@ -44,6 +44,24 @@ Parameters:
       and skip the key and its request charges. An existing key is retained when switching to 'false' because
       logs written earlier still need it to be read.
 
+  EnableConfigDelivery:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      Create a bucket for AWS Config history and snapshots. It is separate from the CloudTrail bucket because AWS
+      Config cannot deliver to a bucket that has Object Lock default retention.
+
+  ManagementAccountId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^([0-9]{12})?$'
+    Description: >-
+      Management account ID. Its AWS Config recorder uses a service-linked role, so it delivers as the Config service
+      principal; member accounts deliver with their recorder role. Required when EnableConfigDelivery is 'true'.
+
   LogRetentionDays:
     Type: String
     Default: '0'
@@ -72,8 +90,16 @@ Parameters:
     AllowedPattern: '^[0-9]{1,5}$'
     Description: Days each new log object is locked for. Required when ObjectLockMode is set. Lifecycle expiry cannot delete a version before its lock ends.
 
+Rules:
+  ConfigDeliveryNeedsManagementAccount:
+    RuleCondition: !Equals [!Ref EnableConfigDelivery, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ManagementAccountId, '']]
+        AssertDescription: ManagementAccountId is required when EnableConfigDelivery is 'true'
+
 Conditions:
   HasObjectLock: !Not [!Equals [!Ref ObjectLockMode, '']]
+  CreateConfigBucket: !Equals [!Ref EnableConfigDelivery, 'true']
   UseKmsEncryption: !Equals [!Ref EnableKmsEncryption, 'true']
   HasLogRetention: !Not [!Equals [!Ref LogRetentionDays, '0']]
 
@@ -133,6 +159,36 @@ Resources:
             Condition:
               StringEquals:
                 aws:SourceOrgID: !Ref OrganizationId
+          - !If
+            - CreateConfigBucket
+            - Sid: AllowConfigRecorderRoleEncrypt
+              Effect: Allow
+              Principal: '*'
+              Action:
+                - kms:GenerateDataKey
+                - kms:Decrypt
+                - kms:DescribeKey
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  aws:PrincipalOrgID: !Ref OrganizationId
+                ArnLike:
+                  aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::*:role/tarmac-config-recorder-*'
+            - !Ref 'AWS::NoValue'
+          - !If
+            - CreateConfigBucket
+            - Sid: AllowConfigServiceEncryptManagementAccount
+              Effect: Allow
+              Principal:
+                Service: config.amazonaws.com
+              Action:
+                - kms:GenerateDataKey
+                - kms:Decrypt
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  aws:SourceAccount: !Ref ManagementAccountId
+            - !Ref 'AWS::NoValue'
           - Sid: AllowDecryptForLogAccess
             Effect: Allow
             Principal:
@@ -314,6 +370,125 @@ Resources:
                 s3:x-amz-acl: bucket-owner-full-control
                 aws:SourceOrgID: !Ref OrganizationId
 
+  # AWS Config history and snapshots. A separate bucket from CloudTrail's: AWS Config does not support delivery to
+  # a bucket with Object Lock default retention, so this one is deliberately not locked.
+  ConfigLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateConfigBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${OrgName}-org-config-logs-${AWS::AccountId}'
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: config-access/
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: !If [UseKmsEncryption, 'aws:kms', 'AES256']
+              KMSMasterKeyID: !If [UseKmsEncryption, !Ref LogArchiveKmsKey, !Ref 'AWS::NoValue']
+            BucketKeyEnabled: !If [UseKmsEncryption, true, false]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionOldVersionsToGlacier
+            Status: Enabled
+            NoncurrentVersionTransitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+            NoncurrentVersionExpirationInDays: 365
+          - !If
+            - HasLogRetention
+            - Id: ExpireLogsAfterRetention
+              Status: Enabled
+              ExpirationInDays: !Ref LogRetentionDays
+              NoncurrentVersionExpirationInDays: 7
+            - !Ref 'AWS::NoValue'
+          - !If
+            - HasLogRetention
+            - Id: RemoveExpiredDeleteMarkers
+              Status: Enabled
+              ExpiredObjectDeleteMarker: true
+            - !Ref 'AWS::NoValue'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Purpose
+          Value: Organization AWS Config History
+
+  ConfigLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateConfigBucket
+    Properties:
+      Bucket: !Ref ConfigLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequests
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ConfigLogsBucket.Arn
+              - !Sub '${ConfigLogsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          # The management account records with a service-linked role, which cannot write to S3, so AWS Config
+          # delivers as its service principal. aws:SourceAccount is the condition AWS Config documents for this.
+          - Sid: AWSConfigAclCheck
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action:
+              - s3:GetBucketAcl
+              - s3:ListBucket
+            Resource: !GetAtt ConfigLogsBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref ManagementAccountId
+          - Sid: AWSConfigWrite
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${ConfigLogsBucket.Arn}/AWSLogs/${ManagementAccountId}/Config/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceAccount: !Ref ManagementAccountId
+          # Member accounts record with a per-Region role (tarmac-config-recorder-<region>) that AWS Config assumes
+          # first; the organization condition keys are what the AWS Config documentation suggests for many accounts.
+          - Sid: AWSConfigRecorderRoleAclCheck
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - s3:GetBucketAcl
+              - s3:ListBucket
+            Resource: !GetAtt ConfigLogsBucket.Arn
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrganizationId
+              ArnLike:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::*:role/tarmac-config-recorder-*'
+          - Sid: AWSConfigRecorderRoleWrite
+            Effect: Allow
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${ConfigLogsBucket.Arn}/AWSLogs/*/Config/*'
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrganizationId
+              ArnLike:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::*:role/tarmac-config-recorder-*'
+
 Outputs:
   KmsKeyArn:
     Condition: UseKmsEncryption
@@ -346,3 +521,10 @@ Outputs:
     Value: !GetAtt OrganizationCloudTrailBucket.Arn
     Export:
       Name: !Sub '${AWS::StackName}-CloudTrailBucketArn'
+
+  ConfigBucketName:
+    Condition: CreateConfigBucket
+    Description: AWS Config history S3 bucket name
+    Value: !Ref ConfigLogsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigBucketName'

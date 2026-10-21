@@ -166,7 +166,7 @@ def _deploy_log_archive_stack(
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=bundle.config_dir.parent
     )
-    params = log_archive_parameters(bundle, org_id)
+    params = log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", "")))
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     report = service.deploy_stack(
         cfn_client,

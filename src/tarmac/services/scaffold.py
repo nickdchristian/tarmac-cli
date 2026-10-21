@@ -84,6 +84,15 @@ cloudtrail:
   #   mode: GOVERNANCE     # GOVERNANCE (bypassable) or COMPLIANCE (cannot be undone before it expires)
   #   retention_days: 365
 
+# Security services (all off unless enabled)
+# security_services:
+#   delegated_account: audit
+#   guardduty: {enabled: true}
+#   securityhub: {enabled: true}
+#   config_recorder:          # AWS Config in every account, delivered to its own log archive bucket. Billed per item.
+#     enabled: true           # Security Hub CSPM standards need it. `config_recorder: null` acknowledges the warning.
+#     recording_frequency: CONTINUOUS   # or DAILY, which costs less for resources that change often
+
 # Terraform Backend configuration
 terraform_backend:
   account: "Deployment"
