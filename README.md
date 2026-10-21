@@ -165,10 +165,12 @@ needs one non-root principal first. `tarmac preflight` and live `tarmac deploy r
    tarmac access bootstrap
    ```
 
-   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a least-privilege policy (see below; MFA enforced for IAM
+   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a policy scoped to what tarmac does (see below; MFA enforced for IAM
    users, IAM Identity Center sessions pass; 4-hour sessions).
 2. Create the organization (`tarmac org bootstrap` from CloudShell, or the console), enable **IAM Identity Center**, create an
-   administrator user, and sign in with `aws sso login`. Run tarmac as that identity.
+   administrator user, and sign in with `aws sso login`. Run tarmac as that identity. Choose the Identity Center Region
+   deliberately: an organization can have it in one Region only, and moving it later means deleting the instance and creating
+   another ([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)).
 3. `tarmac access check` confirms the credentials are non-root and can read the organization; on failure it prints a hint.
 
 Before Identity Center exists you can instead run `tarmac access bootstrap --with-bootstrap-user`. (The IAM Identity Center path above avoids creating an IAM user with a long-lived key and is the simpler route.) That also creates an
@@ -183,7 +185,7 @@ the organization trail, IAM Identity Center, GuardDuty/Security Hub delegation, 
 member accounts it may only assume `OrganizationAccountAccessRole`. It has no `iam:PassRole`, cannot create IAM roles or
 users, and an explicit deny stops it modifying its own role and policy, so changing the role is a root/admin task (re-run
 `tarmac access bootstrap`). A test checks the policy against every AWS API call in tarmac's source, so adding a new call
-without updating the policy fails CI. If a run reports `AccessDenied` for a new feature, deploy with
+without updating the policy fails CI, and another test keeps the policy under IAM's size limit with headroom. `tarmac preflight` compares the deployed `tarmac-access` stack with the template in your installed release and warns to re-run `tarmac access bootstrap` after an upgrade that changed it (it only looks at a stack with that default name). If a run reports `AccessDenied` for a new feature, deploy with
 `ManagedPolicyArn=arn:aws:iam::aws:policy/AdministratorAccess` as a stopgap and report the missing action. The policy has not
 yet been exercised end-to-end against a real organization; review it before relying on it in production.
 
@@ -254,6 +256,47 @@ For targeted management outside the end-to-end pipeline:
 
 ---
 
+## Example: restricting regions
+
+Tarmac does not choose which regions you may use, so no region SCP is attached by default.
+[`examples/policies/scp/deny-unused-regions.json`](examples/policies/scp/deny-unused-regions.json) is a starting
+point you can copy into your project's `policies/scp/` and reference from `organization.yaml`:
+
+1. Replace the `aws:RequestedRegion` list (`us-east-1`, `us-west-2` in the example) with the regions you use. Include
+   your `primary_region` and the region of your IAM Identity Center instance.
+2. Keep the `NotAction` list of global services (IAM, Organizations, Route 53, CloudFront, Support, STS, ...), or
+   those calls are denied everywhere.
+3. Keep the `TarmacDeploymentRole` and `OrganizationAccountAccessRole` exemption. Tarmac removes default VPCs in
+   every enabled region of each member account, and Phase 2 (SCPs) runs before the Phase 4 baseline, so without
+   the exemption that cleanup fails in the regions you blocked. Drop `OrganizationAccountAccessRole` from the
+   exemption only if you set `delete_default_vpc: false` (or have already cleaned those VPCs). The example names the
+   default role, `TarmacDeploymentRole`; if you bootstrapped with `--role-name`, change the exemption to that name, or
+   tarmac is locked out of the regions you blocked.
+
+SCPs do not apply to the management account. Test it on one OU before attaching it to the root.
+
+## Example: protecting GuardDuty and Security Hub
+
+Nothing stops an administrator of a member account from turning off GuardDuty or Security Hub there, so tarmac does not attach
+a protecting SCP by default (an SCP can lock you out; see above).
+[`examples/policies/scp/protect-security-services.json`](examples/policies/scp/protect-security-services.json) denies only the
+actions that switch them off or detach the account from the audit account: deleting the detector, disassociating from the
+administrator, stopping member monitoring, disabling Security Hub and its standards. Reading and configuring stay allowed. The
+action names are taken from the AWS Service Authorization Reference
+([GuardDuty](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonguardduty.html),
+[Security Hub](https://docs.aws.amazon.com/service-authorization/latest/reference/list_awssecurityhub.html)).
+
+The policy exempts `TarmacDeploymentRole` and `OrganizationAccountAccessRole`, which is how tarmac reaches member accounts, so
+`tarmac deploy destroy --disable-security-services` keeps working. Add the role your own administrators use (for example an
+`AWSReservedSSO_*` role) to the `aws:PrincipalARN` list, or they cannot turn the services off either; change `TarmacDeploymentRole`
+if you bootstrapped with `--role-name`. It is not run against a live organization; attach it to one test OU first.
+
+AWS Config is left out on purpose. AWS publishes an
+[example SCP for Config](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps_examples_config.html)
+(`config:DeleteConfigurationRecorder`, `StopConfigurationRecorder`, `DeleteDeliveryChannel`, `DeleteConfigRule`), but tarmac
+deploys recorders with StackSets, and I could not confirm which role name StackSets uses in member accounts, so a Config SCP could
+block its own updates.
+
 ## Logging and Audit Trail
 
 | Option | Effect |
@@ -307,9 +350,166 @@ cloudtrail:
 
 Deleted objects are purged for good seven days later and cannot be recovered, so pick a value that meets your audit and compliance requirements (many frameworks ask for a year or more). `tarmac deploy run --dry-run` shows the retention that will be applied. The setting is applied to the log archive stack; changing it re-deploys that stack.
 
+### Locking CloudTrail logs (S3 Object Lock)
+
+**Recommended, but off unless you set it.** Object Lock gives the log bucket a default retention so log files cannot be
+deleted or overwritten for that period, which is what makes the audit trail trustworthy. tarmac does not turn it on by
+itself because S3 cannot disable Object Lock on a bucket once it is on. While it is unset, `deploy` and `baseline` print
+a warning and the dry run shows it as off.
+
+```yaml
+cloudtrail:
+  object_lock:
+    mode: GOVERNANCE      # or COMPLIANCE
+    retention_days: 365
+  # object_lock: null     # decided against it: hides the warning
+```
+
+`GOVERNANCE` can be bypassed by principals with `s3:BypassGovernanceRetention`. `COMPLIANCE` cannot be shortened or
+removed by anyone, including the root user, until each object's period ends. The lock applies to objects written after
+it is enabled, and can be added to an existing log bucket later by setting it and re-running deploy. A lock longer than
+`cloudtrail.retention_days` (log expiry) is rejected, because lifecycle cannot delete locked versions.
+
+This changes teardown. `tarmac deploy destroy` retries locked deletes with the governance bypass, so GOVERNANCE
+locks do not block it (the audit log records it). COMPLIANCE locks cannot be removed: destroy stops with an error
+and the log bucket stays until the retention period ends. Use `GOVERNANCE` in test organizations.
+
+### AWS Config recorders (optional)
+
+Off by default: AWS Config bills per configuration item, so the cost grows with accounts x Regions x resource changes.
+Turn it on to record resource configuration in every account:
+
+```yaml
+security_services:
+  config_recorder:
+    enabled: true
+    include_global_resources: true   # IAM and similar types, recorded in the primary region only
+    recording_frequency: CONTINUOUS  # DAILY is $0.012/item vs $0.003: cheaper only above 4 changes a day
+  # config_recorder: null            # decided against it: hides the Security Hub warning below
+```
+
+Recorders are created in `primary_region` plus `additional_regions`, the same Regions GuardDuty and Security Hub use.
+They record every supported type except `AWS::Config::ResourceCompliance`: Security Hub updates that item on every
+compliance change, AWS says its checks do not need it, and it recommends not recording it when the recorder serves
+only Security Hub. Set `record_resource_compliance: true` if you use that history, or if a Region where IAM global types
+are not supported rejects the recorder.
+
+`DAILY` is billed at $0.012 per configuration item against $0.003 for `CONTINUOUS`, and records an item only when a
+resource differs from its previous one. It therefore saves money only for resources that change more than four times a
+day; for most accounts `CONTINUOUS` is the cheaper choice. Firewall Manager needs `CONTINUOUS`.
+Member accounts get them from one service-managed StackSet (`<org>-config-recorder`) targeting the organization root, so
+accounts created later receive the recorder without re-running tarmac. StackSets cannot target the management account,
+so it gets the same template as an ordinary stack in each Region, using AWS Config's service-linked role (the
+deployment role is not allowed to create IAM roles). Suspended accounts are left out.
+
+History and snapshots go to their own bucket in the log archive account (`<org>-org-config-logs-<account id>`), created
+by the log archive stack in phase 3 when this is enabled. It is separate from the CloudTrail bucket because AWS Config
+cannot deliver to a bucket with Object Lock default retention, so Config history is **not** locked. It uses the same KMS
+key setting and log expiry (`cloudtrail.retention_days`) as the CloudTrail bucket. Enabling the setting later means
+running phase 3 again before phase 5.
+
+Security Hub CSPM standards need a recorder to evaluate most of their controls (unless the newer AWS Security Hub is also
+enabled, which manages its own). While Security Hub is enabled and `config_recorder` is not mentioned in your
+configuration, `deploy` warns; write `config_recorder: null` (or `enabled: false`) to acknowledge it.
+
+`cloudtrail.object_lock: null` works the same way: both warnings are silenced by the key being present in
+`organization.yaml`, which tarmac never writes for you (neither `tarmac init` nor `tarmac import` adds it). If you
+generate that file with another tool, keep the key, or the warning comes back.
+
+Notes:
+
+* An account and Region can have only one customer-managed recorder. If one already exists (for example from Control
+  Tower), that instance fails and the run reports it; tarmac does not replace recorders it did not create, and it never
+  updates a StackSet that lacks its `tarmac:managed-by` tag. Service-linked recorders (such as Security Hub's) coexist.
+* Re-running with fewer Regions removes the recorders from the dropped Regions.
+* `tarmac deploy destroy` removes the StackSet, its instances and the management stacks before it touches the log
+  buckets. It leaves StackSets trusted access enabled.
+
+### Security Hub standards for every account
+
+```yaml
+security_services:
+  delegated_account: audit
+  securityhub:
+    enabled: true
+    standards: [aws-foundational-security-best-practices]
+    central_configuration: true   # default; false = per-Region local configuration
+```
+
+With `central_configuration` (the default, used when `auto_enable_members` is true) the audit account switches Security
+Hub to [central configuration](https://docs.aws.amazon.com/securityhub/latest/userguide/start-central-configuration.html)
+and applies one policy, `tarmac-security-baseline`, to the organization root. Existing and new accounts then get Security
+Hub with exactly the standards you list, in the primary Region (the aggregation Region) and the Regions linked to the
+finding aggregator. The old local mode left new accounts with Security Hub on but no standards.
+
+The linked Regions are exactly the Regions you declare (the primary Region aggregates; the rest are linked, or none for a
+single-Region deployment). A central policy turns Security Hub on in every linked Region of every account, so tarmac
+never links "all Regions" in this mode. An existing aggregator is narrowed to match.
+
+Switching an existing organization is guarded. tarmac stops, rather than guess, when Security Hub already has member
+accounts configured one by one, or when the root already uses a configuration policy tarmac did not create, because a
+policy can replace what those accounts enabled themselves. Review the difference and re-run with `--adopt-existing`, or
+set `central_configuration: false` to keep local configuration. The home Region (`organization.primary_region`) cannot be an
+opt-in Region such as `af-south-1` or `me-south-1`, because Security Hub does not allow it; tarmac checks this and stops
+before changing anything. This behaviour has not been verified against a live organization yet.
+
+Notes: policies can only be managed from the primary Region, which must not be an opt-in Region. In central mode the
+per-account settings are managed by the policy, so change standards in `organization.yaml` rather than by hand.
+`tarmac deploy destroy --disable-security-services` removes the policy and returns the organization to local
+configuration before disabling Security Hub.
+
 ### Encryption of the log archive
 
-`cloudtrail.enable_kms: false` stores the CloudTrail logs with SSE-S3 (AES256) and does not create the log archive KMS key, which saves about $1 a month plus request charges. If you switch an existing deployment from `true` to `false`, the key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.
+CloudTrail encrypts delivered logs with SSE-S3 (AES256) by default, and AWS describes a customer managed KMS key as "an added layer of security". The key costs about $1 a month plus request charges, so Tarmac leaves it off for a new deployment.
+
+* `cloudtrail.enable_kms` unset (the default): a new deployment uses SSE-S3. A deployment that already has the key keeps it, so upgrading never lowers its encryption.
+* `enable_kms: true` adds the key. Set it if you follow the CIS benchmark or Security Hub, whose CloudTrail checks (CloudTrail.2, CIS 3.5) ask for SSE-KMS.
+* `enable_kms: false` switches an existing deployment back to SSE-S3 for new logs. The key already created is kept (logs written earlier still need it to be read); remove it yourself once those logs have expired.
+* If Tarmac cannot read the existing log archive stack to find out, it stops and says so instead of guessing.
+
+### Existing resources with the same name
+
+Tarmac will not overwrite or delete something it did not create. If an SCP or a budget it would manage already
+exists with the same name:
+
+* **SCP** that is not tagged `tarmac:managed-by=tarmac` and whose content differs from your policy file: the run stops
+  and lists the live and declared statement IDs. (An untagged SCP that already matches is taken over quietly, which is
+  what happens after `tarmac import`.)
+* **Budget** named `<account>-monthly-budget` that tarmac did not create: the account's budget step fails with its
+  current limit. Tarmac would otherwise delete it and create its own.
+
+After reviewing, re-run with `--adopt-existing` (on `deploy run`, `org scp plan|apply`, `account apply` and
+`account baseline`) to let tarmac take it over. The old budget's limit and period are recorded in the audit log.
+
+### GuardDuty features (all off unless you ask)
+
+`security_services.guardduty` turns on GuardDuty's foundational detection only. The optional protection plans are billed on
+top of it, so they stay off until you set them:
+
+```yaml
+security_services:
+  guardduty:
+    enabled: true
+    features:
+      s3_data_events: true      # S3 Protection
+      # eks_audit_logs, malware_protection (EBS), rds_login_events, lambda_network_logs
+```
+
+AWS switches on every optional feature (except Runtime Monitoring) when a detector is created without a feature list
+([CreateDetector](https://docs.aws.amazon.com/guardduty/latest/APIReference/API_CreateDetector.html)), so tarmac sends the list
+explicitly, and sets the same choice for new member accounts. On a detector that already exists tarmac only turns requested
+features on; it never turns one off, and it reports any optional feature that is on but not requested. Runtime Monitoring is
+not managed by tarmac.
+
+### Terraform state locking
+
+`tarmac baseline backend` creates a versioned, encrypted S3 bucket for Terraform state. Locking is S3-only by default, so
+Terraform needs `use_lockfile = true` (Terraform 1.10 or later) and there is no DynamoDB table to pay for. Terraform now marks
+DynamoDB-based locking as deprecated
+([S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3)). Set `terraform_backend.enable_dynamodb: true`
+to create the lock table anyway. A backend that already has the table keeps it unless you set `enable_dynamodb: false` or pass
+`--s3-only`, and tarmac warns before removing it, because Terraform configurations that still set `dynamodb_table` would
+stop locking.
 
 ## Safe Teardown
 

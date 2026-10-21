@@ -16,7 +16,7 @@ Parameters:
     Type: String
     Default: ''
     Description: >-
-      Leave empty to use the least-privilege policy defined in this template (recommended). Set to an existing
+      Leave empty to use the policy defined in this template, scoped to what tarmac does (recommended). Set to an existing
       managed policy ARN (for example arn:aws:iam::aws:policy/AdministratorAccess) to use that instead.
 
   RequireMfa:
@@ -53,13 +53,14 @@ Conditions:
   MfaRequired: !Equals [!Ref RequireMfa, 'true']
 
 Resources:
-  # Least-privilege permissions for the management account. Everything tarmac does inside member accounts goes
+  # Permissions scoped to what tarmac does in the management account (not minimal: some services are granted
+  # service-wide, for example sso:*, identitystore:*, guardduty:* and securityhub:*). Everything tarmac does inside member accounts goes
   # through OrganizationAccountAccessRole, so only the sts:AssumeRole grant below applies there.
   TarmacPolicy:
     Type: AWS::IAM::ManagedPolicy
     Condition: UseBuiltInPolicy
     Properties:
-      Description: Least-privilege permissions for tarmac in the management account.
+      Description: Permissions scoped to what tarmac does in the management account.
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -114,6 +115,28 @@ Resources:
               - cloudformation:GetTemplate
               - cloudformation:GetTemplateSummary
             Resource: '*'
+          - Sid: CloudFormationStackSets
+            Effect: Allow
+            Action:
+              - cloudformation:ActivateOrganizationsAccess
+              - cloudformation:CreateStackSet
+              - cloudformation:UpdateStackSet
+              - cloudformation:DeleteStackSet
+              - cloudformation:CreateStackInstances
+              - cloudformation:DeleteStackInstances
+            Resource: '*'
+          - Sid: ConfigRecorders
+            Effect: Allow
+            Action:
+              - config:PutConfigurationRecorder
+              - config:DeleteConfigurationRecorder
+              - config:StartConfigurationRecorder
+              - config:StopConfigurationRecorder
+              - config:PutDeliveryChannel
+              - config:DeleteDeliveryChannel
+              - config:TagResource
+              - config:UntagResource
+            Resource: '*'
           - Sid: OrganizationTrail
             Effect: Allow
             Action:
@@ -165,6 +188,18 @@ Resources:
               - iam:ListUsers
               - iam:ListAccountAliases
             Resource: '*'
+          - Sid: ManagementAccountDefaultVpcCleanup
+            Effect: Allow
+            Action:
+              - ec2:DescribeVpcs
+              - ec2:DescribeSubnets
+              - ec2:DescribeInternetGateways
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DetachInternetGateway
+              - ec2:DeleteInternetGateway
+              - ec2:DeleteSubnet
+              - ec2:DeleteVpc
+            Resource: '*'
           - Sid: RootAccessManagement
             Effect: Allow
             Action:
@@ -188,6 +223,7 @@ Resources:
                   - securityhub.amazonaws.com
                   - config.amazonaws.com
                   - ram.amazonaws.com
+                  - stacksets.cloudformation.amazonaws.com
           - Sid: NeverModifyOwnAccess
             Effect: Deny
             Action:

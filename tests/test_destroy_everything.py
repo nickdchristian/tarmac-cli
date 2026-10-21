@@ -285,6 +285,8 @@ def test_accounts_are_listed_but_never_closed():
     org.get_paginator.side_effect = paginator
     items = _service({"organizations": org}).report_accounts_kept()
     assert [(i.resource_name, i.action) for i in items] == [("Audit", "SKIPPED")]
+    # The hint names the account by ID, which is unambiguous and needs no shell quoting.
+    assert "tarmac account suspend 222 --close" in items[0].message
     org.close_account.assert_not_called()
 
 

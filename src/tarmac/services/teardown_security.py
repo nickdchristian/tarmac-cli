@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.models import TeardownItemReport
+from .security_central import POLICY_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,16 @@ class SecurityServicesTeardown:
             sh.disable_organization_admin_account(AdminAccountId=audit_id)
             return True
 
+        if is_primary:
+            self._record(
+                results,
+                "Security Hub central configuration",
+                POLICY_NAME,
+                audit_id,
+                lambda: self._leave_central_configuration(audit_id, region),
+                dry_run,
+                "remove the central configuration policy and return to local configuration",
+            )
         self._record(
             results,
             f"Security Hub auto-enable ({region})",
@@ -204,6 +215,36 @@ class SecurityServicesTeardown:
                 dry_run,
                 "disable Security Hub",
             )
+
+    def _leave_central_configuration(self, audit_id: str, region: str) -> bool:
+        """Remove tarmac's policy and switch back to local configuration (central mode locks the settings)."""
+        mgr = self.session_mgr
+        sh = mgr.get_member_client(audit_id, "securityhub", region_name=region)
+        try:
+            config = sh.describe_organization_configuration().get("OrganizationConfiguration", {})
+        except ClientError as e:
+            if _code(e) in _NOT_ENABLED:
+                return False
+            raise
+        if config.get("ConfigurationType") != "CENTRAL":
+            return False
+        policy_ids = [
+            summary["Id"]
+            for page in sh.get_paginator("list_configuration_policies").paginate()
+            for summary in page.get("ConfigurationPolicySummaries", [])
+            if summary.get("Name") == POLICY_NAME
+        ]
+        roots = mgr.get_client("organizations").list_roots().get("Roots", []) if policy_ids else []
+        for policy_id in policy_ids:
+            if roots:
+                sh.start_configuration_policy_disassociation(
+                    ConfigurationPolicyIdentifier=policy_id, Target={"RootId": roots[0]["Id"]}
+                )
+            sh.delete_configuration_policy(Identifier=policy_id)
+        sh.update_organization_configuration(
+            AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "LOCAL"}
+        )
+        return True
 
     def _disable_hub(self, account_id: str, region: str) -> bool:
         sh = self.session_mgr.get_member_client(account_id, "securityhub", region_name=region)

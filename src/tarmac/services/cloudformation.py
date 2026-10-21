@@ -24,6 +24,46 @@ UNUSABLE_STACK_STATES = frozenset(
 )
 
 
+def lock_table_wanted(
+    cfn_client: Any, stack_name: str, configured: bool | None, s3_only: bool = False
+) -> tuple[bool, str | None]:
+    """Decide whether the Terraform backend stack should have a DynamoDB lock table.
+
+    Returns (wanted, warning). With nothing configured a new backend is S3-only, which is cheaper and is what
+    Terraform now recommends ("DynamoDB-based locking is deprecated"), and an existing stack that has the table keeps
+    it, because dropping the table breaks every Terraform configuration still pointing at it.
+    """
+    current = _stack_parameter(cfn_client, stack_name, "EnableDynamoDB")
+    has_table = current == "true"
+    if s3_only:
+        wanted = False
+    elif configured is None:
+        return has_table, None
+    else:
+        wanted = configured
+    if has_table and not wanted:
+        return False, (
+            f"Stack '{stack_name}' has a DynamoDB lock table and this deployment removes it. Terraform "
+            "configurations that still set dynamodb_table will fail to lock state until they use "
+            "`use_lockfile = true` instead."
+        )
+    return wanted, None
+
+
+def _stack_parameter(cfn_client: Any, stack_name: str, key: str) -> str | None:
+    """A parameter of an existing stack, or None when the stack or parameter does not exist or cannot be read."""
+    try:
+        stacks = cfn_client.describe_stacks(StackName=stack_name).get("Stacks", [])
+    except (ClientError, AttributeError):
+        return None
+    if not isinstance(stacks, list) or not stacks:
+        return None
+    for param in stacks[0].get("Parameters", []) or []:
+        if isinstance(param, dict) and param.get("ParameterKey") == key:
+            return str(param.get("ParameterValue"))
+    return None
+
+
 class CloudFormationService:
     """Deploys and manages foundational CloudFormation stacks with robust waiters and output retrieval."""
 

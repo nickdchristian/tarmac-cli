@@ -1,0 +1,46 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyRequestsOutsideApprovedRegions",
+      "Effect": "Deny",
+      "NotAction": [
+        "account:*",
+        "aws-portal:*",
+        "billing:*",
+        "budgets:*",
+        "ce:*",
+        "cloudfront:*",
+        "cur:*",
+        "globalaccelerator:*",
+        "health:*",
+        "iam:*",
+        "organizations:*",
+        "pricing:*",
+        "route53:*",
+        "route53domains:*",
+        "shield:*",
+        "sts:*",
+        "support:*",
+        "trustedadvisor:*",
+        "waf:*",
+        "wafv2:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": [
+            "us-east-1",
+            "us-west-2"
+          ]
+        },
+        "ArnNotLike": {
+          "aws:PrincipalARN": [
+            "arn:aws:iam::*:role/TarmacDeploymentRole",
+            "arn:aws:iam::*:role/OrganizationAccountAccessRole"
+          ]
+        }
+      }
+    }
+  ]
+}
