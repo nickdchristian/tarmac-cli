@@ -56,11 +56,15 @@ def test_object_lock_parameters_are_passed_when_configured():
 
 def test_explicit_lock_longer_than_log_retention_is_rejected():
     with pytest.raises(ValidationError, match="longer than"):
-        CloudTrailConfig(retention_days=90, object_lock={"mode": "GOVERNANCE", "retention_days": 365})
+        CloudTrailConfig.model_validate(
+            {"retention_days": 90, "object_lock": {"mode": "GOVERNANCE", "retention_days": 365}}
+        )
 
 
 def test_lock_equal_to_log_retention_is_accepted():
-    config = CloudTrailConfig(retention_days=90, object_lock={"mode": "GOVERNANCE", "retention_days": 90})
+    config = CloudTrailConfig.model_validate(
+        {"retention_days": 90, "object_lock": {"mode": "GOVERNANCE", "retention_days": 90}}
+    )
     assert config.object_lock is not None
 
 
