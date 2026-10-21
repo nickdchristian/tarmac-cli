@@ -37,11 +37,8 @@ def _session() -> MagicMock:
 
 
 def _patch_services(monkeypatch: pytest.MonkeyPatch, baseliner: MagicMock, org_service: MagicMock) -> None:
-    monkeypatch.setattr(
-        deploy_phases,
-        "_get_service",
-        lambda name, default: lambda *a, **k: baseliner if name == "BaselineService" else org_service,
-    )
+    monkeypatch.setattr(deploy_phases, "BaselineService", lambda *a, **k: baseliner)
+    monkeypatch.setattr(deploy_phases, "OrganizationService", lambda *a, **k: org_service)
 
 
 def test_failed_cleanup_stops_phase_1_and_records_no_milestone(bundle: ConfigBundle, monkeypatch):

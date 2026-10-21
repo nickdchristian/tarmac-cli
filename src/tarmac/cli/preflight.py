@@ -51,7 +51,7 @@ def _render_preflight_table(report: PreflightReport) -> None:
     )
     if actions:
         print_action_panel(
-            [(_format_status_badge(c.status), c.name, c.action_required) for c in actions],
+            [(_format_status_badge(c.status), c.name, c.action_required or "") for c in actions],
             has_failures=any(c.status == PreflightCheckStatus.FAIL for c in actions),
             titles=("Action Required (Blocking Issues)", "Action Items & Recommendations"),
             item_header="Check Item",

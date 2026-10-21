@@ -107,8 +107,9 @@ def test_deploy_passes_retention_to_the_log_archive_stack(
     service = MagicMock()
     service.deploy_stack.side_effect = deploy_stack
     monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: session_mgr)
-    monkeypatch.setattr("tarmac.cli.deploy.CloudFormationService", lambda sm: service)
+    monkeypatch.setattr("tarmac.cli.deploy_phases.CloudFormationService", lambda sm: service)
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: MagicMock())
+    monkeypatch.setattr("tarmac.cli.deploy_phases.OrganizationService", lambda sm: MagicMock())
 
     res = runner.invoke(app, ["run", "--config-dir", str(writable_config_dir), "--phase", "3", "--yes"])
 

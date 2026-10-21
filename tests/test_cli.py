@@ -150,8 +150,9 @@ def test_cli_deploy_run_with_custom_tags(sample_config_dir, monkeypatch):
     )
 
     monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.deploy.CloudFormationService", lambda sm: mock_service)
+    monkeypatch.setattr("tarmac.cli.deploy_phases.CloudFormationService", lambda sm: mock_service)
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: MagicMock())
+    monkeypatch.setattr("tarmac.cli.deploy_phases.OrganizationService", lambda sm: MagicMock())
 
     result = runner.invoke(
         app,
@@ -199,8 +200,9 @@ def test_cli_deploy_phase_3_deploys_log_archive_hardening_before_trail(sample_co
     mock_service.deploy_stack.side_effect = mock_deploy_stack
 
     monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.deploy.CloudFormationService", lambda sm: mock_service)
+    monkeypatch.setattr("tarmac.cli.deploy_phases.CloudFormationService", lambda sm: mock_service)
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: MagicMock())
+    monkeypatch.setattr("tarmac.cli.deploy_phases.OrganizationService", lambda sm: MagicMock())
 
     result = runner.invoke(
         app,
@@ -433,6 +435,7 @@ def test_cli_deploy_run_prompts_and_yes(sample_config_dir, monkeypatch):
     # With --yes flag and mocked phase 1
     mock_org_service = MagicMock()
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: mock_org_service)
+    monkeypatch.setattr("tarmac.cli.deploy_phases.OrganizationService", lambda sm: mock_org_service)
 
     result_yes = runner.invoke(
         app,
@@ -1054,10 +1057,11 @@ def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_
     mock_org_service = MagicMock()
 
     monkeypatch.setattr("tarmac.cli.deploy.AwsSessionManager", lambda **kw: mock_session_mgr)
-    monkeypatch.setattr("tarmac.cli.deploy.OUService", lambda sm: mock_ou_service)
-    monkeypatch.setattr("tarmac.cli.deploy.AccountService", lambda sm: mock_acct_service)
-    monkeypatch.setattr("tarmac.cli.deploy.BaselineService", lambda sm: MagicMock())
+    monkeypatch.setattr("tarmac.cli.deploy_phases.OUService", lambda sm: mock_ou_service)
+    monkeypatch.setattr("tarmac.cli.deploy_phases.AccountService", lambda sm: mock_acct_service)
+    monkeypatch.setattr("tarmac.cli.deploy_phases.BaselineService", lambda sm: MagicMock())
     monkeypatch.setattr("tarmac.cli.deploy.OrganizationService", lambda sm: mock_org_service)
+    monkeypatch.setattr("tarmac.cli.deploy_phases.OrganizationService", lambda sm: mock_org_service)
 
     result = runner.invoke(
         app,

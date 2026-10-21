@@ -143,9 +143,9 @@ def test_phase_3_fails_clearly_when_log_archive_account_is_closed(bundle, tmp_pa
 
     with (
         patch("tarmac.cli.deploy_phases.get_active_account_id_map", return_value={}),
-        patch("tarmac.cli.deploy.AccountService", return_value=accounts),
-        patch("tarmac.cli.deploy.OUService"),
-        patch("tarmac.cli.deploy.CloudFormationService") as cfn,
+        patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
+        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.CloudFormationService") as cfn,
         pytest.raises(GovernanceError, match="closed/suspended"),
     ):
         deploy_phases._run_phase_3_cloudtrail(mgr, bundle, "us-east-1", tmp_path, dry_run=False)
@@ -175,10 +175,10 @@ def test_phase_4_skips_baselining_closed_accounts_and_warns(bundle, tmp_path):
     mgr.get_caller_identity.return_value = {"Account": "111111111111"}
 
     with (
-        patch("tarmac.cli.deploy.OUService"),
-        patch("tarmac.cli.deploy.AccountService", return_value=accounts),
-        patch("tarmac.cli.deploy.BaselineService", return_value=baseliner),
-        patch("tarmac.cli.deploy.OrganizationService", return_value=org),
+        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
+        patch("tarmac.cli.deploy_phases.BaselineService", return_value=baseliner),
+        patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
         patch("tarmac.cli.deploy_phases.print_warning") as warn,
     ):
         deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path, dry_run=False)
@@ -219,10 +219,10 @@ def test_phase_4_does_not_report_success_when_a_baseline_step_failed(bundle, tmp
     mgr.get_caller_identity.return_value = {"Account": "111111111111"}
 
     with (
-        patch("tarmac.cli.deploy.OUService"),
-        patch("tarmac.cli.deploy.AccountService", return_value=accounts),
-        patch("tarmac.cli.deploy.BaselineService", return_value=baseliner),
-        patch("tarmac.cli.deploy.OrganizationService", return_value=org),
+        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
+        patch("tarmac.cli.deploy_phases.BaselineService", return_value=baseliner),
+        patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
         pytest.raises(AccountProvisioningError, match="failed baseline step"),
     ):
         deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path, dry_run=False)
@@ -241,7 +241,7 @@ def test_security_delegation_failure_fails_the_phase(bundle):
         SecurityServiceReport("SecurityHub", "audit", "FAILED", message="not subscribed"),
     ]
     with (
-        patch("tarmac.cli.deploy.SecurityServicesService", return_value=sec),
+        patch("tarmac.cli.deploy_phases.SecurityServicesService", return_value=sec),
         pytest.raises(GovernanceError, match="security service delegation") as exc,
     ):
         deploy_phases._delegate_security_services(MagicMock(), bundle, "us-east-1", {}, dry_run=False)
@@ -256,9 +256,9 @@ def test_phase_5_warns_when_backend_and_audit_accounts_are_missing(bundle, tmp_p
 
     with (
         patch("tarmac.cli.deploy_phases.get_active_account_id_map", return_value={}),
-        patch("tarmac.cli.deploy.CloudFormationService"),
-        patch("tarmac.cli.deploy.OrganizationService"),
-        patch("tarmac.cli.deploy.SecurityServicesService") as sec,
+        patch("tarmac.cli.deploy_phases.CloudFormationService"),
+        patch("tarmac.cli.deploy_phases.OrganizationService"),
+        patch("tarmac.cli.deploy_phases.SecurityServicesService") as sec,
         patch("tarmac.cli.deploy_phases.print_warning") as warn,
     ):
         sec.return_value.configure_security_services.return_value = []
@@ -304,7 +304,7 @@ def test_phase_5_stops_before_audit_stack_when_delegated_admin_registration_fail
     accounts = {bundle.get_audit_account_name() or "audit": "444455556666"}
 
     with (
-        patch("tarmac.cli.deploy.OrganizationService", return_value=org_service),
+        patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org_service),
         patch("tarmac.cli.deploy_phases._deploy_log_archive_hardening_stack"),
         pytest.raises(GovernanceError, match="Could not register"),
     ):
