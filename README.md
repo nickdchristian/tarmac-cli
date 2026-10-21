@@ -216,6 +216,41 @@ tarmac deploy run --phase 4   # Run only Account Factory provisioning
 
 ---
 
+## What tarmac deploys
+
+Everything tarmac creates in AWS comes from the CloudFormation templates and SCP policies below, which ship with
+the package. `<org>` is `organization.name` from `organization.yaml`.
+
+| Template | Stack | Account / Region | Deployed by | What it creates |
+| :--- | :--- | :--- | :--- | :--- |
+| [`tarmac-access.yaml`](src/tarmac/templates/cloudformation/tarmac-access.yaml) | `tarmac-access` | Management / `us-east-1` by default | `tarmac access bootstrap` | The `TarmacDeploymentRole` tarmac runs as, its managed policy, and optionally an assume-only `tarmac-bootstrap` IAM user |
+| [`log-archive-hardening.yaml`](src/tarmac/templates/cloudformation/log-archive-hardening.yaml) | `<org>-log-archive-hardening` | Log Archive / primary | Phase 3, `tarmac baseline logs` | The central CloudTrail bucket, an access-logs bucket, a separate AWS Config bucket (when Config recorders are enabled) and a KMS key (when `cloudtrail.enable_kms` is on) |
+| [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Management / primary | Phase 3, `tarmac baseline cloudtrail` | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket |
+| [`account-budget.yaml`](src/tarmac/templates/cloudformation/account-budget.yaml) | `<account>-monthly-budget` | Each member account with a budget / primary | Phase 4, `tarmac account baseline` | A monthly cost budget and an SNS topic for its email and webhook alerts |
+| [`terraform-backend.yaml`](src/tarmac/templates/cloudformation/terraform-backend.yaml) | `<org>-terraform-backend` | Deployment / primary | Phase 5, `tarmac baseline backend` | The Terraform state bucket, plus a DynamoDB lock table only when `enable_dynamodb` asks for one |
+| [`audit-account-hardening.yaml`](src/tarmac/templates/cloudformation/audit-account-hardening.yaml) | `<org>-audit-account-hardening` | Audit / primary | Phase 5, `tarmac baseline audit` | An AWS Config aggregator, a KMS-encrypted SNS alert topic, and EventBridge rules forwarding Config non-compliance, GuardDuty findings, Security Hub findings and root activity to it |
+| [`config-recorder.yaml`](src/tarmac/templates/cloudformation/config-recorder.yaml) | `<org>-config-recorder` (StackSet + management stack) | Every account / declared Regions | Phase 5, when `security_services.config_recorder.enabled` | An AWS Config recorder and delivery channel per account and Region, delivering to the Log Archive |
+| [`management-root-alert.yaml`](src/tarmac/templates/cloudformation/management-root-alert.yaml) | `<org>-management-root-alert` | Management / `us-east-1` and primary (all declared Regions with `all_regions`) | Phase 5, when `security_services.root_alert.enabled` | An EventBridge rule and SNS topic that alert the security contact (and the incident webhook, if set) when the root user signs in or calls an API |
+
+| SCP | What it denies |
+| :--- | :--- |
+| [`foundational-guardrails.json`](src/tarmac/templates/policies/scp/foundational-guardrails.json) | Root user activity in member accounts (centralized-root-access sessions stay allowed), leaving the organization, and closing an account. `tarmac init` attaches it to the organization root. |
+| [`deny-member-root.json`](src/tarmac/templates/policies/scp/deny-member-root.json) | Only the member-account root user rule from `foundational-guardrails.json`. |
+| [`deny-leave-organization.json`](src/tarmac/templates/policies/scp/deny-leave-organization.json) | Only the leave-organization and account-closure rules from `foundational-guardrails.json`. |
+
+Two stacks are generated from your configuration rather than a template file: `<org>-organization-scps` (the SCPs
+declared in `organization.yaml`) and `<org>-sso-permission-sets` (the permission sets in `identity.yaml`).
+
+To review or change any of this before it reaches AWS:
+
+* `tarmac init --with-templates` copies the templates and SCPs into your project (`cloudformation/`, `policies/scp/`).
+  Tarmac uses your copies in preference to the bundled ones, so you can keep them in version control and review changes.
+* `tarmac access template` prints the access-role template on its own.
+* `tarmac deploy run --dry-run` shows the plan for every phase without changing anything, and stack updates go
+  through CloudFormation change sets.
+
+---
+
 ## Command Reference
 
 | Command | Description |
