@@ -57,6 +57,19 @@ def _record_phase(session_mgr: AwsSessionManager, milestone: str) -> None:
         OrganizationService(session_mgr).record_phase_completed(mgmt_id, milestone)
 
 
+def _existing_ou_map(session_mgr: AwsSessionManager, needed: set[str]) -> dict[str, str]:
+    """Live OUs by name. Raises when a needed OU is missing: only phase 2 creates OUs, because it also
+    attaches their SCPs, and an account must never land in an OU without its guardrails."""
+    ou_map = OUService(session_mgr).list_all_ous()
+    missing = sorted(needed - set(ou_map))
+    if missing:
+        raise GovernanceError(
+            f"OU(s) {', '.join(missing)} do not exist yet.",
+            details="Run `tarmac deploy run --phase 2` first: it creates the OUs and attaches their SCPs.",
+        )
+    return ou_map
+
+
 def _suspended_account_guidance(name: str, email: str, account_id: str) -> str:
     return (
         f"Account '{name}' ({account_id}) is closed/suspended in AWS Organizations, so it cannot be reused or "
@@ -269,8 +282,10 @@ def _provision_log_archive_account(
     print_info(
         f"Phase 3: Foundational account '{acct_def.name}' ({acct_def.email}) not yet active. Provisioning..."
     )
-    ou_map = OUService(session_mgr).sync_ou_structure(bundle.org.ou_structure).synced_ous
-    prov_results = AccountService(session_mgr).provision_accounts([acct_def], ou_map=ou_map, dry_run=False)
+    ou_map = _existing_ou_map(session_mgr, {acct_def.ou})
+    prov_results = AccountService(session_mgr).provision_accounts(
+        [acct_def], ou_map=ou_map, dry_run=False, org_tags=bundle.get_organization_tags()
+    )
     if prov_results and prov_results[0].status == "SKIPPED":
         raise GovernanceError(
             "Phase 3 failed: "
@@ -361,8 +376,10 @@ def _run_phase_4_accounts(
     account_service = AccountService(session_mgr)
     baseliner = BaselineService(session_mgr)
 
-    ou_map = OUService(session_mgr).sync_ou_structure(bundle.org.ou_structure).synced_ous
-    results = account_service.provision_accounts(bundle.accounts.accounts, ou_map=ou_map, dry_run=False)
+    ou_map = _existing_ou_map(session_mgr, {a.ou for a in bundle.accounts.accounts})
+    results = account_service.provision_accounts(
+        bundle.accounts.accounts, ou_map=ou_map, dry_run=False, org_tags=bundle.get_organization_tags()
+    )
     acct_def_map = {a.name: a for a in bundle.accounts.accounts}
 
     baseline_problems: list[str] = []

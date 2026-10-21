@@ -144,7 +144,7 @@ def test_phase_3_fails_clearly_when_log_archive_account_is_closed(bundle, tmp_pa
     with (
         patch("tarmac.cli.deploy_phases.get_active_account_id_map", return_value={}),
         patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
-        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.OUService", return_value=_ous(bundle)),
         patch("tarmac.cli.deploy_phases.CloudFormationService") as cfn,
         pytest.raises(GovernanceError, match="closed/suspended"),
     ):
@@ -153,6 +153,13 @@ def test_phase_3_fails_clearly_when_log_archive_account_is_closed(bundle, tmp_pa
     # It must not go on to assume a role into the closed account or deploy any stack.
     mgr.get_member_client.assert_not_called()
     cfn.return_value.deploy_stack.assert_not_called()
+
+
+def _ous(bundle) -> MagicMock:
+    """An OUService whose live OU tree already holds every OU the declared accounts need."""
+    ou_service = MagicMock()
+    ou_service.list_all_ous.return_value = {a.ou: f"ou-{a.ou.lower()}" for a in bundle.accounts.accounts}
+    return ou_service
 
 
 def _phase_4_mocks(results: list[AccountProvisionResult], baseline_reports: dict[str, BaselineReport]):
@@ -175,7 +182,7 @@ def test_phase_4_skips_baselining_closed_accounts_and_warns(bundle, tmp_path):
     mgr.get_caller_identity.return_value = {"Account": "111111111111"}
 
     with (
-        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.OUService", return_value=_ous(bundle)),
         patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
         patch("tarmac.cli.deploy_phases.BaselineService", return_value=baseliner),
         patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
@@ -219,7 +226,7 @@ def test_phase_4_does_not_report_success_when_a_baseline_step_failed(bundle, tmp
     mgr.get_caller_identity.return_value = {"Account": "111111111111"}
 
     with (
-        patch("tarmac.cli.deploy_phases.OUService"),
+        patch("tarmac.cli.deploy_phases.OUService", return_value=_ous(bundle)),
         patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
         patch("tarmac.cli.deploy_phases.BaselineService", return_value=baseliner),
         patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
@@ -350,3 +357,40 @@ def test_assumed_session_credentials_refresh_before_expiry():
     assert frozen.access_key == "SECOND"
     assert sts.assume_role.call_count == 2
     assert mgr.get_assumed_session("222222222222") is session
+
+
+def test_phase_4_stops_when_an_ou_does_not_exist_yet(bundle, tmp_path):
+    """Phase 4 must not create OUs: only phase 2 does, because it also attaches their SCPs."""
+    ou_service = MagicMock()
+    ou_service.list_all_ous.return_value = {}
+    accounts = MagicMock()
+
+    with (
+        patch("tarmac.cli.deploy_phases.OUService", return_value=ou_service),
+        patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
+        patch("tarmac.cli.deploy_phases.BaselineService"),
+        pytest.raises(GovernanceError, match="do not exist yet"),
+    ):
+        deploy_phases._run_phase_4_accounts(MagicMock(), bundle, tmp_path, dry_run=False)
+
+    ou_service.sync_ou_structure.assert_not_called()
+    accounts.provision_accounts.assert_not_called()
+
+
+def test_phase_4_applies_organization_tags_to_accounts(bundle, tmp_path):
+    names = [a.name for a in bundle.accounts.accounts]
+    results = [_result(n, "SUCCEEDED", f"{i:012d}") for i, n in enumerate(names, start=1)]
+    reports = {n: BaselineReport(account_name=n, account_id="x") for n in names}
+    accounts, baseliner, org = _phase_4_mocks(results, reports)
+    mgr = MagicMock()
+    mgr.get_caller_identity.return_value = {"Account": "111111111111"}
+
+    with (
+        patch("tarmac.cli.deploy_phases.OUService", return_value=_ous(bundle)),
+        patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
+        patch("tarmac.cli.deploy_phases.BaselineService", return_value=baseliner),
+        patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
+    ):
+        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path, dry_run=False)
+
+    assert accounts.provision_accounts.call_args.kwargs["org_tags"] == bundle.get_organization_tags()

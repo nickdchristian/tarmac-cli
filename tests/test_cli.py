@@ -823,19 +823,18 @@ def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_
     """Verify Phase 4 exits non-zero and does not record phase completion when an account fails to provision."""
     from unittest.mock import MagicMock
 
-    from tarmac.core.models import AccountProvisionResult, OUSyncReport
+    from tarmac.core.models import AccountProvisionResult
 
     mock_session_mgr = MagicMock()
     mock_session_mgr.get_caller_identity.return_value = {"Account": "111111111111"}
     mock_ou_service = MagicMock()
-    mock_ou_service.sync_ou_structure.return_value = OUSyncReport(
-        synced_ous={
-            "Security": "ou-sec",
-            "Infrastructure": "ou-inf",
-            "Workloads": "ou-wrk",
-            "Suspended": "ou-sus",
-        }
-    )
+    mock_ou_service.list_all_ous.return_value = {
+        "Security": "ou-sec",
+        "Infrastructure": "ou-inf",
+        "Production": "ou-prd",
+        "NonProduction": "ou-np",
+        "Suspended": "ou-sus",
+    }
     mock_acct_service = MagicMock()
     mock_acct_service.provision_accounts.return_value = [
         AccountProvisionResult(
@@ -863,6 +862,7 @@ def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_
     )
     assert result.exit_code != 0
     mock_org_service.record_phase_completed.assert_not_called()
+    mock_acct_service.provision_accounts.assert_called_once()
 
 
 def test_deploy_hardening_stacks_skips_log_archive_when_requested(sample_config_dir):
