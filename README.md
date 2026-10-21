@@ -254,6 +254,25 @@ For targeted management outside the end-to-end pipeline:
 
 ---
 
+## Example: restricting regions
+
+Tarmac does not choose which regions you may use, so no region SCP is attached by default.
+[`examples/policies/scp/deny-unused-regions.json`](examples/policies/scp/deny-unused-regions.json) is a starting
+point you can copy into your project's `policies/scp/` and reference from `organization.yaml`:
+
+1. Replace the `aws:RequestedRegion` list (`us-east-1`, `us-west-2` in the example) with the regions you use. Include
+   your `primary_region` and the region of your IAM Identity Center instance.
+2. Keep the `NotAction` list of global services (IAM, Organizations, Route 53, CloudFront, Support, STS, ...), or
+   those calls are denied everywhere.
+3. Keep the `TarmacDeploymentRole` and `OrganizationAccountAccessRole` exemption. Tarmac removes default VPCs in
+   every enabled region of each member account, and Phase 2 (SCPs) runs before the Phase 4 baseline, so without
+   the exemption that cleanup fails in the regions you blocked. Drop `OrganizationAccountAccessRole` from the
+   exemption only if you set `delete_default_vpc: false` (or have already cleaned those VPCs). The example names the
+   default role, `TarmacDeploymentRole`; if you bootstrapped with `--role-name`, change the exemption to that name, or
+   tarmac is locked out of the regions you blocked.
+
+SCPs do not apply to the management account. Test it on one OU before attaching it to the root.
+
 ## Logging and Audit Trail
 
 | Option | Effect |
