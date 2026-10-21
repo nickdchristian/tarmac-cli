@@ -12,6 +12,7 @@ from ..core.config_schema import GuardDutyConfig, SecurityHubConfig, SecuritySer
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
 from ..core.models import SecurityServiceReport
+from .security_central import POLICY_NAME, SecurityHubCentralConfiguration, resolve_standard_arn
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +327,9 @@ class SecurityServicesService:
                 message=f"Failed to register delegated admin: {e}",
             )
 
+        if config.central_configuration and config.auto_enable_members:
+            return self._configure_securityhub_central(audit_id, primary_region, all_regions, config)
+
         configured_regions: list[str] = []
         failed_regions: dict[str, str] = {}
         for reg in all_regions:
@@ -373,6 +377,93 @@ class SecurityServicesService:
             ),
         )
 
+    def _configure_securityhub_central(
+        self, audit_id: str, home_region: str, all_regions: list[str], config: SecurityHubConfig
+    ) -> SecurityServiceReport:
+        """Central configuration: enable the hub and aggregator in the home Region, then apply one policy to the root."""
+        try:
+            with bind(region=home_region):
+                self._require_home_region_not_opt_in(home_region)
+                sh = self.session_mgr.get_member_client(audit_id, "securityhub", region_name=home_region)
+                self._ensure_hub_enabled(sh, audit_id, home_region)
+                # Central policies take effect in every linked Region, so link only the declared ones.
+                self._ensure_finding_aggregator(sh, [r for r in all_regions if r != home_region])
+                SecurityHubCentralConfiguration(
+                    sh,
+                    policy_name=POLICY_NAME,
+                    standards=config.standards,
+                    root_id=self._root_id(),
+                ).apply()
+        except (ClientError, GovernanceError) as e:
+            audit(
+                "configure",
+                f"securityhub:{audit_id}:{home_region}",
+                Outcome.FAILED,
+                f"Could not set up Security Hub central configuration from {home_region}: {e}",
+                region=home_region,
+            )
+            return SecurityServiceReport(
+                service_name="SecurityHub",
+                delegated_account=audit_id,
+                status="FAILED",
+                regions=[],
+                message=f"Central configuration failed in {home_region}: {e}",
+            )
+        return SecurityServiceReport(
+            service_name="SecurityHub",
+            delegated_account=audit_id,
+            status="ENABLED",
+            regions=all_regions,
+            message=(
+                f"Delegated to {audit_id}; central configuration from {home_region} applies standards "
+                f"{config.standards} to the organization in {', '.join(all_regions)}"
+            ),
+        )
+
+    def _require_home_region_not_opt_in(self, region: str) -> None:
+        """Central configuration cannot use an opt-in Region as its home Region.
+
+        The Security Hub documentation: "The home Region cannot be a Region that AWS has designated as an opt-in
+        Region." EC2 reports such Regions as `opted-in` or `not-opted-in`; default Regions are `opt-in-not-required`.
+        """
+        try:
+            regions = (
+                self.session_mgr.get_client("ec2", region_name=region)
+                .describe_regions(AllRegions=True, RegionNames=[region])
+                .get("Regions", [])
+            )
+        except ClientError:
+            return  # Cannot tell; Security Hub will refuse an opt-in Region itself.
+        status = regions[0].get("OptInStatus") if isinstance(regions, list) and regions else None
+        if status in ("opted-in", "not-opted-in"):
+            raise GovernanceError(
+                f"{region} is an opt-in Region, and Security Hub central configuration cannot use one as its home "
+                "Region. Choose a default Region as organization.primary_region, or set "
+                "security_services.securityhub.central_configuration: false."
+            )
+
+    def _root_id(self) -> str:
+        roots = self.session_mgr.get_client("organizations").list_roots().get("Roots", [])
+        if not roots:
+            raise GovernanceError("Could not find the organization root.")
+        return str(roots[0]["Id"])
+
+    def _ensure_hub_enabled(self, sh_audit: Any, audit_id: str, region: str) -> None:
+        try:
+            sh_audit.describe_hub()
+        except ClientError as e:
+            err_code = e.response.get("Error", {}).get("Code", "")
+            if err_code not in ("ResourceNotFoundException", "InvalidAccessException"):
+                raise
+            sh_audit.enable_security_hub(EnableDefaultStandards=False)
+            audit(
+                "enable",
+                f"securityhub:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Enabled Security Hub in {region}",
+                region=region,
+            )
+
     def _ensure_securityhub_admin(self, audit_id: str, region: str) -> None:
         """Register the delegated Security Hub administrator in one Region, if not already registered.
 
@@ -397,21 +488,7 @@ class SecurityServicesService:
     def _configure_securityhub_region(self, audit_id: str, region: str, config: SecurityHubConfig) -> None:
         """Enable Security Hub, subscribe to standards, and configure auto-enrollment in a single region."""
         sh_audit = self.session_mgr.get_member_client(audit_id, "securityhub", region_name=region)
-        try:
-            sh_audit.describe_hub()
-        except ClientError as e:
-            err_code = e.response.get("Error", {}).get("Code", "")
-            if err_code in ("ResourceNotFoundException", "InvalidAccessException"):
-                sh_audit.enable_security_hub(EnableDefaultStandards=False)
-                audit(
-                    "enable",
-                    f"securityhub:{audit_id}:{region}",
-                    Outcome.SUCCEEDED,
-                    f"Enabled Security Hub in {region}",
-                    region=region,
-                )
-            else:
-                raise
+        self._ensure_hub_enabled(sh_audit, audit_id, region)
 
         self._ensure_standards(sh_audit, config.standards)
 
@@ -436,19 +513,7 @@ class SecurityServicesService:
         enabled_arns = {s.get("StandardsArn") for s in enabled_resp}
 
         for desired in desired_standards:
-            norm_desired = desired.lower().replace("_", "-")
-            matching_arn: str | None = None
-            for std in available:
-                std_arn = str(std.get("StandardsArn", ""))
-                std_name = str(std.get("Name", "")).lower()
-                if norm_desired in std_arn.lower() or norm_desired in std_name:
-                    matching_arn = std_arn
-                    break
-            if matching_arn is None:
-                raise GovernanceError(
-                    f"Unknown Security Hub standard '{desired}'.",
-                    details="Check security_services.securityhub.standards in organization.yaml.",
-                )
+            matching_arn = resolve_standard_arn(available, desired)
             if matching_arn not in enabled_arns:
                 sh_client.batch_enable_standards(
                     StandardsSubscriptionRequests=[{"StandardsArn": matching_arn}]
@@ -461,17 +526,43 @@ class SecurityServicesService:
                     standard=matching_arn,
                 )
 
-    def _ensure_finding_aggregator(self, sh_client: Any) -> None:
-        """Ensure a Finding Aggregator exists in the primary region linking all member regions.
+    def _ensure_finding_aggregator(self, sh_client: Any, linked_regions: list[str] | None = None) -> None:
+        """Ensure a Finding Aggregator exists in the primary region.
+
+        With ``linked_regions`` None it links every Region (local configuration only aggregates findings). With a
+        list it links exactly those Regions (none, if empty): under central configuration the linked Regions are
+        where the policy turns Security Hub on in every account, so they must be the Regions you declared.
 
         ClientError propagates so the caller can report the Security Hub setup as incomplete.
         """
+        mode, regions = "ALL_REGIONS", []
+        if linked_regions is not None:
+            mode, regions = (
+                ("SPECIFIED_REGIONS", sorted(linked_regions)) if linked_regions else ("NO_REGIONS", [])
+            )
+        settings: dict[str, Any] = {"RegionLinkingMode": mode, **({"Regions": regions} if regions else {})}
+
         aggregators = sh_client.list_finding_aggregators().get("FindingAggregators", [])
+        if aggregators and linked_regions is not None:
+            arn = aggregators[0]["FindingAggregatorArn"]
+            current = sh_client.get_finding_aggregator(FindingAggregatorArn=arn)
+            if (current.get("RegionLinkingMode"), sorted(current.get("Regions", []))) != (mode, regions):
+                sh_client.update_finding_aggregator(FindingAggregatorArn=arn, **settings)
+                audit(
+                    "update",
+                    "securityhub-finding-aggregator",
+                    Outcome.SUCCEEDED,
+                    f"Security Hub finding aggregator now links {', '.join(regions) or 'no Regions'} ({mode})",
+                    regions=regions,
+                )
+            return
         if not aggregators:
-            sh_client.create_finding_aggregator(RegionLinkingMode="ALL_REGIONS")
+            sh_client.create_finding_aggregator(**settings)
             audit(
                 "create",
                 "securityhub-finding-aggregator",
                 Outcome.SUCCEEDED,
-                "Created Security Hub finding aggregator linking all regions",
+                "Created Security Hub finding aggregator linking "
+                + (", ".join(regions) if linked_regions is not None else "all regions")
+                + (" (none)" if mode == "NO_REGIONS" else ""),
             )

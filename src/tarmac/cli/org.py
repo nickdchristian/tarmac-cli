@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 from rich.panel import Panel
 
+from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import GovernanceError
 from ..core.models import SCPReconciliationResult, VpcCleanupReport
@@ -63,6 +64,11 @@ def bootstrap(
                 for r in vpc_reports:
                     if not r.skipped and r.deleted_vpc:
                         print_success(f"Purged default VPC ({r.vpc_id}) in {r.region}")
+                failed = [r for r in vpc_reports if r.error]
+                for r in failed:
+                    print_warning(f"Default VPC cleanup failed in {r.region}: {r.message}")
+                if failed:
+                    raise GovernanceError(f"Default VPC cleanup failed in {len(failed)} region(s).")
 
     except GovernanceError as e:
         error_console.print(Panel(str(e), title="[bold red]Bootstrap Failed[/bold red]", border_style="red"))
@@ -281,8 +287,14 @@ def _execute_scp_reconciliation(
 def plan_scps(
     config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
     region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
+    adopt_existing: bool = typer.Option(
+        False,
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
 ) -> None:
     """Preview Service Control Policy changes without applying them."""
+    set_adopt_existing(adopt_existing)
     print_header("Service Control Policies Plan (Dry-Run)")
     _execute_scp_reconciliation(config_dir, region, dry_run=True)
 
@@ -292,8 +304,14 @@ def apply_scps(
     config_dir: Path | None = typer.Option(None, "--config-dir", "-c", help="Path to config directory"),
     region: str | None = typer.Option(None, "--region", "-r", help="Override primary AWS region"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
+    adopt_existing: bool = typer.Option(
+        False,
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
 ) -> None:
     """Reconcile and attach declared Service Control Policies."""
+    set_adopt_existing(adopt_existing)
     mode = "Dry-Run" if dry_run else "Apply"
     print_header(f"Service Control Policies ({mode})")
     _execute_scp_reconciliation(config_dir, region, dry_run=dry_run)

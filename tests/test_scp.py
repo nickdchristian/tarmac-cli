@@ -6,7 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tarmac.core.adoption import set_adopt_existing
 from tarmac.core.config_schema import SCPDef, ServiceControlPoliciesConfig
+from tarmac.core.exceptions import GovernanceError
 from tarmac.services.scp import SCPService
 
 
@@ -111,6 +113,7 @@ def test_sync_policy_updates_drifted():
     }
 
     service = SCPService(mock_session)
+    service.is_tarmac_managed = MagicMock(return_value=True)  # type: ignore[method-assign]
     existing_scps = {
         "DenyMemberRootActivity": {
             "Id": "p-existing1",
@@ -648,6 +651,7 @@ def test_sync_policy_updates_when_live_policy_cannot_be_read():
         {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "DescribePolicy"
     )
     service = SCPService(mock_session)
+    service.is_tarmac_managed = MagicMock(return_value=True)  # type: ignore[method-assign]
 
     policy_id, action = service.sync_policy(
         name="Guard",
@@ -657,3 +661,62 @@ def test_sync_policy_updates_when_live_policy_cannot_be_read():
     )
 
     assert (policy_id, action) == ("p-1", "UPDATED")
+
+
+def _unowned_service(live: str) -> SCPService:
+    mock_session = MagicMock()
+    mock_client = MagicMock()
+    mock_session.get_client.return_value = mock_client
+    mock_client.describe_policy.return_value = {"Policy": {"Content": live}}
+    mock_client.get_paginator.return_value.paginate.return_value = [{"Tags": []}]
+    return SCPService(mock_session)
+
+
+_EXISTING = {"Guard": {"Id": "p-theirs", "Name": "Guard"}}
+_THEIRS = '{"Version":"2012-10-17","Statement":[{"Sid":"TheirRule","Effect":"Deny","Action":"s3:*","Resource":"*"}]}'
+_OURS = (
+    '{"Version":"2012-10-17","Statement":[{"Sid":"OurRule","Effect":"Deny","Action":"ec2:*","Resource":"*"}]}'
+)
+
+
+def test_sync_policy_refuses_to_overwrite_a_policy_tarmac_did_not_create():
+    service = _unowned_service(_THEIRS)
+
+    with pytest.raises(GovernanceError) as exc:
+        service.sync_policy("Guard", "d", _OURS, _EXISTING)
+
+    assert "was not created by tarmac" in str(exc.value)
+    assert "TheirRule" in str(exc.value)
+    assert "--adopt-existing" in str(exc.value)
+    service.org_client.update_policy.assert_not_called()
+
+
+def test_sync_policy_adopts_with_the_flag():
+    service = _unowned_service(_THEIRS)
+    set_adopt_existing(True)
+
+    _, action = service.sync_policy("Guard", "d", _OURS, _EXISTING)
+
+    assert action == "UPDATED"
+    service.org_client.update_policy.assert_called_once()
+
+
+def test_sync_policy_takes_over_an_unowned_policy_that_already_matches():
+    service = _unowned_service(_OURS)
+
+    _, action = service.sync_policy("Guard", "d", _OURS, _EXISTING)
+
+    assert action == "NOOP"
+
+
+def test_import_into_the_stack_checks_adoption_first(tmp_path):
+    from types import SimpleNamespace
+
+    service = _unowned_service(_THEIRS)
+    (tmp_path / "ours.json").write_text(_OURS)
+    config = SimpleNamespace(
+        policies=[SimpleNamespace(name="Guard", policy_file=str(tmp_path / "ours.json"))]
+    )
+
+    with pytest.raises(GovernanceError, match="was not created by tarmac"):
+        service._require_declared_policies_adoptable(config, _EXISTING, tmp_path)  # type: ignore[arg-type]
