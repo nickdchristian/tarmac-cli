@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ..core import inventory as inventory_mod
+from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, get_default_config_dir
 from ..core.config_schema import OUDef
@@ -233,8 +234,14 @@ def run_pipeline(
     tags: list[str] | None = typer.Option(
         None, "--tag", "-t", help="Custom tags in Key=Value format (can be specified multiple times)"
     ),
+    adopt_existing: bool = typer.Option(
+        False,
+        "--adopt-existing",
+        help="Take over existing SCPs and budgets with the same name that tarmac did not create (default: stop)",
+    ),
 ) -> None:
     """Run end-to-end deployment or a specific phase in deterministic order."""
+    set_adopt_existing(adopt_existing)
     _validate_phase(phase, range(0, 7))
     _require_yes_for_json(dry_run, yes, json_output)
     _confirm_deployment(dry_run=dry_run, yes=yes)

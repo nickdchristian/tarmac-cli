@@ -49,3 +49,11 @@ def writable_config_dir(sample_config_dir: Path, tmp_path: Path) -> Path:
     target = tmp_path / "config"
     shutil.copytree(sample_config_dir, target)
     return target
+
+
+@pytest.fixture(autouse=True)
+def reset_adopt_existing() -> None:
+    """--adopt-existing lives in a context variable; never let one test's setting leak into the next."""
+    from tarmac.core.adoption import set_adopt_existing
+
+    set_adopt_existing(False)
