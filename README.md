@@ -183,7 +183,7 @@ the organization trail, IAM Identity Center, GuardDuty/Security Hub delegation, 
 member accounts it may only assume `OrganizationAccountAccessRole`. It has no `iam:PassRole`, cannot create IAM roles or
 users, and an explicit deny stops it modifying its own role and policy, so changing the role is a root/admin task (re-run
 `tarmac access bootstrap`). A test checks the policy against every AWS API call in tarmac's source, so adding a new call
-without updating the policy fails CI. If a run reports `AccessDenied` for a new feature, deploy with
+without updating the policy fails CI, and another test keeps the policy under IAM's size limit with headroom. `tarmac preflight` compares the deployed `tarmac-access` stack with the template in your installed release and warns to re-run `tarmac access bootstrap` after an upgrade that changed it (it only looks at a stack with that default name). If a run reports `AccessDenied` for a new feature, deploy with
 `ManagedPolicyArn=arn:aws:iam::aws:policy/AdministratorAccess` as a stopgap and report the missing action. The policy has not
 yet been exercised end-to-end against a real organization; review it before relying on it in production.
 
