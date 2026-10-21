@@ -221,6 +221,15 @@ def _render_phase_3_dry_run(bundle: ConfigBundle, target_region: str) -> None:
         )
     else:
         table.add_row("Log Retention", "Keep indefinitely", "NO EXPIRATION")
+    lock = trail_cfg.object_lock
+    if lock:
+        table.add_row(
+            "Object Lock",
+            f"{lock.mode}, {lock.retention_days} days",
+            "LOCK NEW LOG OBJECTS (CANNOT BE UNDONE)",
+        )
+    else:
+        table.add_row("Object Lock", "Off", "RECOMMENDED: GOVERNANCE, 365 DAYS")
     table.add_row("Trail Scope", "Multi-Region (All accounts in organization)", "APPLY ORG-WIDE")
     console.print(table)
 

@@ -78,6 +78,11 @@ cloudtrail:
   log_archive_account: "Log-Archive"
   enable_kms: true
   # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
+  # RECOMMENDED: S3 Object Lock on the log bucket, so logs cannot be deleted or overwritten for a year.
+  # Off unless set, and S3 cannot turn it off again once it is on. `object_lock: null` hides the deploy warning.
+  # object_lock:
+  #   mode: GOVERNANCE     # GOVERNANCE (bypassable) or COMPLIANCE (cannot be undone before it expires)
+  #   retention_days: 365
 
 # Terraform Backend configuration
 terraform_backend:

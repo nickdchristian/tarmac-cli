@@ -8,8 +8,9 @@ import typer
 
 from ..core import inventory
 from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_configs
+from ..core.exceptions import AWSAuthenticationError
 from ..core.tagging import parse_cli_tags
-from .ui import error_console
+from .ui import error_console, print_warning
 
 logger = logging.getLogger(__name__)
 
@@ -81,3 +82,52 @@ def parse_tags_or_exit(tags: list[str] | None) -> dict[str, str]:
     except ValueError as e:
         error_console.print(f"[red]✗ Invalid tag option:[/red] {e}")
         raise typer.Exit(code=1)
+
+
+def warn_if_object_lock_unset(bundle: ConfigBundle) -> None:
+    """Strongly recommend Object Lock while it is off and the user has not said so explicitly.
+
+    It cannot be switched off once enabled, so tarmac never turns it on by itself; writing
+    ``object_lock: null`` records the decision and silences this.
+    """
+    cloudtrail = bundle.org.cloudtrail
+    if cloudtrail.object_lock is None and "object_lock" not in cloudtrail.model_fields_set:
+        print_warning(
+            "CloudTrail Object Lock is not configured, so anyone with delete rights on the log bucket can "
+            "erase the audit trail. Best practice is `cloudtrail.object_lock: {mode: GOVERNANCE, "
+            "retention_days: 365}`. Enable it before the first deploy if you can; S3 cannot turn it off "
+            "again. Set `object_lock: null` to acknowledge and hide this warning."
+        )
+
+
+def log_archive_parameters(bundle: ConfigBundle, org_id: str) -> dict[str, str]:
+    """CloudFormation parameters for the log-archive hardening stack (shared by deploy and baseline)."""
+    cloudtrail = bundle.org.cloudtrail
+    params = {
+        "OrganizationId": org_id,
+        "OrgName": bundle.org.organization.name,
+        "EnableKmsEncryption": "true" if cloudtrail.enable_kms else "false",
+        "LogRetentionDays": str(cloudtrail.retention_days or 0),
+    }
+    if cloudtrail.object_lock:
+        params["ObjectLockMode"] = cloudtrail.object_lock.mode
+        params["ObjectLockRetentionDays"] = str(cloudtrail.object_lock.retention_days)
+    return params
+
+
+def require_credentials_or_exit(session_mgr: Any) -> None:
+    """Check once, up front, that the AWS credentials work; exit 1 with the likely fixes if they do not.
+
+    Without this, expired or missing credentials only surface at the first AWS call, after prompts and config
+    work, and as whatever error that call happens to raise.
+    """
+    try:
+        session_mgr.get_caller_identity()
+    except AWSAuthenticationError as exc:
+        error_console.print(f"[red]✗ AWS credentials are not usable:[/red] {exc.details or exc}")
+        error_console.print(
+            "  Check that they are set and not expired: [bold]aws sts get-caller-identity[/bold]. "
+            "For IAM Identity Center profiles run [bold]aws sso login[/bold]; make sure AWS_PROFILE "
+            "(or AWS_ACCESS_KEY_ID / AWS_SESSION_TOKEN) points at the account and role you intend."
+        )
+        raise typer.Exit(code=1) from exc
