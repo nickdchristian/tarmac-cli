@@ -333,7 +333,7 @@ class SCPService:
         )
 
         results: list[SCPReconciliationResult] = []
-        action = cfn_report.action
+        action = "IMPORTED" if to_adopt else cfn_report.action
         for scp_def in config.policies:
             attached_targets: list[str] = []
             unresolved_targets: list[str] = []
@@ -346,7 +346,7 @@ class SCPService:
             results.append(
                 SCPReconciliationResult(
                     name=scp_def.name,
-                    policy_id=None,
+                    policy_id=existing_scps.get(scp_def.name, {}).get("Id"),
                     action_taken=action,
                     attached_targets=attached_targets,
                     newly_attached_targets=attached_targets if action == "CREATED" else [],
