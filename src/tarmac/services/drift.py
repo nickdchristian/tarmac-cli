@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from botocore.exceptions import ClientError
-
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AWS_ERRORS
@@ -23,6 +21,7 @@ from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .ou import OUService
 from .scp import SCPService
+from .status import stack_status
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +319,7 @@ class DriftService:
                 client = self.session_mgr.get_member_client(
                     acct_id, "cloudformation", region_name=target_region
                 )
-                status = self._get_stack_status(client, stack_name)
+                status = stack_status(client, stack_name)
             except AWS_ERRORS:
                 status = "ACCESS_ERROR"
         self._record_stack_drift(friendly_name, status, report)
@@ -337,7 +336,7 @@ class DriftService:
         mgmt_cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
 
         ct_stack = f"{prefix}-organization-cloudtrail"
-        ct_status = self._get_stack_status(mgmt_cfn, ct_stack)
+        ct_status = stack_status(mgmt_cfn, ct_stack)
         self._record_stack_drift("CloudTrail", ct_status, report)
 
         sso_region = (
@@ -353,7 +352,7 @@ class DriftService:
             else self.session_mgr.get_client("cloudformation", region_name=sso_region)
         )
         sso_stack = f"{prefix}-sso-permission-sets"
-        sso_status = self._get_stack_status(sso_cfn, sso_stack)
+        sso_status = stack_status(sso_cfn, sso_stack)
         self._record_stack_drift("SSOPermissionSets", sso_status, report)
 
         stacks_to_check = [
@@ -390,7 +389,7 @@ class DriftService:
                     client = self.session_mgr.get_member_client(
                         acct_id, "cloudformation", region_name=target_region
                     )
-                    status = self._get_stack_status(client, budget_name)
+                    status = stack_status(client, budget_name)
                 except AWS_ERRORS:
                     status = "ACCESS_ERROR"
             self._record_stack_drift(f"Budget ({acct.name})", status, report)
@@ -473,31 +472,10 @@ class DriftService:
             )
         )
 
-    def _get_account_tags(self, account_id: str) -> dict[str, str]:
-        """Fetch live tags on an AWS Organizations account."""
-        try:
-            paginator = self.org_client.get_paginator("list_tags_for_resource")
-            tags: dict[str, str] = {}
-            for page in paginator.paginate(ResourceId=account_id):
-                for t in page.get("Tags", []):
-                    tags[t["Key"]] = t["Value"]
-            return tags
-        except ClientError:
-            return {}
-
     def _get_live_policy_content(self, policy_id: str) -> str:
         """Fetch content string of a live SCP."""
         resp = self.org_client.describe_policy(PolicyId=policy_id)
         return str(resp.get("Policy", {}).get("Content", "{}"))
-
-    def _get_stack_status(self, client: Any, stack_name: str) -> str:
-        """Fetch stack status string or NOT_FOUND."""
-        try:
-            resp = client.describe_stacks(StackName=stack_name)
-            stacks = resp.get("Stacks", [])
-            return str(stacks[0]["StackStatus"]) if stacks else "NOT_FOUND"
-        except ClientError:
-            return "NOT_FOUND"
 
     def _resolve_id(self, account_name: str, live_accts: dict[str, dict[str, Any]]) -> str | None:
         """Resolve account ID from name case- and separator-insensitively."""

@@ -236,16 +236,19 @@ class BaselineService:
         """Create or update a monthly cost budget in the member account via CloudFormation."""
         budget_name = f"{account_name}-monthly-budget"
 
-        if not budget_cfg.notification_emails and not budget_cfg.incident_response_webhook_url:
+        def budget_report(status: str, message: str) -> BudgetReport:
             return BudgetReport(
                 account_name=account_name,
                 account_id=account_id,
                 budget_name=budget_name,
                 limit_usd=budget_cfg.monthly_limit_usd,
                 alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status="SKIPPED",
-                message="No notification emails or incident response webhook specified.",
+                status=status,
+                message=message,
             )
+
+        if not budget_cfg.notification_emails and not budget_cfg.incident_response_webhook_url:
+            return budget_report("SKIPPED", "No notification emails or incident response webhook specified.")
 
         subscribers_count = len(budget_cfg.notification_emails) + (
             1 if budget_cfg.incident_response_webhook_url else 0
@@ -260,15 +263,7 @@ class BaselineService:
                 dry_run=True,
                 account_id=account_id,
             )
-            return BudgetReport(
-                account_name=account_name,
-                account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
-                alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status="SIMULATED",
-                message="Simulated budget creation via CloudFormation",
-            )
+            return budget_report("SIMULATED", "Simulated budget creation via CloudFormation")
 
         emails = list(budget_cfg.notification_emails)
         if len(emails) > 1:
@@ -300,56 +295,6 @@ class BaselineService:
             template_path = resolve_resource_path("cloudformation/account-budget.yaml")
             cfn_service = CloudFormationService(self.session_mgr)
 
-            def _cleanup_orphan_budget() -> None:
-                conflict: GovernanceError | None = None
-                try:
-                    budgets_client = self.session_mgr.get_member_client(
-                        account_id, "budgets", region_name="us-east-1"
-                    )
-                    resp = budgets_client.describe_budget(AccountId=account_id, BudgetName=budget_name)
-                    if isinstance(resp, dict) and "Budget" in resp:
-                        logger.debug(
-                            "Found pre-existing unmanaged budget '%s' in account '%s' (%s). "
-                            "Removing orphan budget to allow CloudFormation to manage it...",
-                            budget_name,
-                            account_name,
-                            account_id,
-                        )
-                        previous = resp["Budget"]
-                        limit = previous.get("BudgetLimit") or {}
-                        if not adopt_existing():
-                            conflict = GovernanceError(
-                                f"A budget named '{budget_name}' already exists in account '{account_name}' "
-                                f"({account_id}) and tarmac did not create it.",
-                                details=(
-                                    f"Its limit is {limit.get('Amount', '?')} {limit.get('Unit', '')}"
-                                    f" ({previous.get('TimeUnit', '?')}). Tarmac would delete it and create "
-                                    f"its own. {ADOPT_HINT} Or rename/delete it yourself first."
-                                ),
-                            )
-                            raise conflict
-                        budgets_client.delete_budget(AccountId=account_id, BudgetName=budget_name)
-                        audit(
-                            "delete",
-                            f"budget:{budget_name}",
-                            Outcome.SUCCEEDED,
-                            f"Deleted unmanaged budget '{budget_name}' in account '{account_name}' "
-                            "so CloudFormation can manage it",
-                            account_id=account_id,
-                            # Kept so the replaced budget can be recreated by hand if it mattered.
-                            previous_limit=f"{limit.get('Amount', '?')} {limit.get('Unit', '')}".strip(),
-                            previous_time_unit=previous.get("TimeUnit"),
-                            previous_budget_type=previous.get("BudgetType"),
-                        )
-                except ClientError as e:
-                    code = e.response.get("Error", {}).get("Code", "")
-                    if code not in ("NotFoundException", "ResourceNotFoundException"):
-                        logger.debug("Error checking existing budget in %s: %s", account_name, e)
-                except AWS_ERRORS as e:
-                    if e is conflict:
-                        raise
-                    logger.debug("Could not inspect existing budget in %s: %s", account_name, e)
-
             cfn_report = cfn_service.deploy_stack(
                 cfn_client=cfn_client,
                 stack_name=budget_name,
@@ -359,7 +304,7 @@ class BaselineService:
                 account_tags=account_tags,
                 org_tags=org_tags,
                 dry_run=dry_run,
-                on_before_create=_cleanup_orphan_budget,
+                on_before_create=lambda: self._remove_unmanaged_budget(account_id, account_name, budget_name),
             )
             if len(emails) > 1:
                 self._reconcile_additional_budget_emails(
@@ -369,15 +314,7 @@ class BaselineService:
                     additional_emails=[str(e) for e in emails[1:]],
                 )
             status = "CREATED" if cfn_report.action == "CREATED" else "UPDATED"
-            return BudgetReport(
-                account_name=account_name,
-                account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
-                alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status=status,
-                message=f"Budget stack {status.lower()} via CloudFormation",
-            )
+            return budget_report(status, f"Budget stack {status.lower()} via CloudFormation")
         except AWS_ERRORS as e:
             audit(
                 "deploy",
@@ -386,15 +323,58 @@ class BaselineService:
                 f"Could not deploy budget '{budget_name}' in account '{account_name}': {e}",
                 account_id=account_id,
             )
-            return BudgetReport(
-                account_name=account_name,
-                account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
-                alert_threshold_percent=budget_cfg.alert_threshold_percent,
-                status="FAILED",
-                message=str(e),
+            return budget_report("FAILED", str(e))
+
+    def _remove_unmanaged_budget(self, account_id: str, account_name: str, budget_name: str) -> None:
+        """Delete a same-named budget tarmac did not create (only with --adopt-existing) so the stack can own it."""
+        conflict: GovernanceError | None = None
+        try:
+            budgets_client = self.session_mgr.get_member_client(
+                account_id, "budgets", region_name="us-east-1"
             )
+            resp = budgets_client.describe_budget(AccountId=account_id, BudgetName=budget_name)
+            if isinstance(resp, dict) and "Budget" in resp:
+                logger.debug(
+                    "Found pre-existing unmanaged budget '%s' in account '%s' (%s). "
+                    "Removing orphan budget to allow CloudFormation to manage it...",
+                    budget_name,
+                    account_name,
+                    account_id,
+                )
+                previous = resp["Budget"]
+                limit = previous.get("BudgetLimit") or {}
+                if not adopt_existing():
+                    conflict = GovernanceError(
+                        f"A budget named '{budget_name}' already exists in account '{account_name}' "
+                        f"({account_id}) and tarmac did not create it.",
+                        details=(
+                            f"Its limit is {limit.get('Amount', '?')} {limit.get('Unit', '')}"
+                            f" ({previous.get('TimeUnit', '?')}). Tarmac would delete it and create "
+                            f"its own. {ADOPT_HINT} Or rename/delete it yourself first."
+                        ),
+                    )
+                    raise conflict
+                budgets_client.delete_budget(AccountId=account_id, BudgetName=budget_name)
+                audit(
+                    "delete",
+                    f"budget:{budget_name}",
+                    Outcome.SUCCEEDED,
+                    f"Deleted unmanaged budget '{budget_name}' in account '{account_name}' "
+                    "so CloudFormation can manage it",
+                    account_id=account_id,
+                    # Kept so the replaced budget can be recreated by hand if it mattered.
+                    previous_limit=f"{limit.get('Amount', '?')} {limit.get('Unit', '')}".strip(),
+                    previous_time_unit=previous.get("TimeUnit"),
+                    previous_budget_type=previous.get("BudgetType"),
+                )
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code not in ("NotFoundException", "ResourceNotFoundException"):
+                logger.debug("Error checking existing budget in %s: %s", account_name, e)
+        except AWS_ERRORS as e:
+            if e is conflict:
+                raise
+            logger.debug("Could not inspect existing budget in %s: %s", account_name, e)
 
     def _reconcile_additional_budget_emails(
         self,

@@ -32,20 +32,20 @@ class LandingZoneStatus:
     accounts_suspended: int = 0
 
 
+def stack_status(client: Any, stack_name: str) -> str:
+    """Status of a CloudFormation stack, or NOT_FOUND when it cannot be described."""
+    try:
+        stacks = client.describe_stacks(StackName=stack_name).get("Stacks", [])
+        return str(stacks[0]["StackStatus"]) if stacks else "NOT_FOUND"
+    except ClientError:
+        return "NOT_FOUND"
+
+
 class StatusService:
     """Inspects live AWS resources and compares them against declared config."""
 
     def __init__(self, session_mgr: AwsSessionManager):
         self.session_mgr = session_mgr
-
-    def get_stack_status(self, client: Any, stack_name: str) -> str:
-        """Fetch status of a CloudFormation stack or return NOT_FOUND."""
-        try:
-            resp = client.describe_stacks(StackName=stack_name)
-            stacks = resp.get("Stacks", [])
-            return str(stacks[0]["StackStatus"]) if stacks else "NOT_FOUND"
-        except ClientError:
-            return "NOT_FOUND"
 
     def inspect(self, bundle: ConfigBundle, target_region: str) -> LandingZoneStatus:
         """Inspect AWS Organization, OUs, accounts, stacks, and SSO state."""
@@ -65,7 +65,7 @@ class StatusService:
 
         cfn_client = self.session_mgr.get_client("cloudformation", region_name=target_region)
         ct_stack = f"{bundle.org.organization.name}-organization-cloudtrail"
-        ct_status = self.get_stack_status(cfn_client, ct_stack)
+        ct_status = stack_status(cfn_client, ct_stack)
 
         acct_map = {str(a["Name"]): str(a["Id"]) for a in active_accts}
         backend_name = bundle.get_backend_account_name() or "deployment"
@@ -77,12 +77,12 @@ class StatusService:
                 dep_cfn = self.session_mgr.get_member_client(
                     deployment_id, "cloudformation", region_name=target_region
                 )
-                backend_status = self.get_stack_status(dep_cfn, backend_stack)
+                backend_status = stack_status(dep_cfn, backend_stack)
             except AWS_ERRORS as e:
                 logger.debug("Could not inspect backend stack in account %s: %s", deployment_id, e)
                 backend_status = "ACCESS_ERROR"
         else:
-            backend_status = self.get_stack_status(cfn_client, backend_stack)
+            backend_status = stack_status(cfn_client, backend_stack)
 
         try:
             IdentityService.discover_instance(

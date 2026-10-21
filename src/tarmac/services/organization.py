@@ -158,10 +158,6 @@ class OrganizationService:
         }
         return all(str(current.get(key, "")).strip() == str(value).strip() for key, value in wanted.items())
 
-    def _contact_already_set(self, contact_type: str, desired: Any) -> bool:
-        """True when the management account already has this exact alternate contact."""
-        return self._contact_matches(self._current_contact(contact_type), desired)
-
     def _enabled_service_principals(self) -> set[str]:
         """Service principals that already have trusted access (empty when it cannot be read)."""
         try:
