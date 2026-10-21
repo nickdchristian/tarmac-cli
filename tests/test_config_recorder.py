@@ -58,7 +58,7 @@ def _bundle(*, config: dict[str, Any] | None = None, cloudtrail_kms: bool = Fals
     bundle.org.organization.name = "acme"
     bundle.org.organization.additional_regions = []
     bundle.org.cloudtrail.enable_kms = cloudtrail_kms
-    bundle.org.security_services = SecurityServicesConfig(config_recorder=config or {})
+    bundle.org.security_services = SecurityServicesConfig.model_validate({"config_recorder": config or {}})
     bundle.get_log_archive_account_name.return_value = "log-archive"
     bundle.resolve_account_id.return_value = "222222222222"
     bundle.get_organization_tags.return_value = {}
@@ -583,7 +583,7 @@ def test_deploy_stops_with_guidance_when_the_log_archive_has_no_config_bucket_ye
 
 
 def test_config_recorder_null_means_decided_against_like_object_lock():
-    config = SecurityServicesConfig(config_recorder=None)
+    config = SecurityServicesConfig.model_validate({"config_recorder": None})
     assert config.config_recorder.enabled is False
     assert "config_recorder" in config.model_fields_set
     assert "config_recorder" not in SecurityServicesConfig().model_fields_set
@@ -615,7 +615,9 @@ def test_missing_log_archive_account_skips_with_a_warning(monkeypatch):
     service = MagicMock()
     monkeypatch.setattr("tarmac.cli.deploy_config_recorder.ConfigRecorderService", service)
     bundle = MagicMock()
-    bundle.org.security_services = SecurityServicesConfig(config_recorder={"enabled": True})
+    bundle.org.security_services = SecurityServicesConfig.model_validate(
+        {"config_recorder": {"enabled": True}}
+    )
     bundle.get_log_archive_account_name.return_value = "log-archive"
     bundle.resolve_account_id.return_value = None
 
