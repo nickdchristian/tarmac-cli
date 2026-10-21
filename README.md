@@ -501,6 +501,16 @@ explicitly, and sets the same choice for new member accounts. On a detector that
 features on; it never turns one off, and it reports any optional feature that is on but not requested. Runtime Monitoring is
 not managed by tarmac.
 
+### Terraform state locking
+
+`tarmac baseline backend` creates a versioned, encrypted S3 bucket for Terraform state. Locking is S3-only by default, so
+Terraform needs `use_lockfile = true` (Terraform 1.10 or later) and there is no DynamoDB table to pay for. Terraform now marks
+DynamoDB-based locking as deprecated
+([S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3)). Set `terraform_backend.enable_dynamodb: true`
+to create the lock table anyway. A backend that already has the table keeps it unless you set `enable_dynamodb: false` or pass
+`--s3-only`, and tarmac warns before removing it, because Terraform configurations that still set `dynamodb_table` would
+stop locking.
+
 ## Safe Teardown
 
 Tarmac includes built-in safeguards to prevent accidental infrastructure or state loss:

@@ -14,7 +14,7 @@ from ..core.models import BaselineReport, PreflightCheckStatus, PreflightReport,
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
-from ..services.cloudformation import CloudFormationService
+from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
@@ -481,14 +481,21 @@ def _deploy_backend_stack(
             for b in set(state_buckets):
                 cleanup_orphaned_bucket(s3_client, b, account_id=deployment_id)
 
+    backend_stack = f"{bundle.org.organization.name}-terraform-backend"
+    enable_dynamodb, lock_warning = lock_table_wanted(
+        cfn_client, backend_stack, bundle.org.terraform_backend.enable_dynamodb
+    )
+    if lock_warning:
+        print_warning(lock_warning)
+
     cfn_service.deploy_stack(
         cfn_client,
-        f"{bundle.org.organization.name}-terraform-backend",
+        backend_stack,
         template_file,
         {
             "OrgName": bundle.org.organization.name,
             "BucketPrefix": bundle.org.terraform_backend.bucket_prefix,
-            "EnableDynamoDB": "true" if bundle.org.terraform_backend.enable_dynamodb else "false",
+            "EnableDynamoDB": "true" if enable_dynamodb else "false",
             "DynamoDBTableName": bundle.org.terraform_backend.dynamodb_table_name,
         },
         tags=custom_tags,

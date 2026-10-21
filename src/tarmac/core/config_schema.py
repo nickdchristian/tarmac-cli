@@ -155,7 +155,14 @@ class TerraformBackendConfig(BaseModel):
     )
     bucket_prefix: str = Field(default="org-terraform-state")
     dynamodb_table_name: str = Field(default="terraform-state-lock")
-    enable_dynamodb: bool = Field(default=True)
+    enable_dynamodb: bool | None = Field(
+        default=None,
+        description=(
+            "Create a DynamoDB table for Terraform state locking. Unset: new backends use S3-only locking "
+            "(`use_lockfile`, Terraform 1.10+; no table to pay for), and a backend that already has the table keeps "
+            "it. DynamoDB locking is deprecated in Terraform. Set true to create the table, false to remove it."
+        ),
+    )
 
     @field_validator("bucket_prefix")
     def validate_bucket_prefix(cls, v: str) -> str:
