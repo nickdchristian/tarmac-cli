@@ -13,7 +13,7 @@ from tarmac.core.models import StackDeployReport
 
 runner = CliRunner()
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATES = ["cloudformation", "src/tarmac/templates/cloudformation"]
+TEMPLATE = ROOT / "src/tarmac/templates/cloudformation/log-archive-hardening.yaml"
 
 
 class _Loader(yaml.SafeLoader):
@@ -31,13 +31,8 @@ def _node_value(loader, node):
     return loader.construct_mapping(node, deep=True)
 
 
-def _load(base: str) -> dict:
-    return yaml.load((ROOT / base / "log-archive-hardening.yaml").read_text(), Loader=_Loader)
-
-
-@pytest.mark.parametrize("base", TEMPLATES)
-def test_template_can_skip_the_kms_key_and_use_sse_s3(base: str):
-    doc = _load(base)
+def test_template_can_skip_the_kms_key_and_use_sse_s3():
+    doc = yaml.load(TEMPLATE.read_text(), Loader=_Loader)
     res = doc["Resources"]
 
     param = doc["Parameters"]["EnableKmsEncryption"]
@@ -57,12 +52,6 @@ def test_template_can_skip_the_kms_key_and_use_sse_s3(base: str):
 
     for name in ("KmsKeyArn", "KmsKeyId"):
         assert doc["Outputs"][name]["Condition"] == "UseKmsEncryption"
-
-
-def test_bundled_and_repository_templates_match():
-    assert (ROOT / TEMPLATES[0] / "log-archive-hardening.yaml").read_text() == (
-        ROOT / TEMPLATES[1] / "log-archive-hardening.yaml"
-    ).read_text()
 
 
 @pytest.mark.parametrize(("enable_kms", "expected"), [(True, "true"), (False, "false")])

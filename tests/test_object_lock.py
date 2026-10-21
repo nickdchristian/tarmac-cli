@@ -128,7 +128,10 @@ def test_invalid_object_lock_is_rejected(lock):
 
 def test_template_locks_the_bucket_only_when_asked():
     template = yaml.load(
-        (ROOT / "cloudformation" / "log-archive-hardening.yaml").read_text(encoding="utf-8"), Loader=CfnLoader
+        (ROOT / "src/tarmac/templates/cloudformation" / "log-archive-hardening.yaml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=CfnLoader,
     )
     assert template["Parameters"]["ObjectLockMode"]["Default"] == ""
     assert template["Parameters"]["ObjectLockMode"]["AllowedValues"] == ["", "GOVERNANCE", "COMPLIANCE"]

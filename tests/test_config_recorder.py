@@ -25,7 +25,7 @@ from tarmac.services.config_recorder import ConfigRecorderService, stack_set_nam
 from tarmac.services.teardown import TeardownService
 
 ROOT = Path(__file__).resolve().parent.parent
-TEMPLATE = ROOT / "cloudformation" / "config-recorder.yaml"
+TEMPLATE = ROOT / "src/tarmac/templates/cloudformation" / "config-recorder.yaml"
 MGMT = "111111111111"
 NAME = stack_set_name("acme")
 PARAMS = {
@@ -669,7 +669,7 @@ def test_recorder_template_sets_the_kms_key_and_recording_frequency():
     )
 
 
-LOG_ARCHIVE = ROOT / "cloudformation" / "log-archive-hardening.yaml"
+LOG_ARCHIVE = ROOT / "src/tarmac/templates/cloudformation" / "log-archive-hardening.yaml"
 
 
 def test_config_gets_its_own_unlocked_bucket_and_cloudtrails_bucket_has_no_config_access():

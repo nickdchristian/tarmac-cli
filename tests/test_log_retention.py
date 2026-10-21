@@ -19,7 +19,7 @@ from tarmac.core.models import StackDeployReport
 
 runner = CliRunner()
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATES = ["cloudformation", "src/tarmac/templates/cloudformation"]
+TEMPLATES = ["src/tarmac/templates/cloudformation"]
 
 
 class _Loader(yaml.SafeLoader):

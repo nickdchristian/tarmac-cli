@@ -106,7 +106,9 @@ def test_access_template_is_least_surprising() -> None:
         pass
 
     Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
-    path = Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml"
+    path = (
+        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
+    )
     t = yaml.load(path.read_text(encoding="utf-8"), Loader=Loader)
     assert t["Parameters"]["RequireMfa"]["Default"] == "true"
     assert t["Parameters"]["MaxSessionDurationSeconds"]["Default"] >= 14400
@@ -115,9 +117,9 @@ def test_access_template_is_least_surprising() -> None:
 
 
 def test_template_defaults_and_mfa_condition() -> None:
-    text = (Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml").read_text(
-        encoding="utf-8"
-    )
+    text = (
+        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
+    ).read_text(encoding="utf-8")
     assert "BoolIfExists" in text  # SSO sessions carry no MFA flag
     assert "CreateBootstrapUser:\n    Type: String\n    Default: 'false'" in text
 
@@ -211,7 +213,9 @@ _NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups"}
 
 
 def _policy_statements() -> list[dict[str, object]]:
-    path = Path(__file__).resolve().parent.parent / "cloudformation" / "tarmac-access.yaml"
+    path = (
+        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
+    )
     template = yaml.load(path.read_text(encoding="utf-8"), Loader=CfnLoader)
     return template["Resources"]["TarmacPolicy"]["Properties"]["PolicyDocument"]["Statement"]
 

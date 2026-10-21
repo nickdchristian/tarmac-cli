@@ -650,7 +650,7 @@ uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run basedpyright
-uv run cfn-lint cloudformation/*.yaml src/tarmac/templates/cloudformation/*.yaml
+uv run cfn-lint src/tarmac/templates/cloudformation/*.yaml
 uv run tarmac validate --config-dir examples/config
 ```
 

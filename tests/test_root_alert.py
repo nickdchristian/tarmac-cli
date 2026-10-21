@@ -35,7 +35,9 @@ def _template() -> dict[str, Any]:
     Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
     return cast(
         dict[str, Any],
-        yaml.load((ROOT / "cloudformation" / "management-root-alert.yaml").read_text(), Loader),
+        yaml.load(
+            (ROOT / "src/tarmac/templates/cloudformation" / "management-root-alert.yaml").read_text(), Loader
+        ),
     )
 
 
@@ -109,13 +111,6 @@ def test_the_template_needs_no_iam_role():
     kinds = {r["Type"] for r in _template()["Resources"].values()}
 
     assert not any(k.startswith("AWS::IAM::") for k in kinds)
-
-
-def test_the_packaged_copy_is_identical():
-    source = (ROOT / "cloudformation" / "management-root-alert.yaml").read_text()
-    packaged = (ROOT / "src/tarmac/templates/cloudformation/management-root-alert.yaml").read_text()
-
-    assert source == packaged
 
 
 def _teardown(cfn: MagicMock) -> TeardownService:

@@ -123,7 +123,11 @@ def test_budget_template_adds_the_forecast_notification_only_when_asked():
     import yaml
 
     template = yaml.load(
-        (Path(__file__).resolve().parent.parent / "cloudformation" / "account-budget.yaml").read_text(),
+        (
+            Path(__file__).resolve().parent.parent
+            / "src/tarmac/templates/cloudformation"
+            / "account-budget.yaml"
+        ).read_text(),
         Loader=CfnLoader,
     )
     assert template["Parameters"]["ForecastThresholdPercent"]["Default"] == 0
