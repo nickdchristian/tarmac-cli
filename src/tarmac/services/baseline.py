@@ -288,6 +288,8 @@ class BaselineService:
             "AlertThresholdPercent": str(budget_cfg.alert_threshold_percent),
             "NotificationEmail": str(emails[0]) if emails else "",
         }
+        if budget_cfg.forecast_alert_threshold_percent is not None:
+            parameters["ForecastThresholdPercent"] = str(budget_cfg.forecast_alert_threshold_percent)
         if budget_cfg.incident_response_webhook_url:
             parameters["IncidentResponseWebhookUrl"] = str(budget_cfg.incident_response_webhook_url)
 
