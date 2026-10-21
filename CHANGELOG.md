@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.10...v0.2.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** Removed commands and their replacements: `doctor` -> `preflight`; `apply`, `account apply`, `account plan` -> `deploy run --phase 4 [--dry-run]`; `drift` -> `status --detail` (`--strict` unchanged); `access check` -> `info --strict`; `org bootstrap`, `org contacts`, `org root-access`, `org activate-cost-tags`, `org cleanup-vpc` -> `deploy run --phase 1`; `ou sync`, `org scp plan`, `org scp apply` -> `deploy run --phase 2`; `baseline cloudtrail`, `baseline logs` -> `deploy run --phase 3`; `baseline backend`, `baseline audit`, `baseline security`, `baseline harden-*` -> `deploy run --phase 5`; `identity sync` -> `deploy run --phase 6`; `deploy teardown` -> `deploy destroy`; `baseline anomaly-status` -> `account anomaly-status`. `--sse-s3` and `--s3-only` are replaced by `cloudtrail.enable_kms: false` and `terraform_backend.enable_dynamodb: false`.
+
+### Features
+
+* **cli:** simplify the command set and plan dry runs from live AWS state ([#87](https://github.com/nickdchristian/tarmac-cli/issues/87)) ([d750282](https://github.com/nickdchristian/tarmac-cli/commit/d750282c3d403a461cca9d900e0fc2c0f44a4858))
+
 ## [0.1.10](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.9...v0.1.10) (2026-10-21)
 
 
