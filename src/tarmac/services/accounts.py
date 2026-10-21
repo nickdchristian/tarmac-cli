@@ -494,6 +494,7 @@ class AccountService:
         dry_run: bool = False,
         poll_delay_sec: int = 15,
         max_poll_attempts: int = 40,
+        org_tags: dict[str, str] | None = None,
     ) -> list[AccountProvisionResult]:
         """Idempotently create and reconcile multiple member accounts in batch.
 
@@ -509,6 +510,7 @@ class AccountService:
         for idx, acct_def in enumerate(accounts):
             name, email = acct_def.name, acct_def.email
             target_ou_id = ou_map.get(acct_def.ou)
+            desired_tags = {**(org_tags or {}), **acct_def.tags}
 
             if not target_ou_id:
                 logger.warning("Target OU '%s' not found for account '%s'", acct_def.ou, name)
@@ -539,7 +541,7 @@ class AccountService:
                     self.simulate_move(acct_id, name, target_ou_id)
                 else:
                     moved = self.move_account_if_needed(acct_id, name, target_ou_id)
-                tags_updated = self.sync_account_tags(acct_id, name, acct_def.tags, dry_run=dry_run)
+                tags_updated = self.sync_account_tags(acct_id, name, desired_tags, dry_run=dry_run)
                 action = "MOVED" if moved else ("TAGGED" if tags_updated else "REUSED")
                 results[idx] = _make_result(acct_def, acct_id, target_ou_id, action, "SUCCEEDED")
                 continue
@@ -575,8 +577,8 @@ class AccountService:
                     "AccountName": name,
                     "RoleName": "OrganizationAccountAccessRole",
                 }
-                if acct_def.tags:
-                    create_params["Tags"] = [{"Key": k, "Value": str(v)} for k, v in acct_def.tags.items()]
+                if desired_tags:
+                    create_params["Tags"] = [{"Key": k, "Value": str(v)} for k, v in desired_tags.items()]
                 resp = self.org_client.create_account(**create_params)
                 audit(
                     "create",
@@ -591,6 +593,7 @@ class AccountService:
                     {
                         "index": idx,
                         "acct_def": acct_def,
+                        "desired_tags": desired_tags,
                         "target_ou_id": target_ou_id,
                         "request_id": str(resp["CreateAccountStatus"]["Id"]),
                     }
@@ -676,7 +679,8 @@ class AccountService:
 
         try:
             self.move_account_if_needed(new_id, name, item["target_ou_id"])
-            self.sync_account_tags(new_id, name, item["acct_def"].tags, dry_run=False)
+            tags_to_sync = item.get("desired_tags", item["acct_def"].tags)
+            self.sync_account_tags(new_id, name, tags_to_sync, dry_run=False)
         except ClientError as e:
             logger.warning("Error finishing account '%s' (%s): %s", name, new_id, e)
             failures.append(f"Account '{name}' ({new_id}) was created but could not be finished: {e}")
@@ -691,9 +695,12 @@ class AccountService:
         acct_def: AccountDef,
         target_ou_id: str,
         dry_run: bool = False,
+        org_tags: dict[str, str] | None = None,
     ) -> AccountProvisionResult:
         """Idempotently create an account and ensure placement in the target OU."""
-        results = self.provision_accounts([acct_def], {acct_def.ou: target_ou_id}, dry_run=dry_run)
+        results = self.provision_accounts(
+            [acct_def], {acct_def.ou: target_ou_id}, dry_run=dry_run, org_tags=org_tags
+        )
         return results[0]
 
     def _poll_create_account_status(

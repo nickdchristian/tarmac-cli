@@ -117,12 +117,34 @@ class ConfigBundle:
         """Validate logical relationships across configuration files."""
         account_names = {a.name for a in self.accounts.accounts}
         errors: list[str] = []
+        errors.extend(self._check_ou_uniqueness())
         errors.extend(self._check_account_ous())
         errors.extend(self._check_delegated_admin(account_names))
         errors.extend(self._check_identity_assignments(account_names))
         errors.extend(self._check_inline_policies())
         errors.extend(self._check_scp_policies())
         errors.extend(self._check_scp_targets())
+        return errors
+
+    def _check_ou_uniqueness(self) -> list[str]:
+        """Validate that OU names are unique across the hierarchy (OUService indexes OUs by name)."""
+        errors: list[str] = []
+        seen: dict[str, str] = {}
+
+        def _walk(ous: list[OUDef]) -> None:
+            for ou in ous:
+                key = ou.name.strip().lower()
+                if key in seen:
+                    errors.append(
+                        f"Duplicate OU name '{ou.name}' in organization.yaml (conflicts with '{seen[key]}'). "
+                        "OU names must be unique across the organization hierarchy."
+                    )
+                else:
+                    seen[key] = ou.name
+                if ou.children:
+                    _walk(ou.children)
+
+        _walk(self.org.ou_structure)
         return errors
 
     @staticmethod
@@ -302,14 +324,20 @@ class ConfigBundle:
         return None
 
     def get_organization_tags(self) -> dict[str, str]:
-        """Collect organization-level tags from organization.yaml and accounts.yaml."""
+        """Collect organization-level tags from organization.yaml and accounts.yaml.
+
+        Precedence (lowest to highest):
+        1. Top-level ``tags`` in organization.yaml
+        2. ``organization.tags`` in organization.yaml
+        3. Top-level ``tags`` in accounts.yaml (catalog-level defaults)
+        """
         tags: dict[str, str] = {}
-        if self.accounts.tags:
-            tags.update(self.accounts.tags)
         if self.org.tags:
             tags.update(self.org.tags)
         if self.org.organization.tags:
             tags.update(self.org.organization.tags)
+        if self.accounts.tags:
+            tags.update(self.accounts.tags)
         return tags
 
     def get_cost_allocation_tags(self) -> list[str]:

@@ -185,3 +185,94 @@ def test_status_service_handles_member_role_assumption_failure(sample_config_dir
 
     status = StatusService(mock_session_mgr).inspect(bundle, "eu-west-1")
     assert status.backend_status == "ACCESS_ERROR"
+
+
+def test_drift_service_handles_import_complete_sso_region_and_remediation_commands(sample_config_dir: Path):
+    """Verify DriftService uses identity_center.region, accepts IMPORT_COMPLETE, and emits valid CLI commands."""
+    from tarmac.core.config_loader import load_all_configs
+    from tarmac.services.drift import DriftService
+
+    bundle, _ = load_all_configs(sample_config_dir)
+    assert bundle is not None
+    bundle.identity.identity_center.region = "us-east-1"
+    bundle.org.service_control_policies.policies[0].targets = ["organization_root", "security"]
+
+    mock_session_mgr = MagicMock()
+    mock_org = MagicMock()
+    mock_cfn_primary = MagicMock()
+    mock_cfn_sso = MagicMock()
+    mock_sso = MagicMock()
+
+    mock_org.list_roots.return_value = {"Roots": [{"Id": "r-root123"}]}
+
+    def get_paginator(operation_name: str) -> MagicMock:
+        p = MagicMock()
+        if operation_name in ["list_organizational_units_for_parent", "list_children"]:
+            p.paginate.return_value = [{"OrganizationalUnits": [{"Id": "ou-sec", "Name": "Security"}]}]
+        elif operation_name == "list_accounts":
+            p.paginate.return_value = [
+                {
+                    "Accounts": [
+                        {"Id": "111111111111", "Name": bundle.accounts.accounts[0].name, "Status": "ACTIVE"}
+                    ]
+                }
+            ]
+        elif operation_name == "list_policies":
+            p.paginate.return_value = [{"Policies": []}]
+        elif operation_name == "list_tags_for_resource":
+            expected_tags = {
+                **bundle.get_organization_tags(),
+                **bundle.get_account_tags(bundle.accounts.accounts[0].name),
+            }
+            p.paginate.return_value = [{"Tags": [{"Key": k, "Value": v} for k, v in expected_tags.items()]}]
+        else:
+            p.paginate.return_value = [{}]
+        return p
+
+    mock_org.get_paginator.side_effect = get_paginator
+    mock_org.list_parents.return_value = {"Parents": [{"Id": "ou-sec"}]}
+
+    mock_cfn_primary.describe_stacks.return_value = {
+        "Stacks": [{"StackName": "s", "StackStatus": "IMPORT_COMPLETE"}]
+    }
+    mock_cfn_sso.describe_stacks.return_value = {
+        "Stacks": [{"StackName": "sso", "StackStatus": "IMPORT_COMPLETE"}]
+    }
+    mock_sso.list_instances.return_value = {"Instances": [{"InstanceArn": "arn:aws:sso:::instance/sso-1"}]}
+    sso_paginator = MagicMock()
+    sso_paginator.paginate.return_value = [{"PermissionSets": []}]
+    mock_sso.get_paginator.return_value = sso_paginator
+
+    def get_client(service_name: str, region_name: str | None = None) -> MagicMock:
+        if service_name == "organizations":
+            return mock_org
+        if service_name == "cloudformation":
+            return mock_cfn_sso if region_name == "us-east-1" else mock_cfn_primary
+        if service_name == "sso-admin":
+            assert region_name == "us-east-1"
+            return mock_sso
+        return MagicMock()
+
+    mock_session_mgr.get_client.side_effect = get_client
+    mock_session_mgr.get_member_client.return_value = mock_cfn_primary
+
+    report = DriftService(mock_session_mgr).inspect_drift(
+        bundle, target_region="eu-west-1", project_root=sample_config_dir
+    )
+    by_cat_name = {(i.category, i.name): i for i in report.items}
+
+    # IMPORT_COMPLETE is treated as IN_SYNC
+    assert by_cat_name[("Stack", "CloudTrail")].status == "IN_SYNC"
+    assert by_cat_name[("Stack", "SSOPermissionSets")].status == "IN_SYNC"
+
+    # Account tags match declared + org tags without requiring synthetic ManagedBy on existing accounts
+    acct_tag_item = by_cat_name[("Tag", f"{bundle.accounts.accounts[0].name} tags")]
+    assert acct_tag_item.status == "IN_SYNC"
+
+    # Missing OU and SCP remediation commands match real CLI subcommands
+    missing_ous = [i for i in report.items if i.category == "OU" and i.status == "MISSING"]
+    assert missing_ous
+    assert all(i.remediation == "tarmac ou sync" for i in missing_ous)
+    missing_scps = [i for i in report.items if i.category == "SCP" and i.status == "MISSING"]
+    assert missing_scps
+    assert all(i.remediation == "tarmac org scp apply" for i in missing_scps)
