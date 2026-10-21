@@ -408,7 +408,7 @@ def _render_status_actions_panel(actions: list[tuple[str, str, str]]) -> None:
 def _eval_org_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
     active = status.org_id != "Unknown"
     badge = "[bold green]ACTIVE[/bold green]" if active else "[bold red]MISSING[/bold red]"
-    action = None if active else "Organization not found. Run: tarmac org create"
+    action = None if active else "Organization not found. Run: tarmac org bootstrap"
     return ("AWS Organization", bundle.org.organization.name, status.org_id, badge, action)
 
 

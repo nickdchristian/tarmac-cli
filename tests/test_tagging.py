@@ -269,3 +269,75 @@ def test_parse_cli_tags_invalid_characters():
 
     with pytest.raises(ValueError, match="contains invalid characters"):
         parse_cli_tags(["Invalid,Key=value"])
+
+
+def test_catalog_tags_override_org_tags_and_account_tags_override_catalog(tmp_path: Path):
+    """Catalog-level tags in accounts.yaml must override organization.yaml tags."""
+    org = OrganizationConfig(
+        organization=OrgDetails(
+            name="acme",
+            domain="acme.com",
+            primary_region="us-east-1",
+            tags={"Tier": "OrgDetails", "Shared": "FromOrgDetails"},
+        ),
+        contacts=ContactsConfig(
+            billing=Contact(name="B", title="B", email="b@a.com", phone="+15550001"),
+            operations=Contact(name="O", title="O", email="o@a.com", phone="+15550002"),
+            security=Contact(name="S", title="S", email="s@a.com", phone="+15550003"),
+        ),
+        tags={"Tier": "TopLevelOrg", "RootOnly": "Yes"},
+    )
+    accounts = AccountsCatalog(
+        accounts=[
+            AccountDef(
+                name="audit",
+                email="audit@acme.com",
+                ou="Security",
+                tags={"Tier": "AccountSpecific"},
+            )
+        ],
+        tags={"Tier": "CatalogDefault", "Shared": "FromCatalog"},
+    )
+    identity = IdentityConfigFile(
+        identity_center=IdentityCenterConfig(
+            admin_user=UserDef(username="admin", email="admin@acme.com"),
+            breakglass_user=UserDef(username="breakglass", email="breakglass@acme.com"),
+        )
+    )
+    bundle = ConfigBundle(org, accounts, identity, tmp_path)
+
+    org_tags = bundle.get_organization_tags()
+    assert org_tags["RootOnly"] == "Yes"
+    assert org_tags["Shared"] == "FromCatalog"
+    assert org_tags["Tier"] == "CatalogDefault"
+
+    resolved = bundle.get_resolved_tags(account_name="audit")
+    assert resolved["Tier"] == "AccountSpecific"
+    assert resolved["Shared"] == "FromCatalog"
+
+
+def test_duplicate_ou_names_rejected_in_cross_reference_validation(tmp_path: Path):
+    from tarmac.core.config_schema import OUDef
+
+    org = OrganizationConfig(
+        organization=OrgDetails(name="acme", domain="acme.com", primary_region="us-east-1"),
+        contacts=ContactsConfig(
+            billing=Contact(name="B", title="B", email="b@a.com", phone="+15550001"),
+            operations=Contact(name="O", title="O", email="o@a.com", phone="+15550002"),
+            security=Contact(name="S", title="S", email="s@a.com", phone="+15550003"),
+        ),
+        ou_structure=[
+            OUDef(name="Security", children=[OUDef(name="Workloads")]),
+            OUDef(name="workloads"),
+        ],
+    )
+    accounts = AccountsCatalog(accounts=[])
+    identity = IdentityConfigFile(
+        identity_center=IdentityCenterConfig(
+            admin_user=UserDef(username="admin", email="admin@acme.com"),
+            breakglass_user=UserDef(username="breakglass", email="breakglass@acme.com"),
+        )
+    )
+    bundle = ConfigBundle(org, accounts, identity, tmp_path)
+    errors = bundle.validate_cross_references()
+    assert any("Duplicate OU name 'workloads'" in e for e in errors)

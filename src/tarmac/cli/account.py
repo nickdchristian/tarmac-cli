@@ -116,7 +116,12 @@ def _provision_declared_accounts(
     skip_baseline: bool,
     results_table: Table,
 ) -> None:
-    results = service.provision_accounts(bundle.accounts.accounts, ou_map=ou_map, dry_run=dry_run)
+    results = service.provision_accounts(
+        bundle.accounts.accounts,
+        ou_map=ou_map,
+        dry_run=dry_run,
+        org_tags=bundle.get_organization_tags(),
+    )
     acct_def_map = {a.name: a for a in bundle.accounts.accounts}
 
     for result in results:
@@ -259,17 +264,18 @@ def sync_account_tags_cmd(
             if account_name and acct_def.name != account_name:
                 continue
 
+            declared_tags = {**bundle.get_organization_tags(), **acct_def.tags}
             acct_data = service.find_existing_account(acct_def.name, existing)
             if not acct_data:
-                table.add_row(acct_def.name, "-", str(len(acct_def.tags)), "[yellow]NOT_FOUND[/yellow]")
+                table.add_row(acct_def.name, "-", str(len(declared_tags)), "[yellow]NOT_FOUND[/yellow]")
                 continue
 
             acct_id = str(acct_data["Id"])
-            updated = service.sync_account_tags(acct_id, acct_def.name, acct_def.tags, dry_run=dry_run)
+            updated = service.sync_account_tags(acct_id, acct_def.name, declared_tags, dry_run=dry_run)
             table.add_row(
                 acct_def.name,
                 acct_id,
-                str(len(acct_def.tags)),
+                str(len(declared_tags)),
                 _get_tag_sync_status(dry_run, updated),
             )
 
@@ -289,7 +295,8 @@ def _baseline_single_account(
     regions: list[str] | None = None,
 ) -> None:
     """Baseline a single account: sync tags, delete default VPCs across all enabled regions, setup budgets."""
-    service.sync_account_tags(acct_id, acct_def.name, acct_def.tags, dry_run=dry_run)
+    declared_tags = {**(org_tags or {}), **acct_def.tags}
+    service.sync_account_tags(acct_id, acct_def.name, declared_tags, dry_run=dry_run)
     report = baseliner.baseline_account(
         acct_def, acct_id, regions=regions, dry_run=dry_run, org_tags=org_tags
     )
