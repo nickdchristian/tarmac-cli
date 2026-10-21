@@ -252,7 +252,6 @@ class AccountService:
             return AccountSuspensionResult(
                 name=account_name,
                 account_id=account_id,
-                moved_to_ou=suspended_ou_id,
                 tags_updated=True,
                 closed=close,
                 status="SIMULATED",
@@ -307,7 +306,6 @@ class AccountService:
         return AccountSuspensionResult(
             name=account_name,
             account_id=account_id,
-            moved_to_ou=suspended_ou_id,
             tags_updated=tags_updated,
             closed=closed,
             status="SUCCEEDED" if (not close or closed) else "CLOSE_FAILED",

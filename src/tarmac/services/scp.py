@@ -41,7 +41,7 @@ class SCPService:
                         return True
         return False
 
-    def ensure_scp_enabled(self, root_id: str, max_wait_seconds: int = 60) -> bool:
+    def ensure_scp_enabled(self, root_id: str) -> bool:
         """Enable SERVICE_CONTROL_POLICY policy type on the organization root if needed."""
         if self._is_scp_enabled_on_root(root_id):
             logger.debug("SCPs are already enabled on root %s", root_id)
@@ -62,7 +62,7 @@ class SCPService:
                 raise GovernanceError("Failed to enable Service Control Policies", details=str(e)) from e
 
         start_time = time.time()
-        while time.time() - start_time < max_wait_seconds:
+        while time.time() - start_time < 60:
             if self._is_scp_enabled_on_root(root_id):
                 logger.debug("SERVICE_CONTROL_POLICY is now ENABLED on root %s", root_id)
                 return True
@@ -335,21 +335,13 @@ class SCPService:
         results: list[SCPReconciliationResult] = []
         action = "IMPORTED" if to_adopt else cfn_report.action
         for scp_def in config.policies:
-            attached_targets: list[str] = []
-            unresolved_targets: list[str] = []
-            for target in scp_def.targets:
-                resolved = self._resolve_target_id(target, root_id, ou_map)
-                if resolved:
-                    attached_targets.append(f"{resolved[1]} ({resolved[0]})")
-                else:
-                    unresolved_targets.append(target)
+            unresolved_targets = [
+                t for t in scp_def.targets if not self._resolve_target_id(t, root_id, ou_map)
+            ]
             results.append(
                 SCPReconciliationResult(
                     name=scp_def.name,
-                    policy_id=existing_scps.get(scp_def.name, {}).get("Id"),
                     action_taken=action,
-                    attached_targets=attached_targets,
-                    newly_attached_targets=attached_targets if action == "CREATED" else [],
                     status="FAILED" if unresolved_targets else "SUCCEEDED",
                     unresolved_targets=unresolved_targets,
                 )

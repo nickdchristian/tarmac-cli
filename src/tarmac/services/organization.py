@@ -230,7 +230,6 @@ class OrganizationService:
         self,
         config: RootAccessConfig,
         account_id_map: dict[str, str] | None = None,
-        management_account_id: str | None = None,
     ) -> dict[str, bool]:
         """Configure centralized root access management and optional delegated administrator."""
         if not config.enabled:
@@ -256,11 +255,7 @@ class OrganizationService:
                 self._enable_root_sessions(enabled_features) if config.enable_root_sessions else False
             ),
             "delegated_admin": (
-                self._register_delegated_admin(
-                    config.delegated_admin_account,
-                    resolved_map,
-                    management_account_id=management_account_id,
-                )
+                self._register_delegated_admin(config.delegated_admin_account, resolved_map)
                 if config.delegated_admin_account and resolved_map
                 else False
             ),
@@ -352,7 +347,6 @@ class OrganizationService:
         self,
         admin_account: str,
         account_id_map: dict[str, str],
-        management_account_id: str | None = None,
     ) -> bool:
         """Register IAM delegated administrator account."""
         admin_acct_id = account_id_map.get(admin_account)
@@ -366,14 +360,6 @@ class OrganizationService:
             err_msg = (
                 f"Delegated admin account '{admin_account}' not found in active accounts: "
                 f"{list(account_id_map.keys())}"
-            )
-            self.last_error["delegated_admin"] = err_msg
-            logger.warning(err_msg)
-            return False
-        if management_account_id and admin_acct_id == management_account_id:
-            err_msg = (
-                f"Delegated admin account '{admin_account}' ({admin_acct_id}) is the management account; "
-                "a member account must be used for delegated administration."
             )
             self.last_error["delegated_admin"] = err_msg
             logger.warning(err_msg)
@@ -467,9 +453,7 @@ class OrganizationService:
             logger.debug("Could not query tags on management account %s: %s", mgmt_account_id, e)
         return set()
 
-    def record_phase_completed(
-        self, mgmt_account_id: str, phase_name: str, version: str = __version__
-    ) -> set[str]:
+    def record_phase_completed(self, mgmt_account_id: str, phase_name: str) -> set[str]:
         """Record a completed phase on the Management Account in AWS Organizations."""
         current_phases = self.get_completed_phases(mgmt_account_id)
         current_phases.add(phase_name)
@@ -479,7 +463,7 @@ class OrganizationService:
                 ResourceId=mgmt_account_id,
                 Tags=[
                     {"Key": TAG_COMPLETED_PHASES, "Value": val},
-                    {"Key": TAG_VERSION, "Value": version},
+                    {"Key": TAG_VERSION, "Value": __version__},
                     {"Key": TAG_STATUS, "Value": STATUS_IN_PROGRESS},
                     {"Key": TAG_MANAGED_BY, "Value": "tarmac"},
                 ],
@@ -495,7 +479,7 @@ class OrganizationService:
             logger.warning("Could not record phase '%s' tag on management account: %s", phase_name, e)
         return current_phases
 
-    def mark_deployment_ready(self, mgmt_account_id: str, version: str = __version__) -> None:
+    def mark_deployment_ready(self, mgmt_account_id: str) -> None:
         """Mark the overall landing zone deployment as 'ready' on the Management Account."""
         try:
             current_phases = self.get_completed_phases(mgmt_account_id)
@@ -504,7 +488,7 @@ class OrganizationService:
                 ResourceId=mgmt_account_id,
                 Tags=[
                     {"Key": TAG_STATUS, "Value": STATUS_READY},
-                    {"Key": TAG_VERSION, "Value": version},
+                    {"Key": TAG_VERSION, "Value": __version__},
                     {"Key": TAG_COMPLETED_PHASES, "Value": val},
                     {"Key": TAG_MANAGED_BY, "Value": "tarmac"},
                 ],

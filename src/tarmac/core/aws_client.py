@@ -23,14 +23,12 @@ logger = logging.getLogger(__name__)
 class AwsSessionManager:
     """Manages AWS sessions, regional clients, and cross-account STS credential caching."""
 
-    def __init__(self, region_name: str | None = None, profile_name: str | None = None):
+    def __init__(self, region_name: str | None = None):
         resolved_region = (
             region_name or os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "us-east-1"
         )
-        resolved_profile = profile_name or os.environ.get("AWS_PROFILE")
         self.default_region = resolved_region
-        self.profile_name = resolved_profile
-        self._root_session = boto3.Session(region_name=resolved_region, profile_name=resolved_profile)
+        self._root_session = boto3.Session(region_name=resolved_region)
         instrument_session(self._root_session)
         self.run_label = f"tarmac-{current_context().get('run_id', 'session')}"
         config_options: dict[str, Any] = {
@@ -82,27 +80,19 @@ class AwsSessionManager:
             service: Any = service_name
             return self._root_session.client(service, region_name=region, config=self.boto_config)
 
-    def get_assumed_session(
-        self,
-        account_id: str,
-        role_name: str = "OrganizationAccountAccessRole",
-        session_name: str | None = None,
-    ) -> boto3.Session:
+    def get_assumed_session(self, account_id: str) -> boto3.Session:
         """Assume a role in a target member account and return a boto3.Session with cached credentials."""
         with self._lock:
-            return self._get_assumed_session_locked(account_id, role_name, session_name)
+            return self._get_assumed_session_locked(account_id)
 
-    def _get_assumed_session_locked(
-        self, account_id: str, role_name: str, session_name: str | None
-    ) -> boto3.Session:
-        cache_key = f"{account_id}:{role_name}"
-        cached = self._cached_assumed_sessions.get(cache_key)
+    def _get_assumed_session_locked(self, account_id: str) -> boto3.Session:
+        cached = self._cached_assumed_sessions.get(account_id)
         if cached is not None:
             return cached
 
-        role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
+        role_arn = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
         logger.debug("Assuming cross-account role: %s", role_arn)
-        refresh = self._credential_refresher(role_arn, session_name or self.run_label)
+        refresh = self._credential_refresher(role_arn, self.run_label)
         try:
             credentials = RefreshableCredentials.create_from_metadata(
                 metadata=refresh(), refresh_using=refresh, method="sts-assume-role"
@@ -120,7 +110,7 @@ class AwsSessionManager:
         botocore_session._credentials = credentials
         assumed_session = boto3.Session(botocore_session=botocore_session, region_name=self.default_region)
         instrument_session(assumed_session)
-        self._cached_assumed_sessions[cache_key] = assumed_session
+        self._cached_assumed_sessions[account_id] = assumed_session
         return assumed_session
 
     def _credential_refresher(self, role_arn: str, session_name: str) -> Callable[[], dict[str, Any]]:
@@ -171,7 +161,6 @@ class AwsSessionManager:
         self,
         account_id: str,
         service_name: str,
-        role_name: str = "OrganizationAccountAccessRole",
         region_name: str | None = None,
     ) -> Any:
         """Get a client in a member account via cross-account role assumption."""
@@ -181,6 +170,6 @@ class AwsSessionManager:
 
         region = region_name or self.default_region
         with self._lock:
-            assumed_session = self.get_assumed_session(account_id, role_name=role_name)
+            assumed_session = self.get_assumed_session(account_id)
             service: Any = service_name
             return assumed_session.client(service, region_name=region, config=self.boto_config)

@@ -87,9 +87,7 @@ def _session(**clients: Any) -> MagicMock:
 def _service(mgr: MagicMock, cfn_service: Any = None) -> ConfigRecorderService:
     cfn = cfn_service or MagicMock()
     if cfn_service is None:
-        cfn.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(
-            stack_name=a[1], action="CREATED", outputs={}
-        )
+        cfn.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(action="CREATED", outputs={})
     return ConfigRecorderService(mgr, cfn, sleep=lambda _s: None, poll_seconds=0, timeout_seconds=5)
 
 
@@ -171,9 +169,7 @@ def _setup() -> tuple[Any, Any, Any, Any]:
 def test_first_run_creates_the_stack_set_its_instances_and_the_management_stacks():
     cf, org, iam, mgr = _setup()
     cfn_service = MagicMock()
-    cfn_service.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(
-        stack_name=a[1], action="CREATED", outputs={}
-    )
+    cfn_service.deploy_stack.side_effect = lambda *a, **k: StackDeployReport(action="CREATED", outputs={})
     with Stubber(cf) as cfs, Stubber(org) as orgs, Stubber(iam) as iams:
         cfs.add_response("activate_organizations_access", {}, {})
         _organization(org, orgs)

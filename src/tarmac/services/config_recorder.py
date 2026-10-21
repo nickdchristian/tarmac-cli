@@ -47,7 +47,6 @@ def service_linked_role_arn(session_mgr: AwsSessionManager, management_account_i
 @dataclass
 class ConfigRecorderReport:
     stack_set_action: str = "UNCHANGED"
-    regions: list[str] = field(default_factory=list)
     management_stacks: list[StackDeployReport] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
 
@@ -83,7 +82,7 @@ class ConfigRecorderService:
     ) -> ConfigRecorderReport:
         """Create or update the StackSet, its instances, and the management account stacks."""
         name = Stack.CONFIG_RECORDER.for_org(org_name)
-        report = ConfigRecorderReport(regions=list(regions))
+        report = ConfigRecorderReport()
 
         template_body = template_file.read_text(encoding="utf-8")
         cfn_tags = merge_tags(org_tags, tags, {TAG_MANAGED_BY: "tarmac"})

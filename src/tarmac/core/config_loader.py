@@ -396,11 +396,3 @@ def load_all_configs(config_dir: Path | None = None) -> tuple[ConfigBundle | Non
     errors.extend(bundle.validate_cross_references())
 
     return (None if errors else bundle), errors
-
-
-def load_config_bundle(config_dir: Path | None = None) -> ConfigBundle:
-    """Load, parse, and validate all configuration files, raising ConfigurationError on failure."""
-    bundle, errors = load_all_configs(config_dir)
-    if errors or bundle is None:
-        raise ConfigurationError("Configuration validation failed.", details="\n".join(errors))
-    return bundle

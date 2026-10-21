@@ -202,12 +202,12 @@ def test_phase_4_skips_baselining_closed_accounts_and_warns(bundle, tmp_path):
         BaselineReport(
             account_name="a",
             account_id="1",
-            budget_report=BudgetReport("a", "1", "b", 10.0, 80.0, "FAILED", "SNS denied"),
+            budget_report=BudgetReport("a", "1", 80.0, "FAILED", "SNS denied"),
         ),
         BaselineReport(
             account_name="a",
             account_id="1",
-            anomaly_report=AnomalyReport("a", "1", "m", 5.0, "FAILED", "CE denied"),
+            anomaly_report=AnomalyReport("a", "1", 5.0, "FAILED", "CE denied"),
         ),
         BaselineReport(
             account_name="a",

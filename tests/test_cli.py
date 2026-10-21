@@ -91,7 +91,6 @@ def test_cli_deploy_run_with_custom_tags(sample_config_dir, monkeypatch):
 
     mock_service = MagicMock()
     mock_service.deploy_stack.return_value = StackDeployReport(
-        stack_name="test-cloudtrail",
         action="CREATED",
         outputs={"BucketName": "test-cloudtrail-bucket"},
     )
@@ -140,7 +139,7 @@ def test_cli_deploy_phase_3_deploys_log_archive_hardening_before_trail(sample_co
 
     def mock_deploy_stack(cfn_client, stack_name, *args, **kwargs):
         deployed_stacks.append(stack_name)
-        return StackDeployReport(stack_name=stack_name, action="CREATED", outputs={})
+        return StackDeployReport(action="CREATED", outputs={})
 
     mock_service = MagicMock()
     mock_service.deploy_stack.side_effect = mock_deploy_stack
@@ -425,7 +424,6 @@ def test_cli_account_suspend(monkeypatch, sample_config_dir):
     mock_service.suspend_account.return_value = AccountSuspensionResult(
         name="OldDev",
         account_id="444444444444",
-        moved_to_ou="ou-susp-999",
         tags_updated=True,
         closed=False,
         status="SUCCEEDED",
@@ -463,7 +461,6 @@ def test_cli_account_suspend_close_failure_exits_nonzero(monkeypatch, sample_con
     mock_service.suspend_account.return_value = AccountSuspensionResult(
         name="OldDev",
         account_id="444444444444",
-        moved_to_ou="ou-susp-999",
         tags_updated=True,
         closed=False,
         status="CLOSE_FAILED",
@@ -899,7 +896,7 @@ def test_deploy_hardening_stacks_skips_log_archive_when_requested(sample_config_
 
     def record_deploy(cfn_client, stack_name, *args, **kwargs):
         deployed.append(stack_name)
-        return StackDeployReport(stack_name=stack_name, action="CREATED", outputs={})
+        return StackDeployReport(action="CREATED", outputs={})
 
     mock_cfn_service.deploy_stack.side_effect = record_deploy
     accts = {"Log-Archive": "888888888888", "Audit": "777777777777"}

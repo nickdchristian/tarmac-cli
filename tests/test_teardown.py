@@ -22,7 +22,6 @@ from tarmac.services.teardown import (
     empty_s3_bucket,
     is_s3_bucket_empty,
     normalize_bucket_name,
-    teardown_deployment,
 )
 
 runner = CliRunner()
@@ -300,16 +299,6 @@ def test_teardown_all_orchestration(test_bundle):
     assert report.status == "COMPLETED"
     assert report.deleted_count == 8
     assert report.failed_count == 0
-
-
-def test_teardown_deployment_helper(test_bundle):
-    mock_session_mgr = MagicMock(spec=AwsSessionManager)
-    mock_session_mgr.default_region = "us-east-1"
-    mock_session_mgr.get_caller_identity.return_value = {"Account": "111122223333"}
-
-    report = teardown_deployment(test_bundle, session_mgr=mock_session_mgr, dry_run=True)
-    assert isinstance(report, TeardownReport)
-    assert report.status == "SIMULATED"
 
 
 def test_cli_teardown_dry_run(monkeypatch, teardown_config_dir: Path):
@@ -924,46 +913,6 @@ def test_reset_milestones_dry_run_and_empty_account_make_no_calls():
     assert [r.action for r in svc.reset_milestones("111122223333", dry_run=True)] == ["SIMULATED"]
     assert svc.reset_milestones("") == []
     mgr.get_client.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("phase", "method"),
-    [
-        (2, "teardown_scps"),
-        (3, "teardown_cloudtrail"),
-        (3, "teardown_log_archive"),
-        (4, "teardown_budgets"),
-        (5, "teardown_backend"),
-        (5, "teardown_audit"),
-        (6, "teardown_identity"),
-    ],
-)
-def test_teardown_phase_dispatches_each_phase_to_its_handlers(test_bundle, phase, method):
-    svc = _audit_service(MagicMock())
-    handlers = [
-        "teardown_scps",
-        "teardown_cloudtrail",
-        "teardown_log_archive",
-        "teardown_budgets",
-        "teardown_backend",
-        "teardown_audit",
-        "teardown_identity",
-    ]
-    for h in handlers:
-        setattr(svc, h, MagicMock(return_value=[]))
-
-    svc.teardown_phase(phase, test_bundle, "us-east-1", dry_run=True, account_id_map={"x": "1"})
-
-    assert getattr(svc, method).call_count == 1
-    called = {h for h in handlers if getattr(svc, h).called}
-    # Phase 5 must not touch log-archive buckets: only its own handlers run.
-    if phase == 5:
-        assert called == {"teardown_backend", "teardown_audit"}
-
-
-def test_teardown_phase_unknown_phase_does_nothing(test_bundle):
-    svc = _audit_service(MagicMock())
-    assert svc.teardown_phase(9, test_bundle, "us-east-1", account_id_map={"x": "1"}) == []
 
 
 def test_teardown_skips_permission_sets_not_owned_by_tarmac(tmp_path: Path):

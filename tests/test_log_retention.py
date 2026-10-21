@@ -97,7 +97,7 @@ def test_deploy_passes_retention_to_the_log_archive_stack(
 
     def deploy_stack(cfn_client, stack_name, template, params, *args, **kwargs):
         captured[stack_name] = params
-        return StackDeployReport(stack_name=stack_name, action="CREATED", outputs={})
+        return StackDeployReport(action="CREATED", outputs={})
 
     service = MagicMock()
     service.deploy_stack.side_effect = deploy_stack

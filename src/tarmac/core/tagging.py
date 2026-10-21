@@ -62,10 +62,7 @@ def validate_tags(tags: dict[str, Any]) -> dict[str, str]:
     return validated
 
 
-def merge_tags(
-    *sources: dict[str, Any] | None,
-    default_tags: dict[str, str] | None = None,
-) -> dict[str, str]:
+def merge_tags(*sources: dict[str, Any] | None) -> dict[str, str]:
     """Merge tags following the Tarmac Tagging Hierarchy:
 
     1. Default System Tags (e.g. {'ManagedBy': 'tarmac'})
@@ -76,7 +73,7 @@ def merge_tags(
     Later sources in `sources` override earlier sources for identical keys.
     Returns a validated, AWS-compliant dictionary of tags.
     """
-    merged: dict[str, str] = dict(default_tags if default_tags is not None else DEFAULT_SYSTEM_TAGS)
+    merged: dict[str, str] = dict(DEFAULT_SYSTEM_TAGS)
 
     for src in sources:
         if src:

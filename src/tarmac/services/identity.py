@@ -226,15 +226,9 @@ class IdentityService:
             "Resources": resources,
         }
 
-    def _poll_assignment_deletion_status(
-        self,
-        instance_arn: str,
-        request_id: str,
-        max_attempts: int = 30,
-        poll_interval: float = 2.0,
-    ) -> bool:
+    def _poll_assignment_deletion_status(self, instance_arn: str, request_id: str) -> bool:
         """Poll AccountAssignmentDeletionStatus. Returns True on SUCCEEDED, False on FAILED or timeout."""
-        for _ in range(max_attempts):
+        for _ in range(30):
             try:
                 resp = self.sso_client.describe_account_assignment_deletion_status(
                     InstanceArn=instance_arn,
@@ -250,7 +244,7 @@ class IdentityService:
                     return False
             except ClientError as e:
                 logger.warning("Error checking deletion status: %s", e)
-            time.sleep(poll_interval)
+            time.sleep(2)
         return False
 
     def delete_account_assignment(

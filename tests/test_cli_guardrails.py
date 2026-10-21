@@ -140,7 +140,7 @@ def test_phase_2_fails_when_an_scp_target_cannot_be_resolved(tmp_path: Path):
     bundle, _ = load_all_configs(make_config(tmp_path, None))
     assert bundle is not None
     failed = SCPReconciliationResult(
-        name="Guard", policy_id="p-1", action_taken="NOOP", status="FAILED", unresolved_targets=["Typo"]
+        name="Guard", action_taken="NOOP", status="FAILED", unresolved_targets=["Typo"]
     )
     with (
         patch("tarmac.cli.deploy_phases.OUService"),

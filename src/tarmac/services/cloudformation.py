@@ -169,7 +169,7 @@ class CloudFormationService:
         if termination_protection:
             self.protect_stack(cfn_client, stack_name)
 
-        return StackDeployReport(stack_name=stack_name, action=action, outputs=outputs, status="SUCCEEDED")
+        return StackDeployReport(action=action, outputs=outputs, status="SUCCEEDED")
 
     def preview_stack(
         self,
@@ -286,11 +286,10 @@ class CloudFormationService:
         resources_to_import: list[dict[str, Any]],
         tags: dict[str, str] | None = None,
         org_tags: dict[str, str] | None = None,
-        account_tags: dict[str, str] | None = None,
     ) -> StackDeployReport:
         """Create a CloudFormation stack by importing pre-existing AWS resources."""
 
-        resolved_tags = merge_tags(org_tags, account_tags, tags)
+        resolved_tags = merge_tags(org_tags, tags)
         cfn_tags = to_cfn_tags(resolved_tags)
         change_set_name = f"import-{int(time.time())}"
 
@@ -361,9 +360,7 @@ class CloudFormationService:
                         logger.warning("Failed to apply tags to stack '%s': %s", stack_name, e)
 
             outputs = self._fetch_stack_outputs(cfn_client, stack_name)
-            return StackDeployReport(
-                stack_name=stack_name, action="IMPORTED", outputs=outputs, status="SUCCEEDED"
-            )
+            return StackDeployReport(action="IMPORTED", outputs=outputs, status="SUCCEEDED")
         except (ClientError, WaiterError) as e:
             reasons = self._change_set_failure_reason(cfn_client, stack_name, change_set_name)
             reasons = reasons or self._fetch_failure_reasons(cfn_client, stack_name)
@@ -562,26 +559,21 @@ class CloudFormationService:
     ) -> Literal["CREATED", "UPDATED", "NO_CHANGES"]:
         """Execute stack creation or update and wait for completion."""
         action: Literal["CREATED", "UPDATED", "NO_CHANGES"] = "UPDATED" if stack_exists else "CREATED"
+        request = {
+            "StackName": stack_name,
+            "TemplateBody": template_body,
+            "Parameters": cfn_params,
+            "Capabilities": ["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
+            "Tags": cfn_tags,
+        }
         try:
             if not stack_exists:
                 logger.debug("Creating CloudFormation stack '%s'...", stack_name)
-                cfn_client.create_stack(
-                    StackName=stack_name,
-                    TemplateBody=template_body,
-                    Parameters=cfn_params,
-                    Capabilities=["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
-                    Tags=cfn_tags,
-                )
+                cfn_client.create_stack(**request)
                 waiter = cfn_client.get_waiter("stack_create_complete")
             else:
                 logger.debug("Updating CloudFormation stack '%s'...", stack_name)
-                cfn_client.update_stack(
-                    StackName=stack_name,
-                    TemplateBody=template_body,
-                    Parameters=cfn_params,
-                    Capabilities=["CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"],
-                    Tags=cfn_tags,
-                )
+                cfn_client.update_stack(**request)
                 waiter = cfn_client.get_waiter("stack_update_complete")
 
             logger.debug("Waiting for stack '%s' to complete...", stack_name)

@@ -230,7 +230,6 @@ def test_scp_reconcile_via_cfn_fallback_when_preexisting_and_broken_stack(tmp_pa
     mock_cfn.execute_change_set.assert_called_once()
     assert len(results) == 1
     assert results[0].name == "DenyMemberRootActivity"
-    assert results[0].policy_id == "p-existing"
     assert results[0].status == "SUCCEEDED"
 
 

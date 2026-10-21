@@ -4,9 +4,8 @@ The handlers live in the ``teardown_*`` modules; ``TeardownService`` composes th
 """
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
-from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.inventory import Inventory
 from ..core.models import TeardownItemReport
@@ -30,7 +29,6 @@ __all__ = [
     "empty_s3_bucket",
     "is_s3_bucket_empty",
     "normalize_bucket_name",
-    "teardown_deployment",
 ]
 
 
@@ -38,46 +36,6 @@ class TeardownService(
     LoggingTeardown, WorkloadTeardown, GovernanceTeardown, ConfigRecorderTeardown, EverythingTeardown
 ):
     """Orchestrates comprehensive teardown of Tarmac governance resources."""
-
-    def teardown_phase(
-        self,
-        phase: int,
-        bundle: ConfigBundle,
-        target_region: str,
-        dry_run: bool = False,
-        account_id_map: dict[str, str] | None = None,
-        disable_security_services: bool = False,
-    ) -> list[TeardownItemReport]:
-        """Tear down resources belonging to a specific phase."""
-        accts = account_id_map or self._get_active_accounts()
-        if phase == 2:
-            self._notify_phase("Phase 2 | Organizational Units & Guardrails (SCPs)")
-            return self.teardown_scps(bundle, dry_run=dry_run)
-        if phase == 3:
-            self._notify_phase("Phase 3 | CloudTrail & Central Logging")
-            items: list[TeardownItemReport] = []
-            items.extend(self.teardown_cloudtrail(bundle, target_region, dry_run=dry_run))
-            items.extend(
-                self.teardown_log_archive(bundle, target_region, dry_run=dry_run, account_id_map=accts)
-            )
-            return items
-        if phase == 4:
-            self._notify_phase("Phase 4 | Account Factory Provisioning & Baselining (Budgets)")
-            return self.teardown_budgets(bundle, dry_run=dry_run, account_id_map=accts)
-        if phase == 5:
-            self._notify_phase("Phase 5 | Backend & Security Services Deployments")
-            items = []
-            items.extend(self.teardown_config_recorder(bundle, target_region, dry_run=dry_run))
-            if disable_security_services:
-                items.extend(self.teardown_security_services(bundle, target_region, accts, dry_run=dry_run))
-            items.extend(self.teardown_backend(bundle, target_region, dry_run=dry_run, account_id_map=accts))
-            items.extend(self.teardown_audit(bundle, target_region, dry_run=dry_run, account_id_map=accts))
-            items.extend(self.teardown_root_alert(bundle, target_region, dry_run=dry_run))
-            return items
-        if phase == 6:
-            self._notify_phase("Phase 6 | IAM Identity Center (SSO)")
-            return self.teardown_identity(bundle, target_region, dry_run=dry_run)
-        return []
 
     def teardown_all(
         self,
@@ -172,34 +130,3 @@ class TeardownService(
             else ("FAILED" if any(i.action == "FAILED" for i in items) else "COMPLETED")
         )
         return TeardownReport(items=items, status=status)
-
-
-def teardown_deployment(
-    bundle: ConfigBundle,
-    session_mgr: AwsSessionManager | None = None,
-    region: str | None = None,
-    phases: Sequence[int] | None = None,
-    dry_run: bool = False,
-    on_progress: Callable[[str], None] | None = None,
-    on_item: Callable[[TeardownItemReport], None] | None = None,
-    on_phase: Callable[[str], None] | None = None,
-    preserve_backend: bool = False,
-    disable_security_services: bool = False,
-) -> TeardownReport:
-    """Convenience function to tear down deployment resources."""
-    target_region = region or bundle.org.organization.primary_region
-    manager = session_mgr or AwsSessionManager(region_name=target_region)
-    service = TeardownService(
-        manager,
-        on_progress=on_progress,
-        on_item=on_item,
-        on_phase=on_phase,
-    )
-    return service.teardown_all(
-        bundle=bundle,
-        target_region=target_region,
-        dry_run=dry_run,
-        phases=phases,
-        preserve_backend=preserve_backend,
-        disable_security_services=disable_security_services,
-    )

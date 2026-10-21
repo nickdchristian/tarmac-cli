@@ -176,8 +176,7 @@ class Planner:
         stack_name: str,
         account: str,
         parameters: dict[str, str],
-        template: str | None = None,
-        template_body: str | None = None,
+        template: str,
         account_tags: dict[str, str] | None = None,
     ) -> None:
         self._check(
@@ -187,10 +186,7 @@ class Planner:
             lambda: self.cfn.preview_stack(
                 cfn_client,
                 stack_name,
-                template_file=resolve_resource_path(template, project_root=self.project_root)
-                if template
-                else None,
-                template_body=template_body,
+                template_file=resolve_resource_path(template, project_root=self.project_root),
                 parameters=parameters,
                 tags=self.custom_tags,
                 org_tags=self.org_tags,

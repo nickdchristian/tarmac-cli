@@ -242,8 +242,6 @@ class BaselineService:
             return BudgetReport(
                 account_name=account_name,
                 account_id=account_id,
-                budget_name=budget_name,
-                limit_usd=budget_cfg.monthly_limit_usd,
                 alert_threshold_percent=budget_cfg.alert_threshold_percent,
                 status=status,
                 message=message,
@@ -413,7 +411,6 @@ class BaselineService:
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
-                monitor_name=monitor_name,
                 threshold_usd=anomaly_cfg.threshold_usd,
                 status="SKIPPED",
                 message="Anomaly detection disabled or missing notification emails.",
@@ -439,7 +436,6 @@ class BaselineService:
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
-                monitor_name=monitor_name,
                 threshold_usd=anomaly_cfg.threshold_usd,
                 status=status,
                 message="Anomaly monitor and subscription active",
@@ -456,7 +452,6 @@ class BaselineService:
             return AnomalyReport(
                 account_name=account_name,
                 account_id=account_id,
-                monitor_name=monitor_name,
                 threshold_usd=anomaly_cfg.threshold_usd,
                 status="FAILED",
                 message=str(err_msg),
@@ -606,7 +601,6 @@ class BaselineService:
         acct_def: AccountDef,
         account_id: str,
         regions: list[str] | None = None,
-        force: bool = False,
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
     ) -> BaselineReport:
@@ -614,7 +608,7 @@ class BaselineService:
         baseline = acct_def.baseline
         report = BaselineReport(account_name=acct_def.name, account_id=account_id)
 
-        already_baselined = False if force else self.is_account_baselined(account_id)
+        already_baselined = self.is_account_baselined(account_id)
         if already_baselined:
             logger.info(
                 "Account '%s' (%s) is already baselined (%s=%s). Fast-forwarding...",
