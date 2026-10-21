@@ -374,3 +374,66 @@ def test_kms_schedule_key_deletion_request_is_valid_for_the_real_service_model()
             "1", "log-archive", "k", "us-east-1", dry_run=False, any_failed=False
         )
     assert [r.action for r in out] == ["DELETED"]
+
+
+def test_security_teardown_retries_policy_deletion_while_disassociating():
+    from tarmac.services.teardown_security import SecurityServicesTeardown
+
+    sh = MagicMock()
+    sh.delete_configuration_policy.side_effect = [
+        ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "Disassociation in progress"}},
+            "DeleteConfigurationPolicy",
+        ),
+        {},
+    ]
+    SecurityServicesTeardown._delete_configuration_policy_with_retry(
+        sh, "pol-1", max_attempts=3, poll_interval=0.01
+    )
+    assert sh.delete_configuration_policy.call_count == 2
+
+
+def test_teardown_identity_uses_discovered_sso_region_and_reports_failed_ps_delete():
+    from unittest.mock import patch
+
+    from tarmac.core.config_schema import PermissionSetDef
+
+    mgr = MagicMock(spec=AwsSessionManager)
+    mgr.get_caller_identity.return_value = {"Account": MGMT}
+    cfn_east1, cfn_west1 = MagicMock(), MagicMock()
+    cfn_east1.describe_stacks.return_value = {
+        "Stacks": [{"StackName": "myorg-sso-permission-sets", "StackStatus": "CREATE_COMPLETE"}]
+    }
+    cfn_west1.describe_stacks.return_value = {"Stacks": []}
+
+    def get_client(svc: str, region_name: str | None = None, **kw: Any) -> Any:
+        if svc == "cloudformation":
+            return cfn_east1 if region_name == "us-east-1" else cfn_west1
+        return MagicMock()
+
+    mgr.get_client.side_effect = get_client
+    mock_bundle = MagicMock()
+    mock_bundle.org.organization.name = "myorg"
+    mock_bundle.identity.identity_center.region = "us-east-1"
+    mock_bundle.identity.identity_center.permission_sets = [PermissionSetDef(name="AdminAccess")]
+
+    svc = TeardownService(mgr)
+    with (
+        patch.object(svc.cfn_service, "delete_stack") as del_stack,
+        patch("tarmac.services.teardown_governance.IdentityService") as id_cls,
+    ):
+        id_inst = MagicMock()
+        id_cls.return_value = id_inst
+        id_inst.region = "us-east-1"
+        id_inst.get_instance_details.return_value = ("arn:inst", "d-1")
+        id_inst.list_permission_sets.return_value = {"AdminAccess": "arn:ps-1"}
+        id_inst.is_tarmac_managed_permission_set.return_value = True
+        id_inst.delete_permission_set.return_value = False
+
+        reports = svc.teardown_identity(mock_bundle, "eu-west-1", dry_run=False)
+
+    assert del_stack.call_count == 2
+    assert all(call.args[0] is cfn_east1 for call in del_stack.call_args_list)
+    ps_reports = [r for r in reports if r.resource_type == "Permission Set"]
+    assert len(ps_reports) == 1
+    assert ps_reports[0].action == "FAILED"

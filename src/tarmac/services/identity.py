@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -15,7 +16,7 @@ from ..core.config_schema import GroupDef, IdentityCenterConfig, PermissionSetDe
 from ..core.exceptions import DeploymentError, IdentityCenterError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, IdentitySyncReport
 from ..core.templates import resolve_resource_path
-from .cloudformation import CloudFormationService
+from .cloudformation import UNUSABLE_STACK_STATES, CloudFormationService
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,25 @@ class IdentityService:
             logger.warning("Could not read tags for permission set %s: %s", permission_set_arn, e)
         return False
 
+    @staticmethod
+    def _logical_ids_for_permission_sets(permission_sets: list[PermissionSetDef]) -> dict[str, str]:
+        """Build unique, CloudFormation-valid logical resource IDs for declared Permission Sets."""
+        bases: dict[str, str] = {
+            ps.name: "PermissionSet" + re.sub(r"[^a-zA-Z0-9]", "", ps.name) for ps in permission_sets
+        }
+        counts: dict[str, int] = {}
+        for base in bases.values():
+            counts[base] = counts.get(base, 0) + 1
+        result: dict[str, str] = {}
+        for ps in permission_sets:
+            base = bases[ps.name]
+            if base == "PermissionSet" or counts[base] > 1:
+                digest = hashlib.sha256(ps.name.encode("utf-8")).hexdigest()[:8].capitalize()
+                result[ps.name] = f"{base}{digest}"
+            else:
+                result[ps.name] = base
+        return result
+
     def synthesize_permission_sets_template(
         self,
         instance_arn: str,
@@ -176,8 +196,9 @@ class IdentityService:
         the tag is applied by a normal stack update right after the import.
         """
         resources: dict[str, Any] = {}
+        logical_ids = self._logical_ids_for_permission_sets(permission_sets)
         for ps_def in permission_sets:
-            res_id = "PermissionSet" + re.sub(r"[^a-zA-Z0-9]", "", ps_def.name)
+            res_id = logical_ids[ps_def.name]
             props: dict[str, Any] = {
                 "InstanceArn": instance_arn,
                 "Name": ps_def.name,
@@ -294,7 +315,7 @@ class IdentityService:
             logger.debug("Error checking assignments for permission set %s: %s", permission_set_arn, e)
         return assignments
 
-    def delete_permission_set(self, instance_arn: str, permission_set_arn: str) -> None:
+    def delete_permission_set(self, instance_arn: str, permission_set_arn: str) -> bool:
         """Delete all assignments and delete the permission set from IAM Identity Center."""
         assignments = self.get_assignments_for_permission_set(instance_arn, permission_set_arn)
         for a in assignments:
@@ -316,6 +337,7 @@ class IdentityService:
                 Outcome.SUCCEEDED,
                 f"Deleted permission set {permission_set_arn} from IAM Identity Center",
             )
+            return True
         except ClientError as e:
             audit(
                 "delete",
@@ -323,6 +345,7 @@ class IdentityService:
                 Outcome.FAILED,
                 f"Could not delete permission set {permission_set_arn}: {e}",
             )
+            return False
 
     def sync_permission_sets_via_cloudformation(
         self,
@@ -352,6 +375,7 @@ class IdentityService:
                 for ps_def in permission_sets
             }
 
+        logical_ids = self._logical_ids_for_permission_sets(permission_sets)
         template_dict = self.synthesize_permission_sets_template(
             instance_arn, permission_sets, project_root=project_root
         )
@@ -372,11 +396,15 @@ class IdentityService:
 
         if pre_existing:
             stack_status = cfn_service._get_stack_status(cfn_client, stack_name)
-            if stack_status in (None, "DELETE_COMPLETE", "ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS"):
+            if (
+                stack_status is None
+                or stack_status in ("DELETE_COMPLETE", "REVIEW_IN_PROGRESS")
+                or stack_status in UNUSABLE_STACK_STATES
+            ):
                 resources_to_import: list[dict[str, Any]] = []
                 for ps_def in permission_sets:
                     if ps_def.name in existing_ps:
-                        logical_id = "PermissionSet" + re.sub(r"[^a-zA-Z0-9]", "", ps_def.name)
+                        logical_id = logical_ids[ps_def.name]
                         resources_to_import.append(
                             {
                                 "ResourceType": "AWS::SSO::PermissionSet",
@@ -388,12 +416,15 @@ class IdentityService:
                             }
                         )
 
-                import_template_body = yaml.dump(
-                    self.synthesize_permission_sets_template(
-                        instance_arn, permission_sets, project_root=project_root, include_ownership_tag=False
-                    ),
-                    sort_keys=False,
+                import_template_dict = self.synthesize_permission_sets_template(
+                    instance_arn, permission_sets, project_root=project_root, include_ownership_tag=False
                 )
+                import_template_dict["Resources"] = {
+                    logical_ids[ps.name]: import_template_dict["Resources"][logical_ids[ps.name]]
+                    for ps in permission_sets
+                    if ps.name in existing_ps
+                }
+                import_template_body = yaml.dump(import_template_dict, sort_keys=False)
                 logger.debug(
                     "Importing pre-existing Permission Sets %s into CloudFormation stack '%s'...",
                     sorted(pre_existing),
@@ -409,7 +440,7 @@ class IdentityService:
                         org_tags=org_tags,
                         dry_run=dry_run,
                     )
-                    # Now that the sets are stack-managed, apply the full template (adds ownership tags).
+                    # Now that the sets are stack-managed, apply the full template (adds ownership tags and any new sets).
                     cfn_service.deploy_stack(
                         cfn_client=cfn_client,
                         stack_name=stack_name,

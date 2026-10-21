@@ -124,6 +124,27 @@ def test_root_access_prints_enabled_and_skipped_features(cfg: Path, org_mocks):
     assert "Enabled Iam Trusted Access" in res.output
     assert "Root Sessions: AccessDenied" in res.output
     assert "Delegated Admin: Skipped or disabled" in res.output
+    assert svc.configure_root_access.call_args.kwargs["management_account_id"] == "111111111111"
+
+
+def test_scp_apply_uses_cloudformation_when_scp_stack_is_active(cfg: Path):
+    with (
+        patch("tarmac.cli.org.AwsSessionManager") as mgr_cls,
+        patch("tarmac.cli.org.OUService") as ou_cls,
+        patch("tarmac.cli.org.SCPService") as scp_cls,
+    ):
+        cfn = MagicMock()
+        cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "UPDATE_COMPLETE"}]}
+        mgr_cls.return_value.get_client.return_value = cfn
+        ou_cls.return_value.get_root_id.return_value = "r-root"
+        ou_cls.return_value.list_all_ous.return_value = {}
+        scp_cls.return_value.reconcile_via_cloudformation.return_value = []
+
+        res = runner.invoke(org_cli.app, ["scp", "apply", "-c", str(cfg)])
+
+    assert res.exit_code == 0, res.output
+    scp_cls.return_value.reconcile_via_cloudformation.assert_called_once()
+    scp_cls.return_value.reconcile_all.assert_not_called()
 
 
 def test_root_access_governance_error_exits_1(cfg: Path, org_mocks):
@@ -197,3 +218,53 @@ def test_ou_list_and_failure(ou_service: MagicMock):
     bad = runner.invoke(ou_cli.app, ["list"])
     assert bad.exit_code == 1
     assert "List OUs Failed" in bad.output
+
+
+# -- which path `org scp apply` takes --------------------------------------------------------------------------
+
+
+def _session_with_stack(*, status: str | None = None, error: str | None = None):
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    cfn = MagicMock()
+    if error:
+        cfn.describe_stacks.side_effect = ClientError(
+            {"Error": {"Code": "ValidationError", "Message": error}}, "DescribeStacks"
+        )
+    else:
+        cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": status}]}
+    session = MagicMock()
+    session.get_client.return_value = cfn
+    return session
+
+
+def test_a_missing_scp_stack_means_policies_are_managed_directly():
+    from tarmac.cli.org import _has_active_scp_stack
+
+    assert (
+        _has_active_scp_stack(
+            _session_with_stack(error="Stack with id acme-organization-scps does not exist"), "acme"
+        )
+        is False
+    )
+
+
+def test_an_active_scp_stack_is_detected():
+    from tarmac.cli.org import _has_active_scp_stack
+
+    assert _has_active_scp_stack(_session_with_stack(status="UPDATE_COMPLETE"), "acme") is True
+
+
+def test_an_unreadable_scp_stack_stops_instead_of_changing_policies_directly():
+    """Treating an access error as 'no stack' would change stack-managed policies behind CloudFormation."""
+    import pytest
+
+    from tarmac.cli.org import _has_active_scp_stack
+    from tarmac.core.exceptions import GovernanceError
+
+    with pytest.raises(GovernanceError):
+        _has_active_scp_stack(
+            _session_with_stack(error="User is not authorized to perform DescribeStacks"), "acme"
+        )

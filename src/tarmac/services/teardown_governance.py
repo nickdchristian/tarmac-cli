@@ -158,6 +158,32 @@ class GovernanceTeardown(TeardownBase):
 
         return results
 
+    def _resolve_identity_teardown_context(
+        self, bundle: ConfigBundle, target_region: str
+    ) -> tuple[IdentityService | None, str | None, list[str]]:
+        """Discover Identity Center instance and return (service, instance_arn, candidate_regions)."""
+        id_cfg = bundle.identity.identity_center if bundle.identity else None
+        cfg_region = getattr(id_cfg, "region", None) if id_cfg else None
+        preferred_region = cfg_region if isinstance(cfg_region, str) and cfg_region else target_region
+        identity_service: IdentityService | None = None
+        inst_arn: str | None = None
+        sso_region: str = preferred_region
+
+        if id_cfg:
+            try:
+                identity_service = IdentityService(self.session_mgr, preferred_region=preferred_region)
+                inst_arn, _ = identity_service.get_instance_details()
+                disc_region = getattr(identity_service, "region", None)
+                if isinstance(disc_region, str) and disc_region:
+                    sso_region = disc_region
+            except AWS_ERRORS as e:
+                logger.debug("Identity Center discovery during teardown: %s", e)
+
+        candidate_regions = list(
+            dict.fromkeys([r for r in (sso_region, target_region) if isinstance(r, str) and r])
+        )
+        return identity_service, inst_arn, candidate_regions
+
     def teardown_identity(
         self, bundle: ConfigBundle, target_region: str, dry_run: bool = False
     ) -> list[TeardownItemReport]:
@@ -168,56 +194,63 @@ class GovernanceTeardown(TeardownBase):
             f"{bundle.org.organization.name}-sso-permission-sets",
             f"{bundle.org.organization.name}-permission-sets",
         ]
+        id_cfg = bundle.identity.identity_center if bundle.identity else None
+        identity_service, inst_arn, candidate_regions = self._resolve_identity_teardown_context(
+            bundle, target_region
+        )
 
         for stack_name in stack_names:
-            try:
-                cfn_client = self.session_mgr.get_client("cloudformation", region_name=target_region)
-                status = self.cfn_service._get_stack_status(cfn_client, stack_name)
-                if status and status != "DELETE_COMPLETE":
-                    if dry_run:
-                        results.append(
-                            TeardownItemReport(
-                                resource_type="CloudFormation Stack",
-                                resource_name=stack_name,
-                                account_name="Management",
-                                account_id=mgmt_id,
-                                action="SIMULATED",
-                                message=f"Would delete permission sets stack (status: {status})",
+            for stack_region in candidate_regions:
+                try:
+                    cfn_client = self.session_mgr.get_client("cloudformation", region_name=stack_region)
+                    status = self.cfn_service._get_stack_status(cfn_client, stack_name)
+                    if status and status != "DELETE_COMPLETE":
+                        if dry_run:
+                            results.append(
+                                TeardownItemReport(
+                                    resource_type="CloudFormation Stack",
+                                    resource_name=stack_name,
+                                    account_name="Management",
+                                    account_id=mgmt_id,
+                                    action="SIMULATED",
+                                    message=f"Would delete permission sets stack (status: {status})",
+                                )
                             )
-                        )
-                    else:
-                        self._notify_progress(
-                            f"Deleting CloudFormation stack '{stack_name}' in Management (waiting for AWS)..."
-                        )
-                        self.cfn_service.delete_stack(cfn_client, stack_name, on_progress=self.on_progress)
-                        results.append(
-                            TeardownItemReport(
-                                resource_type="CloudFormation Stack",
-                                resource_name=stack_name,
-                                account_name="Management",
-                                account_id=mgmt_id,
-                                action="DELETED",
-                                message="Deleted permission sets CloudFormation stack",
+                        else:
+                            self._notify_progress(
+                                f"Deleting CloudFormation stack '{stack_name}' in Management (waiting for AWS)..."
                             )
+                            self.cfn_service.delete_stack(
+                                cfn_client, stack_name, on_progress=self.on_progress
+                            )
+                            results.append(
+                                TeardownItemReport(
+                                    resource_type="CloudFormation Stack",
+                                    resource_name=stack_name,
+                                    account_name="Management",
+                                    account_id=mgmt_id,
+                                    action="DELETED",
+                                    message="Deleted permission sets CloudFormation stack",
+                                )
+                            )
+                        break
+                except AWS_ERRORS as e:
+                    results.append(
+                        TeardownItemReport(
+                            resource_type="CloudFormation Stack",
+                            resource_name=stack_name,
+                            account_name="Management",
+                            account_id=mgmt_id,
+                            action="FAILED",
+                            message=str(e),
                         )
-            except AWS_ERRORS as e:
-                results.append(
-                    TeardownItemReport(
-                        resource_type="CloudFormation Stack",
-                        resource_name=stack_name,
-                        account_name="Management",
-                        account_id=mgmt_id,
-                        action="FAILED",
-                        message=str(e),
                     )
-                )
+                    break
 
-        if bundle.identity and bundle.identity.identity_center:
+        if id_cfg and identity_service and inst_arn:
             try:
-                identity_service = IdentityService(self.session_mgr, preferred_region=target_region)
-                inst_arn, _ = identity_service.get_instance_details()
                 existing_ps = identity_service.list_permission_sets(inst_arn)
-                for ps_def in bundle.identity.identity_center.permission_sets:
+                for ps_def in id_cfg.permission_sets:
                     if ps_def.name in existing_ps:
                         ps_arn = existing_ps[ps_def.name]
                         if not identity_service.is_tarmac_managed_permission_set(inst_arn, ps_arn):
@@ -250,17 +283,29 @@ class GovernanceTeardown(TeardownBase):
                             self._notify_progress(
                                 f"Deleting retained Permission Set '{ps_def.name}' in IAM Identity Center..."
                             )
-                            identity_service.delete_permission_set(inst_arn, ps_arn)
-                            results.append(
-                                TeardownItemReport(
-                                    resource_type="Permission Set",
-                                    resource_name=ps_def.name,
-                                    account_name="Management",
-                                    account_id=mgmt_id,
-                                    action="DELETED",
-                                    message=f"Deleted retained Permission Set '{ps_def.name}'",
+                            deleted = identity_service.delete_permission_set(inst_arn, ps_arn)
+                            if deleted is False:
+                                results.append(
+                                    TeardownItemReport(
+                                        resource_type="Permission Set",
+                                        resource_name=ps_def.name,
+                                        account_name="Management",
+                                        account_id=mgmt_id,
+                                        action="FAILED",
+                                        message=f"Could not delete retained Permission Set '{ps_def.name}'",
+                                    )
                                 )
-                            )
+                            else:
+                                results.append(
+                                    TeardownItemReport(
+                                        resource_type="Permission Set",
+                                        resource_name=ps_def.name,
+                                        account_name="Management",
+                                        account_id=mgmt_id,
+                                        action="DELETED",
+                                        message=f"Deleted retained Permission Set '{ps_def.name}'",
+                                    )
+                                )
             except AWS_ERRORS as e:
                 logger.debug("Identity Center direct cleanup: %s", e)
 

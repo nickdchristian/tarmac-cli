@@ -216,7 +216,10 @@ class OrganizationService:
         return enabled
 
     def configure_root_access(
-        self, config: RootAccessConfig, account_id_map: dict[str, str] | None = None
+        self,
+        config: RootAccessConfig,
+        account_id_map: dict[str, str] | None = None,
+        management_account_id: str | None = None,
     ) -> dict[str, bool]:
         """Configure centralized root access management and optional delegated administrator."""
         if not config.enabled:
@@ -242,7 +245,11 @@ class OrganizationService:
                 self._enable_root_sessions(enabled_features) if config.enable_root_sessions else False
             ),
             "delegated_admin": (
-                self._register_delegated_admin(config.delegated_admin_account, resolved_map)
+                self._register_delegated_admin(
+                    config.delegated_admin_account,
+                    resolved_map,
+                    management_account_id=management_account_id,
+                )
                 if config.delegated_admin_account and resolved_map
                 else False
             ),
@@ -336,7 +343,12 @@ class OrganizationService:
             logger.warning("Root sessions: %s", msg)
             return False
 
-    def _register_delegated_admin(self, admin_account: str, account_id_map: dict[str, str]) -> bool:
+    def _register_delegated_admin(
+        self,
+        admin_account: str,
+        account_id_map: dict[str, str],
+        management_account_id: str | None = None,
+    ) -> bool:
         """Register IAM delegated administrator account."""
         admin_acct_id = account_id_map.get(admin_account)
         if not admin_acct_id:
@@ -349,6 +361,14 @@ class OrganizationService:
             err_msg = (
                 f"Delegated admin account '{admin_account}' not found in active accounts: "
                 f"{list(account_id_map.keys())}"
+            )
+            self.last_error["delegated_admin"] = err_msg
+            logger.warning(err_msg)
+            return False
+        if management_account_id and admin_acct_id == management_account_id:
+            err_msg = (
+                f"Delegated admin account '{admin_account}' ({admin_acct_id}) is the management account; "
+                "a member account must be used for delegated administration."
             )
             self.last_error["delegated_admin"] = err_msg
             logger.warning(err_msg)
