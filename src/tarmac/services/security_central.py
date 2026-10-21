@@ -98,9 +98,7 @@ class SecurityHubCentralConfiguration:
         self._wait_until_enabled()
 
     def _configuration(self) -> dict[str, Any]:
-        resp = self.sh.describe_organization_configuration()
-        config = resp.get("OrganizationConfiguration", {}) if isinstance(resp, dict) else {}
-        return config if isinstance(config, dict) else {}
+        return self.sh.describe_organization_configuration()["OrganizationConfiguration"]
 
     def _wait_until_enabled(self) -> None:
         waited = 0.0

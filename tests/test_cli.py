@@ -212,7 +212,7 @@ def test_cli_validate_json(sample_config_dir):
     assert result.exit_code == 0
     data = json.loads(result.stdout)
     assert data["valid"] is True
-    assert data["summary"]["organization_name"] in {"flumen", "myorg"}
+    assert data["summary"]["organization_name"] == "myorg"
     assert data["errors"] == []
 
 
@@ -701,10 +701,10 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
     monkeypatch.setattr("tarmac.cli.main.OUService", lambda sm: mock_ou_service)
     mock_baseliner = MagicMock()
     mock_baseliner.get_anomaly_overview.return_value = (
-        [{"MonitorName": "flumen-prod-cost-anomaly-monitor", "MonitorType": "CUSTOM"}],
+        [{"MonitorName": "workload-prod-cost-anomaly-monitor", "MonitorType": "CUSTOM"}],
         [
             {
-                "SubscriptionName": "flumen-prod-anomaly-alerts",
+                "SubscriptionName": "workload-prod-anomaly-alerts",
                 "Threshold": 100.0,
                 "Frequency": "DAILY",
                 "Subscribers": [{"Address": "alerts@example.com"}],
@@ -738,8 +738,8 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
     assert "dev-app" in res.stdout
     assert "MISSING" in res.stdout
     assert "ou-sec-1" in res.stdout
-    assert "flumen-prod-cost-anomaly-monitor" in res.stdout
-    assert "flumen-prod-anomaly-alerts" in res.stdout
+    assert "workload-prod-cost-anomaly-monitor" in res.stdout
+    assert "workload-prod-anomaly-alerts" in res.stdout
 
     res_json = runner.invoke(app, ["status", "--detail", "--config-dir", str(sample_config_dir), "--json"])
     assert res_json.exit_code == 0

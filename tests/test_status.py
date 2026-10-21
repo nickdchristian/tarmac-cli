@@ -47,10 +47,10 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
 
     # CFN Stacks: CloudTrail on mgmt, Backend on deployment
     mock_cfn_mgmt.describe_stacks.return_value = {
-        "Stacks": [{"StackName": "flumen-organization-cloudtrail", "StackStatus": "CREATE_COMPLETE"}]
+        "Stacks": [{"StackName": "myorg-organization-cloudtrail", "StackStatus": "CREATE_COMPLETE"}]
     }
     mock_cfn_dep.describe_stacks.return_value = {
-        "Stacks": [{"StackName": "flumen-terraform-backend", "StackStatus": "CREATE_COMPLETE"}]
+        "Stacks": [{"StackName": "myorg-terraform-backend", "StackStatus": "CREATE_COMPLETE"}]
     }
 
     mock_sso.list_instances.return_value = {

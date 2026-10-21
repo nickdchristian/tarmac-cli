@@ -127,7 +127,7 @@ def test_identity_add_user_to_group():
     service = IdentityService(mock_session_mgr)
 
     # Success (newly added)
-    assert service.add_user_to_group("g-123", "u-456", "flumen-admin", "admin") is True
+    assert service.add_user_to_group("g-123", "u-456", "app-admin", "admin") is True
     mock_idstore.create_group_membership.assert_called_once_with(
         IdentityStoreId="d-1234567890",
         GroupId="g-123",
@@ -139,7 +139,7 @@ def test_identity_add_user_to_group():
         {"Error": {"Code": "ConflictException", "Message": "Conflict"}}, "CreateGroupMembership"
     )
     mock_idstore.create_group_membership.side_effect = conflict_err
-    assert service.add_user_to_group("g-123", "u-456", "flumen-admin", "admin") is False
+    assert service.add_user_to_group("g-123", "u-456", "app-admin", "admin") is False
 
 
 def test_identity_assign_group_to_accounts_polling_and_success():
@@ -163,7 +163,7 @@ def test_identity_assign_group_to_accounts_polling_and_success():
     service = IdentityService(mock_session_mgr)
     count = service.assign_group_to_accounts(
         group_id="g-123",
-        group_name="flumen-admin",
+        group_name="app-admin",
         permission_set_arn="arn:aws:sso:::permissionSet/ssoins-123/ps-456",
         account_ids=["111122223333"],
     )
@@ -190,7 +190,7 @@ def test_identity_assign_group_to_accounts_conflict():
     service = IdentityService(mock_session_mgr)
     count = service.assign_group_to_accounts(
         group_id="g-123",
-        group_name="flumen-admin",
+        group_name="app-admin",
         permission_set_arn="arn:aws:sso:::permissionSet/ssoins-123/ps-456",
         account_ids=["111122223333"],
     )
@@ -218,7 +218,7 @@ def test_identity_assign_group_to_accounts_failure():
     with pytest.raises(IdentityCenterError) as exc_info:
         service.assign_group_to_accounts(
             group_id="g-123",
-            group_name="flumen-admin",
+            group_name="app-admin",
             permission_set_arn="arn:aws:sso:::permissionSet/ssoins-123/ps-456",
             account_ids=["111122223333"],
         )

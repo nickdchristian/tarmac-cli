@@ -170,6 +170,9 @@ def test_securityhub_idempotent_when_already_enabled():
         ]
     }
     mock_sh_audit.get_finding_aggregator.return_value = {"RegionLinkingMode": "NO_REGIONS", "Regions": []}
+    mock_sh_audit.describe_organization_configuration.return_value = {
+        "OrganizationConfiguration": {"ConfigurationType": "CENTRAL", "Status": "ENABLED"}
+    }
 
     service = SecurityServicesService(mock_session_mgr)
     cfg = SecurityHubConfig(
@@ -321,6 +324,9 @@ def _sh_service(
         ]
     }
     sh.get_enabled_standards.return_value = {"StandardsSubscriptions": []}
+    sh.describe_organization_configuration.return_value = {
+        "OrganizationConfiguration": {"ConfigurationType": "LOCAL", "Status": "ENABLED"}
+    }
     if fail_update:
         sh.update_organization_configuration.side_effect = _ce(
             "AccessDeniedException", "cannot set auto-enable"
