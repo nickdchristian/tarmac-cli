@@ -183,9 +183,10 @@ unless you pass `--force`, and skips anything tarmac didn't create.
 ## Logging
 
 Add `-v` to see each change as it happens, or `--log-file run.jsonl` (or set `TARMAC_LOG_FILE`) to record a run.
-Inspect the results with `tarmac logs`:
+Both go before the command. Inspect the results with `tarmac logs`:
 
 ```bash
+tarmac -v --log-file run.jsonl deploy
 tarmac logs run.jsonl --run latest            # what the last run did, and what failed
 tarmac logs run.jsonl --outcome failed
 ```
