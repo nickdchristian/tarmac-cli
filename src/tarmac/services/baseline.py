@@ -308,7 +308,7 @@ class BaselineService:
                 account_id, "budgets", region_name="us-east-1"
             )
             resp = budgets_client.describe_budget(AccountId=account_id, BudgetName=budget_name)
-            if isinstance(resp, dict) and "Budget" in resp:
+            if "Budget" in resp:
                 logger.debug(
                     "Found pre-existing unmanaged budget '%s' in account '%s' (%s). "
                     "Removing orphan budget to allow CloudFormation to manage it...",
@@ -371,9 +371,7 @@ class BaselineService:
             )
             subs_resp = sns_client.list_subscriptions_by_topic(TopicArn=resolved_topic_arn)
             existing_endpoints = {
-                str(s.get("Endpoint", "")).lower()
-                for s in (subs_resp.get("Subscriptions", []) if isinstance(subs_resp, dict) else [])
-                if isinstance(s, dict)
+                str(s.get("Endpoint", "")).lower() for s in subs_resp.get("Subscriptions", [])
             }
             for email in additional_emails:
                 if email.lower() not in existing_endpoints:
