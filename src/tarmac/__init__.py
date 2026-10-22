@@ -5,4 +5,4 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("tarmac-cli")
 except PackageNotFoundError:
-    __version__ = "0.3.1"  # x-release-please-version
+    __version__ = "0.4.0"  # x-release-please-version
