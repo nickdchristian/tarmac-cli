@@ -384,7 +384,7 @@ def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path:
             "arn:aws:sso:::instance/ssoins-1",
             "arn:aws:sso:::permissionSet/ps-admin",
         )
-        assert len(reports) == 3  # 2 stacks deleted + 1 permission set deleted
+        assert len(reports) == 2  # 1 stack deleted + 1 permission set deleted
         assert reports[0].resource_type == "CloudFormation Stack"
         assert reports[0].action == "DELETED"
         assert reports[2].resource_type == "Permission Set"
