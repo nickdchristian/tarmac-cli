@@ -34,12 +34,11 @@ def _append_section(config_path: Path, name: str, fields: dict[str, str]) -> boo
 def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
     """Create your IAM Identity Center login with tarmac's least-privilege permission set, and its AWS CLI profile.
 
-    The deployment_user from identity.yaml gets the TarmacDeployment permission set on the management account. Run
-    this once as root from AWS CloudShell after enabling IAM Identity Center, and again after upgrading tarmac to
-    refresh the permission set's policy.
+    Run this once as root from AWS CloudShell after enabling IAM Identity Center, and again after upgrading tarmac
+    to refresh the permission set's policy.
     """
     bundle = load_configs_or_exit(config_dir)
-    user = bundle.identity.identity_center.deployment_user
+    admin = bundle.identity.identity_center.admin_user
     session_mgr = AwsSessionManager()
     try:
         account_id = session_mgr.get_caller_identity()["Account"]
@@ -57,7 +56,7 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
 
     try:
         identity = IdentityService(session_mgr, preferred_region=sso_region)
-        user_id = identity.get_or_create_user(user)
+        user_id = identity.get_or_create_user(admin)
         sso = identity.sso_client
         ps_arn = identity.list_permission_sets(instance_arn).get(DEPLOYMENT_PERMISSION_SET)
         if ps_arn is None:
@@ -90,7 +89,7 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
     except AWS_ERRORS as e:
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")
         raise typer.Exit(code=1)
-    print_success(f"'{user.username}' can sign in to account {account_id} with {DEPLOYMENT_PERMISSION_SET}.")
+    print_success(f"'{admin.username}' can sign in to account {account_id} with {DEPLOYMENT_PERMISSION_SET}.")
 
     config_path = Path("~/.aws/config").expanduser()
     _append_section(

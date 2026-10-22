@@ -79,10 +79,9 @@ Identity Center (SSO) login first. Only the steps AWS does not allow to be autom
    organization this also creates the organization) and, under **Settings → Authentication → Standard
    authentication**, turn on **Send email OTP**.
 3. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac
-   (`pip install --user tarmac-cli`) and run `tarmac init`. In `identity.yaml`, give `deployment_user` (the login tarmac
-   runs as) an address you receive mail at; people who administer accounts go under `additional_users`. Then run
-   `tarmac bootstrap`. It creates that user with tarmac's least-privilege permission set on the management account, and
-   a `tarmac` profile in `~/.aws/config` (see [Bootstrap access](#bootstrap-access-why-tarmac-cannot-run-as-root)).
+   (`pip install --user tarmac-cli`), run `tarmac init`, put your own email in `admin_user` in `identity.yaml`, and
+   run `tarmac bootstrap`. It creates that user with tarmac's least-privilege permission set on the management
+   account, and a `tarmac` profile in `~/.aws/config` (see [Bootstrap access](#bootstrap-access-why-tarmac-cannot-run-as-root)).
 4. `aws sso login --use-device-code --profile tarmac` (see [Using AWS CloudShell](#using-aws-cloudshell) for why the
    device-code flag is needed). The first sign-in emails you a code, then asks for a password and an MFA device.
 5. `export AWS_PROFILE=tarmac`, then confirm with `tarmac info --strict`.
@@ -163,7 +162,7 @@ Identity Center user, and `tarmac preflight` and `tarmac deploy` refuse to conti
 `tarmac bootstrap`, run once as root from AWS CloudShell after enabling IAM Identity Center (see
 [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account)), sets that up:
 
-* the `deployment_user` from `identity.yaml` in Identity Center, a login that exists only to run tarmac,
+* the `admin_user` from `identity.yaml` in Identity Center,
 * the `TarmacDeployment` permission set, holding [tarmac's policy](src/tarmac/templates/policies/iam/tarmac-deployment.json)
   with 4-hour sessions, assigned to that user on the management account,
 * a `tarmac` profile in `~/.aws/config` that signs in with it.
@@ -186,9 +185,8 @@ organization; if a run reports `AccessDenied`, report the missing action (as a s
 the permission set in the Identity Center console). It guards against mistakes, not against its own user: anything that
 can manage permission sets and assume `OrganizationAccountAccessRole` can grant itself more.
 
-**Upgrading from 0.2 or earlier.** `identity_center.admin_user` is now `deployment_user`: rename it in `identity.yaml`
-(and move the person who used it to `additional_users` if they should keep their group access). Tarmac no longer uses
-the `tarmac-access` stack, `TarmacDeploymentRole` or the `tarmac-bootstrap` IAM user. Remove any `[profile tarmac]` block those left in `~/.aws/config` before running
+**Upgrading from 0.2 or earlier.** Tarmac no longer uses the `tarmac-access` stack, `TarmacDeploymentRole` or the
+`tarmac-bootstrap` IAM user. Remove any `[profile tarmac]` block those left in `~/.aws/config` before running
 `tarmac bootstrap`. Once you can sign in with the new profile, turn off the stack's termination protection and delete it
 (`aws cloudformation update-termination-protection --no-enable-termination-protection --stack-name tarmac-access`, then
 `aws cloudformation delete-stack --stack-name tarmac-access`); delete the `tarmac-bootstrap` user's access keys and MFA

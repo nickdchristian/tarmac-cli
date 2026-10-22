@@ -159,7 +159,7 @@ def test_config_bundle_tag_resolution(tmp_path: Path):
     )
     identity = IdentityConfigFile(
         identity_center=IdentityCenterConfig(
-            deployment_user=UserDef(username="tarmac", email="tarmac@acme.com"),
+            admin_user=UserDef(username="admin", email="admin@acme.com"),
             breakglass_user=UserDef(username="breakglass", email="breakglass@acme.com"),
         )
     )
@@ -296,7 +296,7 @@ def test_catalog_tags_override_org_tags_and_account_tags_override_catalog(tmp_pa
     )
     identity = IdentityConfigFile(
         identity_center=IdentityCenterConfig(
-            deployment_user=UserDef(username="tarmac", email="tarmac@acme.com"),
+            admin_user=UserDef(username="admin", email="admin@acme.com"),
             breakglass_user=UserDef(username="breakglass", email="breakglass@acme.com"),
         )
     )
@@ -330,7 +330,7 @@ def test_duplicate_ou_names_rejected_in_cross_reference_validation(tmp_path: Pat
     accounts = AccountsCatalog(accounts=[])
     identity = IdentityConfigFile(
         identity_center=IdentityCenterConfig(
-            deployment_user=UserDef(username="tarmac", email="tarmac@acme.com"),
+            admin_user=UserDef(username="admin", email="admin@acme.com"),
             breakglass_user=UserDef(username="breakglass", email="breakglass@acme.com"),
         )
     )

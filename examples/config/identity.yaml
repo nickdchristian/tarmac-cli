@@ -4,11 +4,11 @@
 
 identity_center:
   region: "us-east-1"
-  deployment_user:
-    username: "tarmac"
-    email: "tarmac@example.com"
-    first_name: "Tarmac"
-    last_name: "Deployment"
+  admin_user:
+    username: "admin"
+    email: "admin@example.com"
+    first_name: "Admin"
+    last_name: "User"
 
   breakglass_user:
     username: "breakglass"
@@ -16,11 +16,7 @@ identity_center:
     first_name: "Break"
     last_name: "Glass"
 
-  additional_users:
-    - username: "admin"
-      email: "admin@example.com"
-      first_name: "Admin"
-      last_name: "User"
+  additional_users: []
 
   # Permission Sets defined with managed and/or inline policies
   permission_sets:

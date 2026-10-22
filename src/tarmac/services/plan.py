@@ -679,7 +679,7 @@ class Planner:
                 lambda: self._permission_sets(identity, session, instance_arn),
             )
         users: dict[str, str | None] = {}
-        for user in [cfg.deployment_user, cfg.breakglass_user, *cfg.additional_users]:
+        for user in [cfg.admin_user, cfg.breakglass_user, *cfg.additional_users]:
             users[user.username] = identity.get_user_id_by_username(user.username)
             phase.items.append(
                 PlanItem(

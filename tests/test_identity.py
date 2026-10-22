@@ -281,12 +281,7 @@ def test_identity_sync_identity():
 
     service = IdentityService(mock_session_mgr)
     id_cfg = IdentityCenterConfig(
-        deployment_user=UserDef(
-            username="tarmac", email="tarmac@example.com", first_name="Tarmac", last_name="Deployment"
-        ),
-        additional_users=[
-            UserDef(username="admin", email="admin@example.com", first_name="Admin", last_name="User")
-        ],
+        admin_user=UserDef(username="admin", email="admin@example.com", first_name="Admin", last_name="User"),
         breakglass_user=UserDef(
             username="breakglass", email="bg@example.com", first_name="Break", last_name="Glass"
         ),

@@ -243,7 +243,6 @@ def test_identity_center_is_imported(monkeypatch, tmp_path: Path):
                         "Name": {"GivenName": "Alice", "FamilyName": "A"},
                     },
                     {"UserId": "u2", "UserName": "breakglass", "Emails": [{"Value": "b@acme-corp.io"}]},
-                    {"UserId": "u3", "UserName": "tarmac", "Emails": [{"Value": "t@acme-corp.io"}]},
                 ]
             }
         ],
@@ -287,8 +286,7 @@ def test_identity_center_is_imported(monkeypatch, tmp_path: Path):
     report = ImportService(session, "us-east-1").discover_and_write(tmp_path / "cfg")  # type: ignore[arg-type]
 
     ident = yaml.safe_load((tmp_path / "cfg" / "identity.yaml").read_text())["identity_center"]
-    assert ident["deployment_user"]["username"] == "tarmac"
-    assert [u["username"] for u in ident["additional_users"]] == ["alice-admin"]
+    assert ident["admin_user"]["username"] == "alice-admin"
     assert ident["breakglass_user"]["username"] == "breakglass"
     assert ident["groups"][0]["members"] == ["alice-admin"]
     assert ident["groups"][0]["assignments"] == [{"permission_set": "Admin", "accounts": ["Audit"]}]

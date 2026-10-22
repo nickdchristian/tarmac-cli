@@ -39,7 +39,7 @@ def find_placeholder_values(bundle: "ConfigBundle") -> list[str]:
             )
 
     identity = bundle.identity.identity_center
-    for user in (identity.deployment_user, identity.breakglass_user, *identity.additional_users):
+    for user in (identity.admin_user, identity.breakglass_user, *identity.additional_users):
         if is_placeholder_email(str(user.email)):
             problems.append(f"identity.yaml: user '{user.username}' uses the sample email '{user.email}'")
 
