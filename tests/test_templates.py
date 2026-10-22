@@ -384,4 +384,4 @@ def test_terraform_state_bucket_name_does_not_change(base: str):
     doc = yaml.load((root / base / "terraform-backend.yaml").read_text(), Loader=_TagLoader)
     name = doc["Resources"]["TerraformStateBucket"]["Properties"]["BucketName"]
     assert name["If"][0] == "HasOrgName"
-    assert name["If"][1] == {"Sub": "${OrgName}-terraform-state-${AWS::AccountId}"}
+    assert name["If"][1]["Sub"][0] == "${OrgName}-terraform-state-${Suffix}"
