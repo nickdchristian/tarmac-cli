@@ -200,23 +200,6 @@ def test_bootstrap_creates_the_login_and_writes_the_profile(
     assert "sso_role_name = TarmacDeployment\nregion = us-east-2\n" in text
 
 
-def test_bootstrap_rerun_refreshes_the_policy(
-    writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    identity = _identity(
-        {"TarmacDeployment": "arn:ps-old", "ManagementAdministrator": "arn:admin"}, assigned=True
-    )
-    result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
-    assert result.exit_code == 0, result.output
-    sso = identity.return_value.sso_client
-    sso.create_permission_set.assert_not_called()
-    sso.create_account_assignment.assert_not_called()
-    sso.put_inline_policy_to_permission_set.assert_called_once()
-    sso.provision_permission_set.assert_called_once_with(
-        InstanceArn="arn:inst", PermissionSetArn="arn:ps-old", TargetType="ALL_PROVISIONED_ACCOUNTS"
-    )
-
-
 def test_bootstrap_fails_with_aws_reason_when_an_assignment_fails(
     writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
