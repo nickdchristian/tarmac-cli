@@ -245,7 +245,9 @@ class DriftService:
             try:
                 resolved_path = resolve_resource_path(policy_def.policy_file, root_dir)
                 declared_content = resolved_path.read_text(encoding="utf-8")
-                live_content = self._get_live_policy_content(pol_id)
+                live_content = str(
+                    self.org_client.describe_policy(PolicyId=pol_id).get("Policy", {}).get("Content", "{}")
+                )
 
                 normalized_declared = json.dumps(json.loads(declared_content), sort_keys=True)
                 normalized_live = json.dumps(json.loads(live_content), sort_keys=True)
@@ -341,13 +343,7 @@ class DriftService:
         ct_status = stack_status(mgmt_cfn, ct_stack)
         self._record_stack_drift("CloudTrail", ct_status, report)
 
-        sso_region = (
-            bundle.identity.identity_center.region
-            if (
-                bundle.identity and bundle.identity.identity_center and bundle.identity.identity_center.region
-            )
-            else target_region
-        )
+        sso_region = bundle.identity.identity_center.region or target_region
         sso_cfn = (
             mgmt_cfn
             if sso_region == target_region
@@ -403,8 +399,6 @@ class DriftService:
         report: DriftReport,
     ) -> None:
         """Check if declared IAM Identity Center permission sets exist in live AWS state."""
-        if not (bundle.identity and bundle.identity.identity_center):
-            return
         try:
             sso_region = bundle.identity.identity_center.region or target_region
             sso_client = self.session_mgr.get_client("sso-admin", region_name=sso_region)
@@ -473,11 +467,6 @@ class DriftService:
                 remediation=remediation,
             )
         )
-
-    def _get_live_policy_content(self, policy_id: str) -> str:
-        """Fetch content string of a live SCP."""
-        resp = self.org_client.describe_policy(PolicyId=policy_id)
-        return str(resp.get("Policy", {}).get("Content", "{}"))
 
     def _resolve_id(self, account_name: str, live_accts: dict[str, dict[str, Any]]) -> str | None:
         """Resolve account ID from name case- and separator-insensitively."""
