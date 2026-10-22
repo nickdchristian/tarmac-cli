@@ -27,7 +27,7 @@ from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .baseline import BUDGET_TEMPLATE, budget_parameters, budget_stack_name
-from .cloudformation import CloudFormationService, lock_table_wanted
+from .cloudformation import CloudFormationService, cloudtrail_stack_home, lock_table_wanted
 from .config_recorder import ConfigRecorderService, service_linked_role_arn
 from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
@@ -399,6 +399,7 @@ class Planner:
 
     def _phase_3(self, phase: PhasePlan) -> None:
         name = self.bundle.get_log_archive_account_name() or "log-archive"
+        audit_name = self.bundle.get_audit_account_name() or "audit"
         trail_stack = Stack.CLOUDTRAIL.for_org(self.org_name)
         account_id = self._account_id(name)
         if not account_id:
@@ -411,15 +412,20 @@ class Planner:
                     f"in OU {declared.ou}" if declared else "not declared in accounts.yaml",
                 )
             )
+        audit_declared = self.bundle.get_account(audit_name)
+        audit_missing = bool(audit_declared) and not self._account_id(audit_name)
+        if audit_declared and audit_missing:
+            phase.items.append(PlanItem("account", audit_name, "CREATE", f"in OU {audit_declared.ou}"))
         self._log_archive_stack(phase)
-        if not account_id:
-            self._missing_account(phase, name, trail_stack)
+        if not account_id or audit_missing:
+            self._missing_account(phase, name if not account_id else audit_name, trail_stack)
             return
+        cfn_client, home_id = cloudtrail_stack_home(self.session_mgr, self.bundle, self.region, self.accounts)
         self._stack(
             phase,
-            self.session_mgr.get_client("cloudformation", region_name=self.region),
+            cfn_client,
             trail_stack,
-            "management",
+            "management" if home_id == self.management_id else audit_name,
             cloudtrail_parameters(self.bundle, account_id, bool(self.bundle.org.cloudtrail.enable_kms)),
             template="cloudformation/organization-cloudtrail.yaml",
         )

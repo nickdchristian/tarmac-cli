@@ -194,6 +194,10 @@ can manage permission sets and assume `OrganizationAccountAccessRole` can grant 
 `aws cloudformation delete-stack --stack-name tarmac-access`); delete the `tarmac-bootstrap` user's access keys and MFA
 device first if you created them.
 
+An organization trail stack created by 0.2 or earlier stays in the management account, and tarmac keeps updating it
+there; only new deployments create it in the audit account. Your existing `ou_structure` is unchanged; the new OU
+layout only applies to files that `tarmac init` creates.
+
 Member accounts need nothing extra: Organizations creates `OrganizationAccountAccessRole` in every account tarmac
 creates, trusting the management account, and tarmac reaches it from there. Accounts that were invited
 (not created) need that role added by hand.
@@ -208,7 +212,7 @@ Tarmac executes an idempotent multi-phase deployment. A full `tarmac deploy` fir
 ```
 [Phase 1: Org & Root]  ──► Bootstrap AWS Organizations, contacts, & root access
 [Phase 2: OUs & SCPs]  ──► Idempotently sync OU tree & attach guardrail SCPs
-[Phase 3: Central Log] ──► Deploy Log-Archive bucket & Org-wide CloudTrail
+[Phase 3: Central Log] ──► Deploy Log-Archive bucket & Org-wide CloudTrail (from Audit)
 [Phase 4: Accounts]    ──► Provision member accounts, purge default VPCs, set budgets
 [Phase 5: Hardening]   ──► Delegate Security Hub / GuardDuty & anomaly monitors
 [Phase 6: Identity]    ──► Sync IAM Identity Center permission sets & assignments
@@ -239,10 +243,28 @@ credentials as a deploy; to check configuration files without AWS, use `tarmac v
 Everything tarmac creates in AWS comes from the CloudFormation templates and SCP policies below, which ship with
 the package. `<org>` is `organization.name` from `organization.yaml`.
 
+AWS recommends using the management account only for work that has to happen there, and running services from member
+accounts registered as their delegated administrators. Tarmac follows that guidance:
+
+* **Management account:** Organizations (OUs, accounts, SCPs), Identity Center, delegated administrator
+  registration, the root activity alert for the management account itself, and the AWS Config StackSet. The
+  StackSet is there because service-managed StackSets live in the management account even when a delegated
+  administrator creates them.
+* **Audit (security tooling) account:** the delegated administrator for CloudTrail, AWS Config, GuardDuty,
+  Security Hub and IAM root access management. It deploys the organization trail stack. AWS still makes the
+  management account the trail's owner.
+* **Log archive account:** the CloudTrail and AWS Config log buckets.
+
+The starter `ou_structure` follows the OUs in AWS's
+[Organizing Your AWS Environment Using Multiple Accounts](https://docs.aws.amazon.com/whitepapers/latest/organizing-your-aws-environment/recommended-ous-and-accounts.html):
+Security holds only the log archive and audit accounts; Infrastructure holds shared services and networking;
+Workloads splits into Prod and Test; Deployments holds CI/CD accounts such as the Terraform backend; Policy Staging
+is where you try SCP changes before they reach other OUs; Sandbox and Suspended are as named.
+
 | Template | Stack | Account / Region | Deployed by | What it creates |
 | :--- | :--- | :--- | :--- | :--- |
 | [`log-archive-hardening.yaml`](src/tarmac/templates/cloudformation/log-archive-hardening.yaml) | `<org>-log-archive-hardening` | Log Archive / primary | Phase 3 | The central CloudTrail bucket, an access-logs bucket, a separate AWS Config bucket (when Config recorders are enabled) and a KMS key (when `cloudtrail.enable_kms` is on) |
-| [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Management / primary | Phase 3 | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket |
+| [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Audit / primary (management for a stack created before 0.3) | Phase 3 | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket. Phase 3 first registers the audit account as CloudTrail's delegated administrator |
 | [`account-budget.yaml`](src/tarmac/templates/cloudformation/account-budget.yaml) | `<account>-monthly-budget` | Each member account with a budget / primary | Phase 4 | A monthly cost budget and an SNS topic for its email and webhook alerts |
 | [`terraform-backend.yaml`](src/tarmac/templates/cloudformation/terraform-backend.yaml) | `<org>-terraform-backend` | Deployment / primary | Phase 5 | The Terraform state bucket, plus a DynamoDB lock table only when `enable_dynamodb` asks for one |
 | [`audit-account-hardening.yaml`](src/tarmac/templates/cloudformation/audit-account-hardening.yaml) | `<org>-audit-account-hardening` | Audit / primary | Phase 5 | An AWS Config aggregator, a KMS-encrypted SNS alert topic, and EventBridge rules forwarding Config non-compliance, GuardDuty findings, Security Hub findings and root activity to it |

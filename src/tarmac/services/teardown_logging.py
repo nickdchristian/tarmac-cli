@@ -10,12 +10,14 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from ..core.stack_names import LOG_ARCHIVE_BUCKETS, Stack
+from .cloudformation import cloudtrail_stack_home
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
 logger = logging.getLogger(__name__)
 
 TRAIL = "CloudTrail Trail"
+DELEGATED_ADMIN = "Delegated Administrator"
 
 
 class LoggingTeardown(TeardownBase):
@@ -30,15 +32,20 @@ class LoggingTeardown(TeardownBase):
         stack_name = Stack.CLOUDTRAIL.for_org(bundle.org.organization.name)
         trail_name = bundle.org.cloudtrail.trail_name
 
+        home_name, home_id = "Management", mgmt_id
         try:
-            cfn_client = self.session_mgr.get_client("cloudformation", region_name=target_region)
+            cfn_client, home_id = cloudtrail_stack_home(
+                self.session_mgr, bundle, target_region, self._get_active_accounts()
+            )
+            if home_id != mgmt_id:
+                home_name = bundle.get_audit_account_name() or "audit"
             status = self.cfn_service._get_stack_status(cfn_client, stack_name)
             if item := self._remove_stack(
                 cfn_client,
                 stack_name,
                 status,
-                "Management",
-                mgmt_id,
+                home_name,
+                home_id,
                 dry_run,
                 would="Would delete CloudTrail stack",
                 deleted="Deleted CloudTrail CloudFormation stack",
@@ -46,7 +53,10 @@ class LoggingTeardown(TeardownBase):
             ):
                 results.append(item)
         except AWS_ERRORS as e:
-            results.append(TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "FAILED", str(e)))
+            results.append(TeardownItemReport(STACK, stack_name, home_name, home_id, "FAILED", str(e)))
+
+        if home_id != mgmt_id:
+            results.append(self._deregister_cloudtrail_admin(home_name, home_id, dry_run))
 
         try:
             trail_client = self.session_mgr.get_client("cloudtrail", region_name=target_region)
@@ -95,6 +105,31 @@ class LoggingTeardown(TeardownBase):
                 results.append(TeardownItemReport(TRAIL, trail_name, "Management", mgmt_id, "FAILED", str(e)))
 
         return results
+
+    def _deregister_cloudtrail_admin(
+        self, account_name: str, account_id: str, dry_run: bool
+    ) -> TeardownItemReport:
+        """Stop the audit account being CloudTrail's delegated administrator."""
+        principal = "cloudtrail.amazonaws.com"
+        if dry_run:
+            return TeardownItemReport(
+                DELEGATED_ADMIN, principal, account_name, account_id, "SIMULATED", "Would deregister"
+            )
+        try:
+            self.session_mgr.get_client("cloudtrail").deregister_organization_delegated_admin(
+                DelegatedAdminAccountId=account_id
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code", "") != "AccountNotRegisteredException":
+                return TeardownItemReport(
+                    DELEGATED_ADMIN, principal, account_name, account_id, "FAILED", str(e)
+                )
+            return TeardownItemReport(
+                DELEGATED_ADMIN, principal, account_name, account_id, "SKIPPED", "Not registered"
+            )
+        return TeardownItemReport(
+            DELEGATED_ADMIN, principal, account_name, account_id, "DELETED", "Deregistered"
+        )
 
     @staticmethod
     def _find_tarmac_trail_arn(trail_client: Any, trail_name: str) -> str | None:

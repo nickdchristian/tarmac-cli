@@ -13,7 +13,7 @@ from ..core.stack_names import LOG_ARCHIVE_BUCKETS, Bucket, Stack
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
-from ..services.cloudformation import CloudFormationService, lock_table_wanted
+from ..services.cloudformation import CloudFormationService, cloudtrail_stack_home, lock_table_wanted
 from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
@@ -208,11 +208,14 @@ def _deploy_log_archive_hardening_stack(
     )
 
 
-def _provision_log_archive_account(
-    session_mgr: AwsSessionManager, bundle: ConfigBundle, log_archive_name: str, accts: dict[str, str]
+def _foundational_account_id(
+    session_mgr: AwsSessionManager, bundle: ConfigBundle, name: str, accts: dict[str, str]
 ) -> str:
-    """Create the declared log archive account when it does not exist yet; return its ID ("" if undeclared)."""
-    acct_def = bundle.get_account(log_archive_name)
+    """ID of a foundational account, creating it when it is declared but does not exist yet ("" if undeclared)."""
+    account_id = bundle.resolve_account_id(name, accts)
+    if account_id:
+        return account_id
+    acct_def = bundle.get_account(name)
     if not acct_def:
         return ""
     print_info(
@@ -230,10 +233,10 @@ def _provision_log_archive_account(
             )
         )
     if prov_results and prov_results[0].account_id:
-        log_archive_id = prov_results[0].account_id
-        accts[acct_def.name] = log_archive_id
-        print_success(f"Phase 3: Provisioned foundational account '{acct_def.name}' ({log_archive_id}).")
-        return log_archive_id
+        account_id = prov_results[0].account_id
+        accts[acct_def.name] = account_id
+        print_success(f"Phase 3: Provisioned foundational account '{acct_def.name}' ({account_id}).")
+        return account_id
     return ""
 
 
@@ -252,14 +255,13 @@ def _run_phase_3_cloudtrail(
 
     accts = get_active_account_id_map(session_mgr)
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
-    log_archive_id = bundle.resolve_account_id(log_archive_name, accts) or ""
-    if not log_archive_id:
-        log_archive_id = _provision_log_archive_account(session_mgr, bundle, log_archive_name, accts)
+    log_archive_id = _foundational_account_id(session_mgr, bundle, log_archive_name, accts)
     if not log_archive_id:
         raise GovernanceError(
             f"Phase 3 failed: Log Archive account '{log_archive_name}' could not be resolved from active accounts. "
             "Ensure the account is declared in accounts.yaml and provisioned before deploying CloudTrail."
         )
+    _foundational_account_id(session_mgr, bundle, bundle.get_audit_account_name() or "audit", accts)
 
     log_archive_report = _deploy_log_archive_hardening_stack(
         cfn_service,
@@ -273,11 +275,14 @@ def _run_phase_3_cloudtrail(
     )
     print_success(f"Phase 3: Log Archive hardening stack {log_archive_report.action}.")
 
+    cfn_client, home_id = cloudtrail_stack_home(session_mgr, bundle, target_region, accts)
+    if home_id != session_mgr.get_caller_identity().get("Account", ""):
+        OrganizationService(session_mgr).register_cloudtrail_delegated_administrator(home_id)
     template_file = resolve_resource_path(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
     report = cfn_service.deploy_stack(
-        session_mgr.get_client("cloudformation", region_name=target_region),
+        cfn_client,
         Stack.CLOUDTRAIL.for_org(bundle.org.organization.name),
         template_file,
         cloudtrail_parameters(bundle, log_archive_id, bool(bundle.org.cloudtrail.enable_kms)),
@@ -285,7 +290,7 @@ def _run_phase_3_cloudtrail(
         org_tags=bundle.get_organization_tags(),
         termination_protection=True,
     )
-    print_success(f"Phase 3 complete: CloudTrail stack {report.action}.")
+    print_success(f"Phase 3 complete: CloudTrail stack {report.action} in account {home_id}.")
     _record_phase(session_mgr, "cloudtrail")
 
 

@@ -12,6 +12,7 @@ from ..core.exceptions import AWS_ERRORS, IdentityCenterError
 from ..core.org_accounts import is_active, is_closed
 from ..core.stack_names import Stack
 from .accounts import AccountService
+from .cloudformation import cloudtrail_stack_home
 from .identity import IdentityService
 from .ou import OUService
 
@@ -66,10 +67,10 @@ class StatusService:
         suspended_accts = [a for a in live_accts if is_closed(a)]
 
         cfn_client = self.session_mgr.get_client("cloudformation", region_name=target_region)
-        ct_stack = Stack.CLOUDTRAIL.for_org(bundle.org.organization.name)
-        ct_status = stack_status(cfn_client, ct_stack)
-
         acct_map = {str(a["Name"]): str(a["Id"]) for a in active_accts}
+        ct_cfn, _ = cloudtrail_stack_home(self.session_mgr, bundle, target_region, acct_map)
+        ct_status = stack_status(ct_cfn, Stack.CLOUDTRAIL.for_org(bundle.org.organization.name))
+
         backend_name = bundle.get_backend_account_name() or "deployment"
         deployment_id = bundle.resolve_account_id(backend_name, acct_map)
         backend_stack = Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name)

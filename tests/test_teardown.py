@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
@@ -710,6 +710,7 @@ def test_cleanup_orphaned_bucket_contains_data_raises_governance_error():
 def _teardown_service(clients: dict[str, MagicMock]) -> TeardownService:
     mgr = MagicMock(spec=AwsSessionManager)
     mgr.default_region = "us-east-1"
+    clients.setdefault("organizations", MagicMock())
     mgr.get_client.side_effect = lambda svc, **kw: clients[svc]
     mgr.get_caller_identity.return_value = {"Account": "111122223333"}
     return TeardownService(mgr)
@@ -760,6 +761,30 @@ def test_teardown_cloudtrail_missing_trail_is_silent(test_bundle):
     reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
 
     assert not [r for r in reports if r.resource_type == "CloudTrail Trail"]
+
+
+def test_teardown_cloudtrail_deletes_the_audit_stack_and_deregisters_audit(test_bundle):
+    trail = MagicMock()
+    trail.get_trail.side_effect = ClientError(
+        {"Error": {"Code": "TrailNotFoundException", "Message": "nope"}}, "GetTrail"
+    )
+    svc = _teardown_service({"cloudformation": _no_stack_cfn(), "cloudtrail": trail})
+    audit_cfn = MagicMock()
+    audit_cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+    mgr = cast(MagicMock, svc.session_mgr)
+    mgr.get_member_client.return_value = audit_cfn
+    audit_name = test_bundle.get_audit_account_name()
+
+    with patch.object(svc, "_get_active_accounts", return_value={audit_name: "444455556666"}):
+        reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
+
+    audit_cfn.delete_stack.assert_called_once_with(
+        StackName=f"{test_bundle.org.organization.name}-organization-cloudtrail"
+    )
+    trail.deregister_organization_delegated_admin.assert_called_once_with(
+        DelegatedAdminAccountId="444455556666"
+    )
+    assert any(r.resource_type == "Delegated Administrator" and r.action == "DELETED" for r in reports)
 
 
 def _scp_clients(tagged: bool) -> dict[str, MagicMock]:
