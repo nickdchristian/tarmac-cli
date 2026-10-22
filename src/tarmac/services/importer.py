@@ -19,6 +19,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
+from ..core.exceptions import AWS_ERRORS
 from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
 from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
@@ -295,7 +296,7 @@ class ImportService:
         try:
             service = IdentityService(self.session_mgr, preferred_region=self.region)
             instance_arn, store_id = service.get_instance_details()
-        except Exception as exc:
+        except AWS_ERRORS as exc:
             logger.debug("No Identity Center: %s", exc)
             self.report.todos.append(
                 "IAM Identity Center was not found, so identity.yaml holds placeholders. Enable it first, or "
