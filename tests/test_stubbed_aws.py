@@ -372,6 +372,16 @@ _CREATE = {
 }
 
 
+def test_outputs_of_a_stack_not_created_yet_are_empty_without_a_warning(caplog):
+    cfn = _client("cloudformation")
+    with Stubber(cfn) as stub:
+        stub.add_client_error(
+            "describe_stacks", "ValidationError", "Stack with id s does not exist", expected_params=_STACK
+        )
+        assert CloudFormationService(MagicMock())._fetch_stack_outputs(cfn, "s") == {}
+    assert "Could not retrieve outputs" not in caplog.text
+
+
 def test_deploy_creates_a_new_stack_and_returns_its_outputs():
     cfn = _client("cloudformation")
     with Stubber(cfn) as stub:
