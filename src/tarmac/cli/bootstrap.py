@@ -98,8 +98,7 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
     except IdentityCenterError:
         error_console.print(
             "[red]IAM Identity Center is not enabled.[/red] In the console, enable it (on an account without an "
-            "organization this also creates the organization) and turn on Settings → Authentication → Send email "
-            "OTP, then run 'tarmac bootstrap' again."
+            "organization this also creates the organization), then run 'tarmac bootstrap' again."
         )
         raise typer.Exit(code=1)
     except AWS_ERRORS as e:
@@ -141,10 +140,11 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
     )
     print_success(f"{'Added' if added else 'Kept existing'} profile '{PROFILE}' in {config_path}.")
     print_info(
-        "Next:\n"
-        f"  1. aws sso login --use-device-code --profile {PROFILE}, and approve the code signed in as "
-        f"'{admin.username}'. Use a private window if your browser is signed in to the access portal as someone else.\n"
-        f"  2. If the portal asks '{admin.username}' for a password you don't have: as root, open IAM Identity Center → "
-        f"Users → {admin.username} → Reset password → Generate a one-time password, and sign in with it.\n"
-        f"  3. export AWS_PROFILE={PROFILE}, then: tarmac deploy"
+        f"Next, to sign in as '{admin.username}' for the first time:\n"
+        f"  1. As root, in IAM Identity Center → Users → {admin.username}, register an MFA device.\n"
+        f"  2. Open https://{store_id}.awsapps.com/start in a private window.\n"
+        f"  3. In the console, Users → {admin.username} → Reset password → Generate a one-time password. Sign in with "
+        "it in that window and set your own password.\n"
+        f"  4. aws sso login --use-device-code --profile {PROFILE}, and enter the code in that window.\n"
+        f"  5. export AWS_PROFILE={PROFILE}, then: tarmac deploy"
     )

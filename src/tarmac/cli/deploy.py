@@ -112,11 +112,9 @@ def _refuse_root_identity(session_mgr: AwsSessionManager) -> None:
             Panel(
                 "You are signed in as the AWS root user. Root cannot call sts:AssumeRole, so tarmac cannot reach "
                 "member accounts. To get non-root credentials, once:\n"
-                "  1. In the console, enable IAM Identity Center and turn on Settings → Authentication → "
-                "Send email OTP.\n"
-                "  2. [bold]tarmac bootstrap[/bold]\n"
-                "  3. [bold]aws sso login --use-device-code --profile tarmac[/bold]\n"
-                "  4. [bold]export AWS_PROFILE=tarmac[/bold], then run this command again.",
+                "  1. In the console, enable IAM Identity Center.\n"
+                "  2. [bold]tarmac bootstrap[/bold], and follow the sign-in steps it prints.\n"
+                "  3. [bold]export AWS_PROFILE=tarmac[/bold], then run this command again.",
                 title="[bold red]Root Credentials Not Supported[/bold red]",
                 border_style="red",
             )

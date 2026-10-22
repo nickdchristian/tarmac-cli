@@ -76,17 +76,18 @@ Identity Center (SSO) login first. Only the steps AWS does not allow to be autom
 
 1. Sign in as the root user, enable **MFA**, and add a payment method.
 2. In the console, enable **IAM Identity Center** (choose its Region deliberately; on an account without an
-   organization this also creates the organization) and, under **Settings → Authentication → Standard
-   authentication**, turn on **Send email OTP**.
+   organization this also creates the organization).
 3. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac
    (`pip install --user tarmac-cli`), run `tarmac init`, put your own email in `admin_user` in `identity.yaml`, and
    run `tarmac bootstrap`. It creates that user with tarmac's least-privilege permission set on the management
    account, and a `tarmac` profile in `~/.aws/config` (see [Bootstrap access](#bootstrap-access-why-tarmac-cannot-run-as-root)).
-4. `aws sso login --use-device-code --profile tarmac` (see [Using AWS CloudShell](#using-aws-cloudshell) for why the
-   device-code flag is needed), and approve the code signed in as `admin_user` (use a private window if your browser
-   is signed in to the access portal as someone else). If the portal asks for a password you don't have: as root,
-   open IAM Identity Center → Users → your user → **Reset password** → **Generate a one-time password**, and sign
-   in with it.
+4. Sign in as `admin_user` for the first time. `tarmac bootstrap` prints these steps:
+   1. As root, in IAM Identity Center → **Users** → your user, register an MFA device.
+   2. Open the access portal URL in a private window.
+   3. In the console, **Reset password** → **Generate a one-time password** for your user. Sign in with it in that
+      window and set your own password.
+   4. `aws sso login --use-device-code --profile tarmac` (see [Using AWS CloudShell](#using-aws-cloudshell) for why
+      the device-code flag is needed), and enter the code in that window.
 5. `export AWS_PROFILE=tarmac`, then confirm with `tarmac info --strict`.
 6. `tarmac preflight`, then `tarmac deploy --dry-run`, then `tarmac deploy`. Phases are idempotent, so a
    failed run can simply be repeated.
