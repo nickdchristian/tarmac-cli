@@ -146,6 +146,12 @@ def _identity(existing_sets: dict[str, str], assigned: bool = False) -> MagicMoc
     sso.list_account_assignments.return_value = {
         "AccountAssignments": [{"PrincipalId": "u-1"}] if assigned else []
     }
+    sso.describe_account_assignment_creation_status.return_value = {
+        "AccountAssignmentCreationStatus": {"Status": "SUCCEEDED"}
+    }
+    sso.describe_permission_set_provisioning_status.return_value = {
+        "PermissionSetProvisioningStatus": {"Status": "SUCCEEDED"}
+    }
     return identity
 
 
@@ -212,6 +218,19 @@ def test_bootstrap_rerun_refreshes_the_policy(
     sso.provision_permission_set.assert_called_once_with(
         InstanceArn="arn:inst", PermissionSetArn="arn:ps-old", TargetType="ALL_PROVISIONED_ACCOUNTS"
     )
+
+
+def test_bootstrap_fails_with_aws_reason_when_an_assignment_fails(
+    writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity({})
+    identity.return_value.sso_client.describe_account_assignment_creation_status.return_value = {
+        "AccountAssignmentCreationStatus": {"Status": "FAILED", "FailureReason": "Policy is invalid"}
+    }
+    result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
+    assert result.exit_code == 1
+    assert "Assigning TarmacDeployment failed: Policy is invalid" in result.output
+    assert not (tmp_path / ".aws").exists()
 
 
 def test_bootstrap_without_identity_center_says_what_to_enable(

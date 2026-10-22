@@ -1,6 +1,9 @@
 """tarmac bootstrap: the IAM Identity Center login tarmac runs as."""
 
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -36,6 +39,18 @@ def _append_section(config_path: Path, name: str, fields: dict[str, str]) -> boo
     return True
 
 
+def _wait(describe: Callable[[], dict[str, Any]], key: str, what: str) -> None:
+    """Wait for an Identity Center request to finish; raise with AWS's reason if it failed or never finished."""
+    for _ in range(60):
+        status = describe()[key]
+        if status["Status"] == "SUCCEEDED":
+            return
+        if status["Status"] == "FAILED":
+            raise IdentityCenterError(f"{what} failed: {status.get('FailureReason', 'no reason given')}")
+        time.sleep(2)
+    raise IdentityCenterError(f"{what} did not finish within 2 minutes; run 'tarmac bootstrap' again.")
+
+
 def _grant(
     identity: IdentityService,
     instance_arn: str,
@@ -68,17 +83,31 @@ def _grant(
         InstanceArn=instance_arn, AccountId=account_id, PermissionSetArn=ps_arn
     )["AccountAssignments"]
     if not any(a["PrincipalId"] == user_id for a in assignments):
-        sso.create_account_assignment(
+        request_id = sso.create_account_assignment(
             InstanceArn=instance_arn,
             TargetId=account_id,
             TargetType="AWS_ACCOUNT",
             PermissionSetArn=ps_arn,
             PrincipalType="USER",
             PrincipalId=user_id,
+        )["AccountAssignmentCreationStatus"]["RequestId"]
+        _wait(
+            lambda: sso.describe_account_assignment_creation_status(
+                InstanceArn=instance_arn, AccountAssignmentCreationRequestId=request_id
+            ),
+            "AccountAssignmentCreationStatus",
+            f"Assigning {name}",
         )
     elif policy is not None:
-        sso.provision_permission_set(
+        request_id = sso.provision_permission_set(
             InstanceArn=instance_arn, PermissionSetArn=ps_arn, TargetType="ALL_PROVISIONED_ACCOUNTS"
+        )["PermissionSetProvisioningStatus"]["RequestId"]
+        _wait(
+            lambda: sso.describe_permission_set_provisioning_status(
+                InstanceArn=instance_arn, ProvisionPermissionSetRequestId=request_id
+            ),
+            "PermissionSetProvisioningStatus",
+            f"Updating {name}",
         )
 
 
