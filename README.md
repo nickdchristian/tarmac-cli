@@ -180,24 +180,15 @@ unless you pass `--force`, and skips anything tarmac didn't create.
 - `--everything` also removes the OUs, Identity Center users and groups, and organization settings tarmac created,
   plus the `tarmac bootstrap` permission sets (except the one you're signed in with). It never closes accounts.
 
-## Logs and troubleshooting
+## Logging
 
 Add `-v` to see each change as it happens, or `--log-file run.jsonl` (or set `TARMAC_LOG_FILE`) to record a run.
-Then:
+Inspect the results with `tarmac logs`:
 
 ```bash
 tarmac logs run.jsonl --run latest            # what the last run did, and what failed
 tarmac logs run.jsonl --outcome failed
 ```
-
-| What you see | What to do |
-| :--- | :--- |
-| `Root credentials cannot assume roles in member accounts` | `export AWS_PROFILE=tarmac` (run `tarmac bootstrap` first if you haven't) |
-| `aws sso login` redirects to `127.0.0.1` | Use `aws sso login --use-device-code` |
-| `aws sso login` works, but tarmac says `No access` | You signed in as a different user. Sign in as `admin_user` in a private window |
-| `p-... already exists in stack ...` | `organization.name` was changed. Set it back to the stack's prefix |
-| `refusing to create an account with the sample email` | Give the account a real, unique email |
-| `refusing to adopt or move it` | Put the account's real email in `accounts.yaml` |
 
 ## Development
 
