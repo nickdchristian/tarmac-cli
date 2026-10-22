@@ -4,7 +4,6 @@ Only things recorded in the inventory (see ``core/inventory.py``) or tagged as T
 accounts are never closed here: ``tarmac account suspend --close`` does that one account at a time.
 """
 
-import contextlib
 import logging
 import shlex
 from typing import Any
@@ -12,18 +11,15 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.audit import Outcome, audit
-from ..core.exceptions import AWS_ERRORS, aws_error_code, aws_error_message
+from ..core.exceptions import AWS_ERRORS, IdentityCenterError, aws_error_code, aws_error_message
 from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from ..core.org_accounts import is_active, iter_accounts
-from ..core.stack_names import ACCESS_STACK
-from .identity import IdentityService
+from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
 from .teardown_base import TeardownBase
 
 logger = logging.getLogger(__name__)
 
-BOOTSTRAP_USER = "tarmac-bootstrap"
-ACCESS_ROLE = "TarmacDeploymentRole"
 # Disabling this would delete the Identity Center instance created through Organizations.
 NEVER_AUTO_DISABLE = frozenset({"sso.amazonaws.com"})
 _MISSING = {
@@ -451,153 +447,34 @@ class EverythingTeardown(TeardownBase):
             return False
         return False
 
-    def teardown_access(self, region: str, dry_run: bool = False) -> list[TeardownItemReport]:
-        """Remove the access stack (role, policy, bootstrap user) from `tarmac access bootstrap`.
-
-        This is the last step: when the run itself uses the role, the stack deletion is started but not awaited.
-        """
+    def teardown_access(self, dry_run: bool = False) -> list[TeardownItemReport]:
+        """Remove the permission sets from `tarmac bootstrap`, except one this run is signed in with."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
-        caller_arn = ""
-        with contextlib.suppress(*AWS_ERRORS):
+        try:
+            identity = IdentityService(self.session_mgr)
+            instance_arn, _ = identity.get_instance_details()
+            existing = identity.list_permission_sets(instance_arn)
             caller_arn = str(self.session_mgr.get_caller_identity().get("Arn", ""))
-        using_role = f"/{ACCESS_ROLE}/" in caller_arn or f"role/{ACCESS_ROLE}" in caller_arn
-
-        if not self._delete_bootstrap_user(results, dry_run, mgmt_id, region):
-            results.append(
-                _item(
-                    "CloudFormation Stack",
-                    ACCESS_STACK,
-                    "SKIPPED",
-                    "Kept because the bootstrap user could not be removed (the stack cannot delete a user "
-                    "that still has keys or MFA). Remove the user as an administrator, then re-run.",
-                    account_id=mgmt_id,
-                )
-            )
+        except IdentityCenterError:
             return results
-
-        for stack_region in dict.fromkeys([region, "us-east-1"]):
-            try:
-                cfn = self.session_mgr.get_client("cloudformation", region_name=stack_region)
-                status = self.cfn_service._get_stack_status(cfn, ACCESS_STACK)
-            except AWS_ERRORS:
+        except AWS_ERRORS as exc:
+            results.append(_item("Permission Set", "bootstrap", "FAILED", str(exc), account_id=mgmt_id))
+            return results
+        for name in BOOTSTRAP_PERMISSION_SETS:
+            ps_arn = existing.get(name)
+            if ps_arn is None:
                 continue
-            if not status or status == "DELETE_COMPLETE":
-                continue
-            if dry_run:
-                results.append(
-                    _item(
-                        "CloudFormation Stack",
-                        ACCESS_STACK,
-                        "SIMULATED",
-                        f"Would delete in {stack_region} ({status})",
-                        account_id=mgmt_id,
-                    )
+            if f"AWSReservedSSO_{name}_" in caller_arn:
+                action, message = (
+                    "SKIPPED",
+                    "This run is signed in with it; delete it in the IAM Identity Center console.",
                 )
-                break
-            try:
-                self.cfn_service.delete_stack(
-                    cfn,
-                    ACCESS_STACK,
-                    wait=not using_role,
-                    on_progress=self.on_progress,
-                    release_protection=True,
-                )
-            except AWS_ERRORS as exc:
-                results.append(
-                    _item("CloudFormation Stack", ACCESS_STACK, "FAILED", str(exc), account_id=mgmt_id)
-                )
-                break
-            note = (
-                "Deletion started; this session uses the role, so it may end now. Sign in as an administrator for anything further."
-                if using_role
-                else f"Deleted access stack in {stack_region}"
-            )
-            results.append(_item("CloudFormation Stack", ACCESS_STACK, "DELETED", note, account_id=mgmt_id))
-            break
-        else:
-            results.append(
-                _item(
-                    "CloudFormation Stack",
-                    ACCESS_STACK,
-                    "NOT_FOUND",
-                    "No access stack found",
-                    account_id=mgmt_id,
-                )
-            )
+            elif dry_run:
+                action, message = "SIMULATED", "Would delete it and its assignments"
+            elif identity.delete_permission_set(instance_arn, ps_arn):
+                action, message = "DELETED", "Deleted it and its assignments"
+            else:
+                action, message = "FAILED", "Could not delete it"
+            results.append(_item("Permission Set", name, action, message, account_id=mgmt_id))
         return results
-
-    def _access_stack_has_user(self, region: str) -> bool:
-        """True when the access stack (in any candidate region) contains an IAM user."""
-        for stack_region in dict.fromkeys([region, "us-east-1"]):
-            try:
-                cfn = self.session_mgr.get_client("cloudformation", region_name=stack_region)
-                for page in cfn.get_paginator("list_stack_resources").paginate(StackName=ACCESS_STACK):
-                    if any(
-                        r.get("ResourceType") == "AWS::IAM::User"
-                        for r in page.get("StackResourceSummaries", [])
-                    ):
-                        return True
-            except (ClientError, BotoCoreError):
-                continue
-        return False
-
-    def _delete_bootstrap_user(
-        self, results: list[TeardownItemReport], dry_run: bool, mgmt_id: str, region: str
-    ) -> bool:
-        """The stack cannot delete a user that still has keys or MFA, so empty it first.
-
-        Only a user tagged ``tarmac:managed-by=tarmac`` is touched. Returns False when a tarmac user is still
-        there (or cannot be inspected) and the stack must therefore be kept.
-        """
-
-        def report(action: str, message: str) -> None:
-            results.append(_item("IAM User", BOOTSTRAP_USER, action, message, account_id=mgmt_id))
-
-        iam: Any = self.session_mgr.get_client("iam")
-        try:
-            iam.get_user(UserName=BOOTSTRAP_USER)
-            tags = iam.list_user_tags(UserName=BOOTSTRAP_USER).get("Tags", [])
-        except ClientError as exc:
-            if aws_error_code(exc) in _MISSING:
-                return True
-            if aws_error_code(exc) in (
-                "AccessDenied",
-                "AccessDeniedException",
-            ) and not self._access_stack_has_user(region):
-                return True  # this session cannot see IAM users, and the stack holds none
-            report("SKIPPED", f"Could not inspect ({aws_error_message(exc)}); remove it as an administrator")
-            return False
-        except BotoCoreError as exc:
-            report("SKIPPED", f"Could not inspect ({exc})")
-            return False
-        if not any(t.get("Key") == TAG_MANAGED_BY and t.get("Value") == "tarmac" for t in tags):
-            report("SKIPPED", "Not tagged tarmac:managed-by=tarmac, so tarmac did not create it; left alone")
-            return True
-        if dry_run:
-            report("SIMULATED", "Would delete its access keys, MFA devices and the user")
-            return True
-        try:
-            for key in iam.list_access_keys(UserName=BOOTSTRAP_USER).get("AccessKeyMetadata", []):
-                iam.delete_access_key(UserName=BOOTSTRAP_USER, AccessKeyId=key["AccessKeyId"])
-            for mfa in iam.list_mfa_devices(UserName=BOOTSTRAP_USER).get("MFADevices", []):
-                iam.deactivate_mfa_device(UserName=BOOTSTRAP_USER, SerialNumber=mfa["SerialNumber"])
-                iam.delete_virtual_mfa_device(SerialNumber=mfa["SerialNumber"])
-            for policy_name in iam.list_user_policies(UserName=BOOTSTRAP_USER).get("PolicyNames", []):
-                iam.delete_user_policy(UserName=BOOTSTRAP_USER, PolicyName=policy_name)
-            for policy in iam.list_attached_user_policies(UserName=BOOTSTRAP_USER).get(
-                "AttachedPolicies", []
-            ):
-                iam.detach_user_policy(UserName=BOOTSTRAP_USER, PolicyArn=policy["PolicyArn"])
-            iam.delete_user(UserName=BOOTSTRAP_USER)
-        except ClientError as exc:
-            report(
-                "SKIPPED" if aws_error_code(exc) in ("AccessDenied", "AccessDeniedException") else "FAILED",
-                f"{aws_error_message(exc)}. Delete its access keys and the user as an administrator.",
-            )
-            return False
-        audit(
-            "delete", f"iam-user:{BOOTSTRAP_USER}", Outcome.SUCCEEDED, f"Deleted IAM user '{BOOTSTRAP_USER}'"
-        )
-        report("DELETED", "Deleted bootstrap user, keys and MFA")
-        return True

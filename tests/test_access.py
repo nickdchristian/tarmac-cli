@@ -1,14 +1,13 @@
-"""Bootstrap access: root detection, preflight, deploy guard, and the `tarmac access` commands."""
+"""Bootstrap access: root detection, preflight, deploy guard, `tarmac bootstrap` and the deployment policy."""
 
 import ast
+import json
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
 from botocore.exceptions import ClientError
-from helpers import CfnLoader
 from typer.testing import CliRunner
 
 from tarmac.cli.deploy import _refuse_root_identity
@@ -16,11 +15,15 @@ from tarmac.cli.main import app
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.exceptions import AWSAuthenticationError
 from tarmac.core.models import PreflightCheckStatus
+from tarmac.services.identity import deployment_policy
 from tarmac.services.preflight import PreflightService
 
 runner = CliRunner()
 ROOT = {"Account": "111111111111", "Arn": "arn:aws:iam::111111111111:root"}
-ROLE = {"Account": "111111111111", "Arn": "arn:aws:sts::111111111111:assumed-role/TarmacDeploymentRole/s"}
+ROLE = {
+    "Account": "111111111111",
+    "Arn": "arn:aws:sts::111111111111:assumed-role/AWSReservedSSO_TarmacDeployment_abc/me",
+}
 
 
 def _mgr(identity: dict[str, str]) -> AwsSessionManager:
@@ -40,7 +43,7 @@ def test_is_root_identity_detects_root_only() -> None:
 def test_preflight_fails_for_root_and_passes_for_role() -> None:
     root = PreflightService(_mgr(ROOT), MagicMock()).check_not_root_identity()
     assert root.status == PreflightCheckStatus.FAIL
-    assert "tarmac access template" in (root.action_required or "")
+    assert "tarmac bootstrap" in (root.action_required or "")
     role = PreflightService(_mgr(ROLE), MagicMock()).check_not_root_identity()
     assert role.status == PreflightCheckStatus.PASS
 
@@ -57,7 +60,7 @@ def test_run_all_checks_includes_root_check() -> None:
     sentinel = PreflightService(_mgr(ROOT), MagicMock()).check_not_root_identity()
     for name in dir(svc):
         if name.startswith("check_") and name != "check_not_root_identity":
-            multi = name in {"check_alternate_contacts", "check_s3_bucket_collision"}
+            multi = name == "check_alternate_contacts"
             setattr(svc, name, MagicMock(return_value=[] if multi else sentinel))
     report = svc.run_all_checks()
     assert report.failures >= 1
@@ -73,18 +76,6 @@ def test_deploy_refuses_root_but_allows_roles() -> None:
     unauth = MagicMock(spec=AwsSessionManager)
     unauth.is_root_identity.side_effect = RuntimeError("no creds")
     _refuse_root_identity(unauth)  # must not raise: phases report auth problems themselves
-    _refuse_root_identity(_mgr(ROOT), allow_root=True)  # phase 1 alone may run as root
-
-
-def test_access_template_prints_and_writes(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["access", "template"])
-    assert result.exit_code == 0
-    assert "TarmacDeploymentRole" in result.output
-    out = tmp_path / "sub" / "access.yaml"
-    result = runner.invoke(app, ["access", "template", "-o", str(out)])
-    assert result.exit_code == 0
-    assert out.exists()
-    assert "TarmacRole" in out.read_text(encoding="utf-8")
 
 
 def test_info_strict_reports_root_and_role() -> None:
@@ -112,37 +103,14 @@ def test_info_strict_reports_root_and_role() -> None:
         assert runner.invoke(app, ["info"]).exit_code == 0
 
 
-def test_access_template_is_least_surprising() -> None:
-    """MFA required by default, long sessions, and the bootstrap user may only assume the role."""
-
-    class Loader(yaml.SafeLoader):
-        pass
-
-    Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
-    path = (
-        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
-    )
-    t = yaml.load(path.read_text(encoding="utf-8"), Loader=Loader)
-    assert t["Parameters"]["RequireMfa"]["Default"] == "true"
-    assert t["Parameters"]["MaxSessionDurationSeconds"]["Default"] >= 14400
-    user_policies = {p["PolicyName"] for p in t["Resources"]["BootstrapUser"]["Properties"]["Policies"]}
-    assert user_policies == {"AssumeTarmacRole", "ManageOwnMfaAndAccessKey"}
-
-
-def test_template_defaults_and_mfa_condition() -> None:
-    text = (
-        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
-    ).read_text(encoding="utf-8")
-    assert "BoolIfExists" in text  # SSO sessions carry no MFA flag
-    assert "CreateBootstrapUser:\n    Type: String\n    Default: 'false'" in text
-
-
-def test_write_role_profile_is_idempotent(tmp_path: Path) -> None:
-    from tarmac.cli.access import _write_role_profile
+def test_append_section_is_idempotent(tmp_path: Path) -> None:
+    from tarmac.cli.bootstrap import _append_section
 
     cfg = tmp_path / ".aws" / "config"
-    assert _write_role_profile(cfg, "tarmac", "arn:role", "tarmac-bootstrap", "arn:mfa", "us-east-1") is True
-    assert _write_role_profile(cfg, "tarmac", "arn:other", "x", "y", "z") is False
+    assert _append_section(
+        cfg, "profile tarmac", {"role_arn": "arn:role", "source_profile": "tarmac-bootstrap"}
+    )
+    assert _append_section(cfg, "profile tarmac", {"role_arn": "arn:other"}) is False
     text = cfg.read_text(encoding="utf-8")
     assert "[profile tarmac]" in text
     assert "role_arn = arn:role" in text
@@ -150,13 +118,13 @@ def test_write_role_profile_is_idempotent(tmp_path: Path) -> None:
     assert "arn:other" not in text
 
 
-def test_write_role_profile_preserves_existing_config(tmp_path: Path) -> None:
-    from tarmac.cli.access import _write_role_profile
+def test_append_section_preserves_existing_config(tmp_path: Path) -> None:
+    from tarmac.cli.bootstrap import _append_section
 
     cfg = tmp_path / "config"
     original = "# my settings\n[default]\nregion = eu-west-1   # home\n\n[sso-session corp]\nsso_start_url = https://x\n"
     cfg.write_text(original, encoding="utf-8")
-    assert _write_role_profile(cfg, "tarmac", "arn:role", "src", "arn:mfa", "us-east-1") is True
+    assert _append_section(cfg, "profile tarmac", {"role_arn": "arn:role"}) is True
     text = cfg.read_text(encoding="utf-8")
     assert text.startswith(original)  # comments, spacing and other sections untouched
     assert text.count("[profile tarmac]") == 1
@@ -168,54 +136,113 @@ def _bootstrap_mgr() -> MagicMock:
     return cast(MagicMock, mgr)
 
 
-def test_bootstrap_deploys_and_writes_profile_for_user(tmp_path: Path) -> None:
-    cfg = tmp_path / "config"
-    report = MagicMock(
-        action="CREATED", outputs={"TarmacRoleArn": "arn:aws:iam::111111111111:role/TarmacDeploymentRole"}
+def _identity(existing_sets: dict[str, str], assigned: bool = False) -> MagicMock:
+    identity = MagicMock()
+    identity.discover_instance.return_value = ("arn:inst", "d-123", "us-east-1")
+    identity.return_value.get_or_create_user.return_value = "u-1"
+    identity.return_value.list_permission_sets.return_value = existing_sets
+    sso = identity.return_value.sso_client
+    sso.create_permission_set.return_value = {"PermissionSet": {"PermissionSetArn": "arn:ps-new"}}
+    sso.list_account_assignments.return_value = {
+        "AccountAssignments": [{"PrincipalId": "u-1"}] if assigned else []
+    }
+    sso.describe_account_assignment_creation_status.return_value = {
+        "AccountAssignmentCreationStatus": {"Status": "SUCCEEDED"}
+    }
+    sso.describe_permission_set_provisioning_status.return_value = {
+        "PermissionSetProvisioningStatus": {"Status": "SUCCEEDED"}
+    }
+    return identity
+
+
+def _bootstrap(identity: MagicMock, config_dir: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    monkeypatch.setenv("HOME", str(home))
+    with (
+        patch("tarmac.cli.bootstrap.AwsSessionManager", return_value=_bootstrap_mgr()),
+        patch("tarmac.cli.bootstrap.IdentityService", identity),
+    ):
+        return runner.invoke(app, ["bootstrap", "-c", str(config_dir)])
+
+
+def test_bootstrap_creates_the_login_and_writes_the_profile(
+    writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity({})
+    result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    sso = identity.return_value.sso_client
+    assert [c.kwargs["Name"] for c in sso.create_permission_set.call_args_list] == [
+        "TarmacDeployment",
+        "ManagementAdministrator",
+    ]
+    sso.attach_managed_policy_to_permission_set.assert_called_once_with(
+        InstanceArn="arn:inst",
+        PermissionSetArn="arn:ps-new",
+        ManagedPolicyArn="arn:aws:iam::aws:policy/AdministratorAccess",
     )
-    with (
-        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
-        patch("tarmac.cli.access.CloudFormationService") as svc,
-    ):
-        svc.return_value.deploy_stack.return_value = report
-        result = runner.invoke(
-            app, ["access", "bootstrap", "--with-bootstrap-user", "--aws-config", str(cfg)]
-        )
-    assert result.exit_code == 0
-    params = svc.return_value.deploy_stack.call_args.args[3]
-    assert params["CreateBootstrapUser"] == "true"
-    assert "role_arn = arn:aws:iam::111111111111:role/TarmacDeploymentRole" in cfg.read_text(encoding="utf-8")
+    policy = sso.put_inline_policy_to_permission_set.call_args.kwargs
+    assert (policy["PermissionSetArn"], json.loads(policy["InlinePolicy"])) == (
+        "arn:ps-new",
+        json.loads(deployment_policy()),
+    )
+    assert sso.create_account_assignment.call_count == 2
+    assert sso.create_account_assignment.call_args.kwargs == {
+        "InstanceArn": "arn:inst",
+        "TargetId": "111111111111",
+        "TargetType": "AWS_ACCOUNT",
+        "PermissionSetArn": "arn:ps-new",
+        "PrincipalType": "USER",
+        "PrincipalId": "u-1",
+    }
+    text = (tmp_path / ".aws" / "config").read_text(encoding="utf-8")
+    assert (
+        "[sso-session tarmac]\nsso_start_url = https://d-123.awsapps.com/start\nsso_region = us-east-1\n"
+        in text
+    )
+    assert "[profile tarmac]\nsso_session = tarmac\nsso_account_id = 111111111111\n" in text
+    assert "sso_role_name = TarmacDeployment\nregion = us-east-2\n" in text
 
 
-def test_bootstrap_without_user_writes_nothing(tmp_path: Path) -> None:
-    cfg = tmp_path / "config"
-    report = MagicMock(action="CREATED", outputs={})
-    with (
-        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
-        patch("tarmac.cli.access.CloudFormationService") as svc,
-    ):
-        svc.return_value.deploy_stack.return_value = report
-        result = runner.invoke(app, ["access", "bootstrap", "--aws-config", str(cfg)])
-    assert result.exit_code == 0
-    assert svc.return_value.deploy_stack.call_args.args[3]["CreateBootstrapUser"] == "false"
-    assert not cfg.exists()
-    assert "Identity Center" in result.output
+def test_bootstrap_rerun_refreshes_the_policy(
+    writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity(
+        {"TarmacDeployment": "arn:ps-old", "ManagementAdministrator": "arn:admin"}, assigned=True
+    )
+    result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    sso = identity.return_value.sso_client
+    sso.create_permission_set.assert_not_called()
+    sso.create_account_assignment.assert_not_called()
+    sso.put_inline_policy_to_permission_set.assert_called_once()
+    sso.provision_permission_set.assert_called_once_with(
+        InstanceArn="arn:inst", PermissionSetArn="arn:ps-old", TargetType="ALL_PROVISIONED_ACCOUNTS"
+    )
 
 
-def test_bootstrap_dry_run_and_failure() -> None:
-    from tarmac.core.exceptions import DeploymentError
+def test_bootstrap_fails_with_aws_reason_when_an_assignment_fails(
+    writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity({})
+    identity.return_value.sso_client.describe_account_assignment_creation_status.return_value = {
+        "AccountAssignmentCreationStatus": {"Status": "FAILED", "FailureReason": "Policy is invalid"}
+    }
+    result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
+    assert result.exit_code == 1
+    assert "Assigning TarmacDeployment failed: Policy is invalid" in result.output
+    assert not (tmp_path / ".aws").exists()
 
-    with (
-        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
-        patch("tarmac.cli.access.CloudFormationService") as svc,
-    ):
-        svc.return_value.preview_stack.return_value = ("UPDATE", "RoleName: old -> TarmacDeploymentRole")
-        dry = runner.invoke(app, ["access", "bootstrap", "--dry-run"])
-        assert dry.exit_code == 0
-        assert "UPDATE" in dry.output
-        svc.return_value.deploy_stack.assert_not_called()
-        svc.return_value.deploy_stack.side_effect = DeploymentError("boom")
-        assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1
+
+def test_bootstrap_without_identity_center_says_what_to_enable(
+    writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tarmac.core.exceptions import IdentityCenterError
+
+    identity = _identity({})
+    identity.discover_instance.side_effect = IdentityCenterError("No IAM Identity Center instance found.")
+    result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
+    assert result.exit_code == 1
+    assert not (tmp_path / ".aws").exists()
 
 
 # least-privilege policy
@@ -229,11 +256,7 @@ _NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups"}
 
 
 def _policy_statements() -> list[dict[str, object]]:
-    path = (
-        Path(__file__).resolve().parent.parent / "src/tarmac/templates/cloudformation" / "tarmac-access.yaml"
-    )
-    template = yaml.load(path.read_text(encoding="utf-8"), Loader=CfnLoader)
-    return template["Resources"]["TarmacPolicy"]["Properties"]["PolicyDocument"]["Statement"]
+    return json.loads(deployment_policy())["Statement"]
 
 
 def _allowed_actions() -> list[str]:
@@ -266,12 +289,6 @@ def test_policy_has_no_admin_grants() -> None:
     assert str(assume[0]["Resource"]).endswith(":role/OrganizationAccountAccessRole")
 
 
-def test_policy_denies_self_modification() -> None:
-    deny = [s for s in _policy_statements() if s["Effect"] == "Deny"]
-    assert len(deny) == 1
-    assert deny[0]["Action"] == ["iam:*"]
-
-
 def test_policy_actions_exist_in_aws_service_models() -> None:
     from botocore import xform_name  # noqa: F401  (ensures botocore is available)
     from botocore.session import get_session
@@ -296,23 +313,6 @@ _IAM_ACTION_FOR_OPERATION = {
 # management account (``get_member_client``), so the role needs the permission too. Default-VPC cleanup runs
 # against the management account.
 _MEMBER_CLIENT_SERVICES_ON_MANAGEMENT = {"ec2"}
-
-# Calls tarmac makes that the role is deliberately NOT granted, with the reason.
-_DELIBERATELY_NOT_GRANTED = {
-    # Removing the bootstrap IAM user is an administrator action; teardown reports AccessDenied as SKIPPED.
-    "iam:GetUser",
-    "iam:ListUserTags",
-    "iam:ListAccessKeys",
-    "iam:DeleteAccessKey",
-    "iam:ListMFADevices",
-    "iam:DeactivateMFADevice",
-    "iam:DeleteVirtualMFADevice",
-    "iam:ListUserPolicies",
-    "iam:DeleteUserPolicy",
-    "iam:ListAttachedUserPolicies",
-    "iam:DetachUserPolicy",
-    "iam:DeleteUser",
-}
 
 
 def _client_of(call: ast.Call) -> tuple[str, str] | None:
@@ -385,16 +385,9 @@ def test_policy_covers_every_management_account_api_call() -> None:
             continue
         action = f"{_PREFIX_TO_SERVICE_INVERSE.get(service, service)}:{operation}"
         action = _IAM_ACTION_FOR_OPERATION.get(action, action)
-        if action not in _DELIBERATELY_NOT_GRANTED and not _is_allowed(action):
+        if not _is_allowed(action):
             missing.append(f"{action} ({', '.join(sorted(files))})")
     assert not missing, f"The role's policy does not allow API calls tarmac makes: {sorted(missing)}"
-
-
-def test_deliberately_not_granted_calls_are_still_made() -> None:
-    """Keep the exclusion list honest: drop an entry once the code stops making that call."""
-    made = {f"iam:{op}" for kind, service, op in _client_calls() if service == "iam" and kind == "mgmt"}
-    assert not (_DELIBERATELY_NOT_GRANTED - made), _DELIBERATELY_NOT_GRANTED - made
-    assert not any(_is_allowed(a) for a in _DELIBERATELY_NOT_GRANTED), "granted after all: drop the exclusion"
 
 
 def test_aws_error_helpers_tolerate_missing_fields() -> None:

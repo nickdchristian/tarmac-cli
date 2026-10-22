@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Stacks in these states can never be updated in place; they must be deleted and recreated.
 UNUSABLE_STACK_STATES = frozenset(
-    {"ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS", "CREATE_FAILED", "DELETE_FAILED"}
+    {"ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "REVIEW_IN_PROGRESS", "CREATE_FAILED", "DELETE_FAILED"}
 )
 
 
@@ -261,7 +261,7 @@ class CloudFormationService:
                 f"stack:{stack_name}",
                 Outcome.FAILED,
                 f"Could not turn on termination protection for '{stack_name}': {aws_error_message(e)}. "
-                "If this is AccessDenied, re-run 'tarmac access bootstrap' to refresh the role's permissions.",
+                "If this is AccessDenied, re-run 'tarmac bootstrap' to refresh the deployment permission set.",
             )
             return
         audit(
@@ -402,7 +402,11 @@ class CloudFormationService:
                 self._release_protection(cfn_client, stack_name, allowed=True, on_progress=None)
                 cfn_client.delete_stack(StackName=stack_name)
             waiter = cfn_client.get_waiter("stack_delete_complete")
-            waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": 30})
+            try:
+                waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": 30})
+            except WaiterError:
+                cfn_client.delete_stack(StackName=stack_name, DeletionMode="FORCE_DELETE_STACK")
+                waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 5, "MaxAttempts": 30})
             audit(
                 "delete",
                 f"stack:{stack_name}",
@@ -412,7 +416,7 @@ class CloudFormationService:
         except (ClientError, WaiterError) as e:
             raise DeploymentError(
                 f"Failed to delete broken stack '{stack_name}'",
-                details=str(e),
+                details=self._fetch_failure_reasons(cfn_client, stack_name) or str(e),
             ) from e
 
     def delete_stack(

@@ -39,7 +39,6 @@
         },
         "ArnNotLike": {
           "aws:PrincipalARN": [
-            "arn:aws:iam::*:role/TarmacDeploymentRole",
             "arn:aws:iam::*:role/OrganizationAccountAccessRole"
           ]
         }

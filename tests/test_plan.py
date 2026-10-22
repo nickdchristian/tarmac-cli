@@ -191,7 +191,7 @@ def test_counts_summarize_every_phase(bundle):
         scps.return_value.synthesize_template.return_value = {}
         plan = planner.build([2])
 
-    declared = len(bundle.org.ou_structure)
+    declared = ConfigBundle.count_declared_ous(bundle.org.ou_structure)
     assert plan.counts() == {"NO CHANGE": 1, "CREATE": declared - 1, "UPDATE": 1}
     assert plan.to_dict()["summary"] == plan.counts()
 

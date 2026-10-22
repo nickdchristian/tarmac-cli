@@ -16,7 +16,7 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def real_credential_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    for module in ("deploy", "importer"):
+    for module in ("deploy", "importer", "preflight"):
         monkeypatch.setattr(f"tarmac.cli.{module}.require_credentials_or_exit", require_credentials_or_exit)
 
 
@@ -64,3 +64,9 @@ def test_import_stops_on_bad_credentials(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("tarmac.cli.importer.AwsSessionManager", lambda region_name=None: mgr)
     _assert_stopped(runner.invoke(app, ["import", "-c", str(tmp_path / "cfg")]), mgr)
     assert not (tmp_path / "cfg").exists()
+
+
+def test_preflight_stops_on_bad_credentials(monkeypatch, project: Path):
+    mgr = _expired()
+    monkeypatch.setattr("tarmac.cli.preflight.AwsSessionManager", lambda **kw: mgr)
+    _assert_stopped(runner.invoke(app, ["preflight", "-c", str(project)]), mgr)

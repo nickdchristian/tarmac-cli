@@ -23,7 +23,8 @@ from ..services.identity import SUPPORTED_SSO_REGIONS, _probe_region_for_instanc
 from ..services.ou import OUService
 from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
-from . import access, account
+from . import account
+from .bootstrap import bootstrap_command
 from .common import (
     ConfigDirOption,
     JsonOption,
@@ -55,8 +56,8 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-app.add_typer(access.app, name="access")
 app.add_typer(account.app, name="account")
+app.command("bootstrap")(bootstrap_command)
 app.command("deploy")(deploy_command)
 app.command("destroy")(destroy_command)
 app.command("inventory")(inventory_command)
@@ -372,8 +373,8 @@ def show_info(
 def _credentials_verdict(is_root: bool, can_run_tarmac: bool) -> str:
     if is_root:
         return (
-            "[bold red]✗ Root credentials cannot assume roles in member accounts. Run 'tarmac access bootstrap' "
-            "from CloudShell, then use the tarmac role or an SSO admin.[/bold red]"
+            "[bold red]✗ Root credentials cannot assume roles in member accounts. Run 'tarmac bootstrap' "
+            "to create an IAM Identity Center login, then sign in with it.[/bold red]"
         )
     if not can_run_tarmac:
         return (

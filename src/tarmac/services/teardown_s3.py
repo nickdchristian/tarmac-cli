@@ -7,7 +7,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from ..core.audit import Outcome, audit
-from ..core.exceptions import AWS_ERRORS, GovernanceError
+from ..core.exceptions import GovernanceError
 
 logger = logging.getLogger(__name__)
 
@@ -149,89 +149,3 @@ def empty_s3_bucket(
             objects_deleted=total_deleted,
         )
     return total_deleted
-
-
-def is_s3_bucket_empty(s3_client: Any, bucket_name: str) -> bool:
-    """Check if an S3 bucket is completely empty (no versions, delete markers, or objects)."""
-    clean_name = normalize_bucket_name(bucket_name)
-    if not clean_name:
-        return True
-    try:
-        s3_client.head_bucket(Bucket=clean_name)
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code in ("404", "NoSuchBucket", "NotFound"):
-            return True
-        logger.debug("Bucket '%s' inaccessible during empty check: %s", clean_name, e)
-        return False
-    except AWS_ERRORS as e:
-        logger.debug("Bucket '%s' check failed: %s", clean_name, e)
-        return False
-
-    try:
-        paginator = s3_client.get_paginator("list_object_versions")
-        for page in paginator.paginate(Bucket=clean_name, PaginationConfig={"MaxItems": 1}):
-            if page.get("Versions") or page.get("DeleteMarkers"):
-                return False
-    except ClientError as e:
-        logger.debug("Error checking object versions for '%s': %s", clean_name, e)
-
-    try:
-        resp = s3_client.list_objects_v2(Bucket=clean_name, MaxKeys=1)
-        if resp.get("KeyCount", 0) > 0 or resp.get("Contents"):
-            return False
-    except ClientError as e:
-        logger.debug("Error checking objects for '%s': %s", clean_name, e)
-
-    return True
-
-
-def cleanup_orphaned_bucket(s3_client: Any, bucket_name: str, account_id: str = "") -> bool:
-    """If an orphaned bucket exists from a previous run: delete it if empty, or raise error if it has data.
-
-    Returns True if bucket was found and deleted, False if bucket did not exist.
-    """
-    clean_name = normalize_bucket_name(bucket_name)
-    if not clean_name:
-        return False
-
-    try:
-        s3_client.head_bucket(Bucket=clean_name)
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code in ("404", "NoSuchBucket", "NotFound"):
-            return False
-        logger.debug("Bucket '%s' check error: %s", clean_name, e)
-        return False
-    except AWS_ERRORS:
-        return False
-
-    if is_s3_bucket_empty(s3_client, clean_name):
-        logger.debug(
-            "Deleting orphaned empty S3 bucket '%s' before stack creation to satisfy CloudFormation pre-deployment validation...",
-            clean_name,
-        )
-        try:
-            s3_client.delete_bucket(Bucket=clean_name)
-            audit(
-                "delete",
-                f"S3 Bucket:{clean_name}",
-                Outcome.SUCCEEDED,
-                f"Deleted empty S3 bucket '{clean_name}' left behind by an earlier stack so it can be recreated",
-            )
-            return True
-        except ClientError as e:
-            audit(
-                "delete",
-                f"S3 Bucket:{clean_name}",
-                Outcome.FAILED,
-                f"Could not delete empty S3 bucket '{clean_name}': {e}",
-            )
-            return False
-    else:
-        acct_msg = f" in account {account_id}" if account_id else ""
-        raise GovernanceError(
-            f"Pre-deployment validation error: S3 bucket '{clean_name}' already exists{acct_msg} and contains data. "
-            "CloudFormation cannot create this stack while an existing bucket with the same name exists. "
-            "To proceed, please empty or delete this bucket before retrying deployment."
-        )

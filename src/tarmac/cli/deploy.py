@@ -99,15 +99,9 @@ def _validate_phase(phase: int | None, allowed: range) -> None:
         raise _usage_error(f"Invalid phase: {phase}. Must be between {allowed.start} and {allowed.stop - 1}.")
 
 
-def _refuse_root_identity(session_mgr: AwsSessionManager, allow_root: bool = False) -> None:
-    """Stop with unusable credentials, or with root credentials (they cannot assume member roles).
-
-    ``allow_root`` is for phase 1 on its own: it only touches the management account, so a brand-new account can
-    create its organization from CloudShell as root before any other identity exists.
-    """
+def _refuse_root_identity(session_mgr: AwsSessionManager) -> None:
+    """Stop with unusable credentials, or with root credentials (they cannot assume member roles)."""
     require_credentials_or_exit(session_mgr)
-    if allow_root:
-        return
     try:
         is_root = session_mgr.is_root_identity()
     except Exception as e:  # unauthenticated: let the phases report it in context
@@ -116,10 +110,11 @@ def _refuse_root_identity(session_mgr: AwsSessionManager, allow_root: bool = Fal
     if is_root is True:
         error_console.print(
             Panel(
-                "You are authenticated as the account root user. Root cannot call sts:AssumeRole, "
-                "so tarmac cannot reach member accounts.\n"
-                "Run [bold]tarmac access template[/bold], deploy it, and re-run as the tarmac role "
-                "(see README: Bootstrap access). Only [bold]--phase 1[/bold] may run as root.",
+                "You are signed in as the AWS root user. Root cannot call sts:AssumeRole, so tarmac cannot reach "
+                "member accounts. To get non-root credentials, once:\n"
+                "  1. In the console, enable IAM Identity Center.\n"
+                "  2. [bold]tarmac bootstrap[/bold], and follow the sign-in steps it prints.\n"
+                "  3. [bold]export AWS_PROFILE=tarmac[/bold], then run this command again.",
                 title="[bold red]Root Credentials Not Supported[/bold red]",
                 border_style="red",
             )
@@ -230,7 +225,7 @@ def deploy_command(
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
     phases = [phase] if phase is not None else ALL_PHASES
-    _refuse_root_identity(session_mgr, allow_root=phases == [1])
+    _refuse_root_identity(session_mgr)
 
     try:
         if dry_run:
@@ -298,7 +293,7 @@ _EVERYTHING_REMOVES = (
     "Organizational Units tarmac created, if they are empty",
     "Identity Center users and groups tarmac created, with their assignments",
     "Trusted access, delegated administrators, root-access features, alternate contacts and cost tags tarmac enabled",
-    "The tarmac-access stack (TarmacDeploymentRole) and the tarmac-bootstrap IAM user",
+    "The permission sets from tarmac bootstrap (except the one this run is signed in with)",
 )
 
 

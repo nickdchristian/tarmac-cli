@@ -183,6 +183,7 @@ def setup_logging(
 
     for noisy_pkg in ("botocore", "urllib3", "boto3", "s3transfer"):
         logging.getLogger(noisy_pkg).setLevel(logging.WARNING)
+    logging.getLogger("botocore.credentials").setLevel(logging.ERROR)
 
     logging.getLogger("tarmac").setLevel(tarmac_level)
 

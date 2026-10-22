@@ -15,7 +15,7 @@ from .teardown_config import ConfigRecorderTeardown
 from .teardown_everything import EverythingTeardown
 from .teardown_governance import GovernanceTeardown
 from .teardown_logging import LoggingTeardown
-from .teardown_s3 import cleanup_orphaned_bucket, empty_s3_bucket, is_s3_bucket_empty, normalize_bucket_name
+from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 from .teardown_workloads import WorkloadTeardown
 
 logger = logging.getLogger(__name__)
@@ -25,9 +25,7 @@ __all__ = [
     "TeardownItemReport",
     "TeardownReport",
     "TeardownService",
-    "cleanup_orphaned_bucket",
     "empty_s3_bucket",
-    "is_s3_bucket_empty",
     "normalize_bucket_name",
 ]
 
@@ -50,7 +48,8 @@ class TeardownService(
         """Tear down all deployment resources across all phases in safe dependency order.
 
         With an ``inventory`` the run is a full teardown: it also removes the Identity Center users and groups,
-        OUs and organization settings recorded as created by tarmac, then the access role. Accounts are kept.
+        OUs and organization settings recorded as created by tarmac, then the TarmacDeployment permission set. Accounts
+        are kept.
         """
         region = target_region or bundle.org.organization.primary_region
         accts = self._get_active_accounts()
@@ -121,8 +120,8 @@ class TeardownService(
         if inventory is not None:
             self._notify_phase("Member accounts (kept)")
             items.extend(self.report_accounts_kept())
-            self._notify_phase("Tarmac access role and bootstrap user")
-            items.extend(self.teardown_access(region, dry_run=dry_run))
+            self._notify_phase("Tarmac bootstrap permission sets")
+            items.extend(self.teardown_access(dry_run=dry_run))
 
         status = (
             "SIMULATED"

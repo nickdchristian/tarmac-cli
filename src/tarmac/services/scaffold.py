@@ -62,12 +62,19 @@ ou_structure:
     description: "Security and compliance accounts"
   - name: "Infrastructure"
     description: "Shared infrastructure and networking accounts"
-  - name: "Production"
-    description: "Production workloads"
-  - name: "NonProduction"
-    description: "Development, test, and staging environments"
+  - name: "Workloads"
+    description: "Business workloads"
+    children:
+      - name: "Prod"
+        description: "Production workloads"
+      - name: "Test"
+        description: "Development, test, and staging environments"
+  - name: "Deployments"
+    description: "CI/CD and infrastructure-as-code accounts, such as the Terraform backend"
   - name: "Sandbox"
     description: "Experimental workloads and developer playgrounds"
+  - name: "Policy Staging"
+    description: "Accounts for trying SCP changes before they reach other OUs"
   - name: "Suspended"
     description: "Quarantined or decommissioned accounts"
 
@@ -141,7 +148,7 @@ accounts:
 
   - name: "Deployment"
     email: "aws-deployment@myorg.example.com"
-    ou: "Infrastructure"
+    ou: "Deployments"
     tags:
       Environment: "Shared"
     baseline:
@@ -154,7 +161,7 @@ accounts:
 
   - name: "Production-App"
     email: "aws-prod-app@myorg.example.com"
-    ou: "Production"
+    ou: "Prod"
     tags:
       Environment: "Production"
     baseline:

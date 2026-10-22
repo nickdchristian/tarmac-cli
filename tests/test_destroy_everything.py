@@ -2,8 +2,8 @@
 
 import json
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock
+from typing import Any, cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -228,37 +228,43 @@ def test_group_assignments_are_removed_before_the_group(inv: Inventory, monkeypa
     assert inv.get("identity-user") == {}
 
 
-# ---------------------------------------------------------------- access role and bootstrap user
+# ---------------------------------------------------------------- deployment permission set
 
 
-def test_bootstrap_user_is_emptied_then_deleted_with_the_stack():
-    iam, cfn = MagicMock(), MagicMock()
-    iam.list_user_tags.return_value = {"Tags": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}
-    iam.list_access_keys.return_value = {"AccessKeyMetadata": [{"AccessKeyId": "AK"}]}
-    iam.list_mfa_devices.return_value = {"MFADevices": [{"SerialNumber": "arn:mfa"}]}
-    iam.list_user_policies.return_value = {"PolicyNames": []}
-    iam.list_attached_user_policies.return_value = {"AttachedPolicies": []}
-    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
-    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
-
-    iam.delete_access_key.assert_called_once_with(UserName="tarmac-bootstrap", AccessKeyId="AK")
-    iam.deactivate_mfa_device.assert_called_once()
-    iam.delete_user.assert_called_once_with(UserName="tarmac-bootstrap")
-    cfn.delete_stack.assert_called_once_with(StackName="tarmac-access")
-    assert [i.action for i in items] == ["DELETED", "DELETED"]
+def _teardown_access(arn: str, permission_sets: dict[str, str]) -> tuple[list[Any], MagicMock]:
+    service = _service({})
+    cast(MagicMock, service.session_mgr).get_caller_identity.return_value = {"Account": "111", "Arn": arn}
+    identity = MagicMock()
+    identity.return_value.get_instance_details.return_value = ("arn:inst", "d-1")
+    identity.return_value.list_permission_sets.return_value = permission_sets
+    with patch("tarmac.services.teardown_everything.IdentityService", identity):
+        return service.teardown_access(), identity.return_value
 
 
-def test_access_teardown_without_user_or_stack_reports_not_found():
-    iam, cfn = MagicMock(), MagicMock()
-    iam.get_user.side_effect = _err("NoSuchEntity")
-    cfn.describe_stacks.side_effect = _err("ValidationError")
-    cfn.describe_stacks.side_effect = ClientError(
-        {"Error": {"Code": "ValidationError", "Message": "Stack with id tarmac-access does not exist"}},
-        "DescribeStacks",
+def test_the_deployment_permission_set_is_deleted_last():
+    items, identity = _teardown_access(
+        "arn:aws:sts::111:assumed-role/Admin/x", {"TarmacDeployment": "arn:ps"}
     )
-    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
-    assert [i.action for i in items] == ["NOT_FOUND"]
-    iam.delete_user.assert_not_called()
+    identity.delete_permission_set.assert_called_once_with("arn:inst", "arn:ps")
+    assert [i.action for i in items] == ["DELETED"]
+
+
+def test_a_run_signed_in_with_one_leaves_that_one():
+    arn = "arn:aws:sts::111:assumed-role/AWSReservedSSO_TarmacDeployment_abc123/me"
+    items, identity = _teardown_access(
+        arn, {"TarmacDeployment": "arn:ps", "ManagementAdministrator": "arn:admin"}
+    )
+    identity.delete_permission_set.assert_called_once_with("arn:inst", "arn:admin")
+    assert [(i.resource_name, i.action) for i in items] == [
+        ("TarmacDeployment", "SKIPPED"),
+        ("ManagementAdministrator", "DELETED"),
+    ]
+
+
+def test_nothing_to_do_without_the_permission_set():
+    items, identity = _teardown_access("arn:aws:sts::111:assumed-role/Admin/x", {})
+    identity.delete_permission_set.assert_not_called()
+    assert items == []
 
 
 def test_accounts_are_listed_but_never_closed():
@@ -311,40 +317,6 @@ def test_inventory_command_lists_recorded_items(tmp_path: Path):
     assert json.loads(result.output) == {"ou": {"Security": {"ou_id": "ou-1"}}}
 
 
-def test_user_not_tagged_by_tarmac_is_left_alone():
-    iam, cfn = MagicMock(), MagicMock()
-    iam.list_user_tags.return_value = {"Tags": []}
-    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
-    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
-    iam.delete_user.assert_not_called()
-    assert items[0].action == "SKIPPED"
-    assert "left alone" in items[0].message
-
-
-def test_stack_is_kept_when_the_user_cannot_be_removed():
-    iam, cfn = MagicMock(), MagicMock()
-    iam.get_user.side_effect = _err("AccessDenied")
-    pag = MagicMock()
-    pag.paginate.return_value = [{"StackResourceSummaries": [{"ResourceType": "AWS::IAM::User"}]}]
-    cfn.get_paginator.return_value = pag
-    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
-    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
-    cfn.delete_stack.assert_not_called()
-    assert [i.action for i in items] == ["SKIPPED", "SKIPPED"]
-
-
-def test_role_session_can_delete_a_stack_that_holds_no_user():
-    iam, cfn = MagicMock(), MagicMock()
-    iam.get_user.side_effect = _err("AccessDenied")
-    pag = MagicMock()
-    pag.paginate.return_value = [{"StackResourceSummaries": [{"ResourceType": "AWS::IAM::Role"}]}]
-    cfn.get_paginator.return_value = pag
-    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
-    items = _service({"iam": iam, "cloudformation": cfn}).teardown_access("us-east-1")
-    cfn.delete_stack.assert_called_once_with(StackName="tarmac-access")
-    assert [i.action for i in items] == ["DELETED"]
-
-
 def test_dry_run_counts_child_ous_as_already_gone(inv: Inventory):
     inv.record("ou:Parent", {"ou_id": "ou-parent"})
     inv.record("ou:Child", {"ou_id": "ou-child"})
@@ -384,7 +356,9 @@ def test_recording_never_breaks_an_audited_action(tmp_path: Path):
     audit("create", "ou:Other", Outcome.SUCCEEDED, "x")  # must not raise
 
 
-def test_full_teardown_runs_in_order_and_ends_with_the_access_role(inv: Inventory, tmp_path: Path):
+def test_full_teardown_runs_in_order_and_ends_with_the_deployment_permission_set(
+    inv: Inventory, tmp_path: Path
+):
     from tarmac.core.config_loader import load_all_configs
     from tarmac.services.scaffold import scaffold_project
 
@@ -407,7 +381,7 @@ def test_full_teardown_runs_in_order_and_ends_with_the_access_role(inv: Inventor
 
     order = [p.split("|")[0].strip() for p in phases]
     assert order.index("Organizational Units created by tarmac") < order.index("Phase 1")
-    assert phases[-1] == "Tarmac access role and bootstrap user"
+    assert phases[-1] == "Tarmac bootstrap permission sets"
     assert phases[-2] == "Member accounts (kept)"
     assert report.status == "SIMULATED"
     assert "Parent" in inv.get("ou")

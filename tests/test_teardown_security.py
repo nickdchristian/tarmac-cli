@@ -301,7 +301,8 @@ def test_cli_passes_disable_security_flag_and_adjusts_notice(tmp_path):
 
 def _log_archive_service(bundle, kms: MagicMock, bucket_delete_error: Exception | None = None):
     cfn, s3 = MagicMock(), MagicMock()
-    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE", "Outputs": []}]}
+    outputs = [{"OutputKey": "CloudTrailBucketName", "OutputValue": "acme-cloudtrail-logs-ec042910"}]
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE", "Outputs": outputs}]}
     cfn.describe_stack_resource.return_value = {"StackResourceDetail": {"PhysicalResourceId": "key-123"}}
     s3.head_bucket.side_effect = ClientError({"Error": {"Code": "404", "Message": "nf"}}, "HeadBucket")
     if bucket_delete_error:

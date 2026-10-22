@@ -17,7 +17,7 @@ def test_cli_help_and_subcommand_helps():
     assert result.exit_code == 0
     assert "Tarmac: Enterprise AWS Governance & Multi-Account Landing Zone CLI" in result.stdout
     for subcmd in [
-        "access",
+        "bootstrap",
         "account",
         "deploy",
         "destroy",
@@ -679,7 +679,7 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
             DriftItem(
                 category="Account",
                 name="dev-app",
-                declared="OU: NonProduction",
+                declared="OU: Test",
                 live="Missing",
                 status="MISSING",
                 remediation="tarmac deploy --phase 4",
@@ -845,8 +845,9 @@ def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_
     mock_ou_service.list_all_ous.return_value = {
         "Security": "ou-sec",
         "Infrastructure": "ou-inf",
-        "Production": "ou-prd",
-        "NonProduction": "ou-np",
+        "Deployments": "ou-dep",
+        "Prod": "ou-prd",
+        "Test": "ou-tst",
         "Suspended": "ou-sus",
     }
     mock_acct_service = MagicMock()
@@ -915,3 +916,31 @@ def test_deploy_hardening_stacks_skips_log_archive_when_requested(sample_config_
     assert len(deployed) == 1
     assert "audit-account-hardening" in deployed[0]
     assert all("log-archive-hardening" not in s for s in deployed)
+
+
+def test_deploy_hardening_stacks_delegates_cloudtrail_to_audit(sample_config_dir):
+    from unittest.mock import MagicMock, patch
+
+    from tarmac.cli.deploy_phases import _deploy_hardening_stacks
+    from tarmac.core.config_loader import load_all_configs
+
+    bundle, _ = load_all_configs(sample_config_dir)
+    assert bundle is not None
+
+    with patch("tarmac.cli.deploy_phases.OrganizationService") as org:
+        _deploy_hardening_stacks(
+            MagicMock(),
+            MagicMock(),
+            bundle,
+            "eu-west-1",
+            sample_config_dir.parent,
+            "o-test123",
+            {"Audit": "777777777777"},
+            skip_log_archive_hardening=True,
+        )
+
+    register = org.return_value.register_service_delegated_administrators
+    assert register.call_args.args == (
+        "777777777777",
+        ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com", "cloudtrail.amazonaws.com"],
+    )

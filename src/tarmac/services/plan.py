@@ -420,7 +420,14 @@ class Planner:
             self.session_mgr.get_client("cloudformation", region_name=self.region),
             trail_stack,
             "management",
-            cloudtrail_parameters(self.bundle, account_id, bool(self.bundle.org.cloudtrail.enable_kms)),
+            cloudtrail_parameters(
+                self.bundle,
+                account_id,
+                self.cfn._fetch_stack_outputs(
+                    self._member_cfn(account_id), Stack.LOG_ARCHIVE.for_org(self.org_name)
+                ).get("CloudTrailBucketName", ""),
+                bool(self.bundle.org.cloudtrail.enable_kms),
+            ),
             template="cloudformation/organization-cloudtrail.yaml",
         )
 

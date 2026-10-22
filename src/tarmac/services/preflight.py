@@ -11,15 +11,13 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
-from ..core.org_accounts import active_account_ids, is_active, iter_accounts
+from ..core.org_accounts import is_active, iter_accounts
 from ..core.placeholders import find_placeholder_values
-from ..core.stack_names import ACCESS_STACK, TARMAC_STACK_SUFFIXES, Bucket
-from ..core.templates import resolve_resource_path
+from ..core.stack_names import TARMAC_STACK_SUFFIXES
+from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService, deployment_policy
 
 logger = logging.getLogger(__name__)
 
-ACCESS_TEMPLATE = "cloudformation/tarmac-access.yaml"
-ACCESS_DEFAULT_REGION = "us-east-1"
 _LIVE_STACK_STATUSES = [
     "CREATE_COMPLETE",
     "UPDATE_COMPLETE",
@@ -28,17 +26,6 @@ _LIVE_STACK_STATUSES = [
     "IMPORT_ROLLBACK_COMPLETE",
     "REVIEW_IN_PROGRESS",
 ]
-
-
-def _normalise(template: object) -> str:
-    """Reduce a template to comparable text: CloudFormation may hand back parsed JSON or the original YAML."""
-    if isinstance(template, str):
-        text = template
-    elif isinstance(template, dict | list):
-        text = json.dumps(template, sort_keys=True)
-    else:
-        text = str(template)
-    return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").strip().split("\n"))
 
 
 def _count_statuses(checks: list[PreflightCheckResult]) -> tuple[int, int, int, int]:
@@ -79,7 +66,8 @@ class PreflightService:
                 live_value="Root user credentials",
                 action_required=(
                     "Root cannot call sts:AssumeRole, so tarmac cannot reach member accounts. "
-                    "Run 'tarmac access template' to create the tarmac role, then use it (see README: Bootstrap access)"
+                    "Run 'tarmac bootstrap' to create an IAM Identity Center login (see README: Starting from a "
+                    "brand-new AWS account)"
                 ),
             )
         return PreflightCheckResult(
@@ -648,169 +636,44 @@ class PreflightService:
                 action_required=None,
             )
 
-    def check_s3_bucket_collision(self) -> list[PreflightCheckResult]:
-        """Verify that planned foundational S3 bucket names are not globally owned by another AWS account."""
-        results: list[PreflightCheckResult] = []
-        try:
-            s3 = self.session_mgr.get_client("s3")
-            caller = self.session_mgr.get_caller_identity()
-            mgmt_id = caller.get("Account", "")
+    def check_deployment_policy_current(self) -> PreflightCheckResult:
+        """Warn when the TarmacDeployment permission set's policy differs from this release's.
 
-            active_accts: dict[str, str] = {}
-            try:
-                active_accts = active_account_ids(self.session_mgr.get_client("organizations"))
-            except AWS_ERRORS as e:
-                logger.debug("Could not list accounts for S3 bucket collision check: %s", e)
-
-            log_archive_name = self.bundle.get_log_archive_account_name() or "log-archive"
-            log_archive_id = self.bundle.resolve_account_id(log_archive_name, active_accts) or mgmt_id
-
-            backend_name = self.bundle.get_backend_account_name() or "deployment"
-            deployment_id = self.bundle.resolve_account_id(backend_name, active_accts) or mgmt_id
-
-            org_name = self.bundle.org.organization.name
-            prefixes_to_check = [
-                (
-                    "CloudTrail Logs",
-                    Bucket.CLOUDTRAIL_LOGS.for_account(org_name, log_archive_id),
-                    log_archive_id,
-                ),
-                (
-                    "Terraform State",
-                    Bucket.TERRAFORM_STATE.for_account(org_name, deployment_id),
-                    deployment_id,
-                ),
-            ]
-            for label, b_name, target_acct_id in prefixes_to_check:
-                target_s3 = s3
-                if target_acct_id and target_acct_id != mgmt_id:
-                    try:
-                        target_s3 = self.session_mgr.get_member_client(target_acct_id, "s3")
-                    except AWS_ERRORS as e:
-                        # Do NOT fall back to the management account's client: it would report the
-                        # bucket as "Available" or "Taken" based on the wrong account's view.
-                        logger.warning(
-                            "Cannot assume role into account %s for S3 check: %s", target_acct_id, e
-                        )
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.INFO,
-                                live_value=f"Check skipped (cannot access account {target_acct_id})",
-                            )
-                        )
-                        continue
-                try:
-                    target_s3.head_bucket(Bucket=b_name)
-                    results.append(
-                        PreflightCheckResult(
-                            name=f"S3 Bucket Availability ({label})",
-                            target=b_name,
-                            status=PreflightCheckStatus.PASS,
-                            live_value="Accessible / Owned",
-                        )
-                    )
-                except ClientError as e:
-                    code = str(e.response.get("Error", {}).get("Code", ""))
-                    if code in ("404", "NoSuchBucket"):
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.PASS,
-                                live_value="Available",
-                            )
-                        )
-                    elif code in ("403", "AccessDenied"):
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.FAIL,
-                                live_value="Forbidden (Taken Globally)",
-                                action_required=(
-                                    f"Bucket name '{b_name}' is globally claimed by another AWS account. "
-                                    "Bucket names come from organization.name: choose a different name."
-                                ),
-                            )
-                        )
-                    else:
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.INFO,
-                                live_value=f"Check skipped ({code})",
-                            )
-                        )
-        except AWS_ERRORS as e:
-            logger.warning("S3 collision check failed: %s", e)
-            results.append(
-                PreflightCheckResult(
-                    name="S3 Bucket Availability",
-                    target="(all)",
-                    status=PreflightCheckStatus.INFO,
-                    live_value=f"Check skipped ({type(e).__name__})",
-                )
-            )
-        return results
-
-    def check_access_policy_current(self, home_region: str) -> PreflightCheckResult:
-        """Warn when the deployed access role is older than this release's template.
-
-        New features add API calls to the template's policy; a role bootstrapped by an older release then fails
+        New features add API calls to the policy; a permission set bootstrapped by an older release then fails
         halfway through a deploy with AccessDenied. Comparing the two up front turns that into a one-line warning.
         """
-        name, target = "Access Role Policy", f"Stack '{ACCESS_STACK}'"
+        name, target = "Deployment Policy", f"Permission set '{DEPLOYMENT_PERMISSION_SET}'"
         try:
-            packaged = resolve_resource_path(ACCESS_TEMPLATE).read_text(encoding="utf-8")
-        except (OSError, ValueError) as e:  # not expected: the template ships with the package
-            logger.debug("Access policy check: %s", e)
+            identity = IdentityService(
+                self.session_mgr, preferred_region=self.bundle.identity.identity_center.region
+            )
+            instance_arn, _ = identity.get_instance_details()
+            ps_arn = identity.list_permission_sets(instance_arn).get(DEPLOYMENT_PERMISSION_SET)
+            live = ps_arn and identity.sso_client.get_inline_policy_for_permission_set(
+                InstanceArn=instance_arn, PermissionSetArn=ps_arn
+            ).get("InlinePolicy")
+        except AWS_ERRORS as e:
+            logger.debug("Deployment policy check: %s", e)
             return PreflightCheckResult(
                 name=name, target=target, status=PreflightCheckStatus.INFO, live_value="Unavailable"
             )
-
-        for region in dict.fromkeys([ACCESS_DEFAULT_REGION, home_region]):
-            try:
-                cfn = self.session_mgr.get_client("cloudformation", region_name=region)
-                body = cfn.get_template(StackName=ACCESS_STACK, TemplateStage="Original").get("TemplateBody")
-            except ClientError as e:
-                code = e.response.get("Error", {}).get("Code", "")
-                if code == "ValidationError":  # no such stack in this region
-                    continue
-                logger.debug("Access policy check in %s: %s", region, e)
-                return PreflightCheckResult(
-                    name=name, target=target, status=PreflightCheckStatus.INFO, live_value="Unavailable"
-                )
-            except BotoCoreError as e:
-                logger.debug("Access policy check in %s: %s", region, e)
-                return PreflightCheckResult(
-                    name=name, target=target, status=PreflightCheckStatus.INFO, live_value="Unavailable"
-                )
-            if _normalise(body) == _normalise(packaged):
-                return PreflightCheckResult(
-                    name=name,
-                    target=target,
-                    status=PreflightCheckStatus.PASS,
-                    live_value=f"Matches this release ({region})",
-                )
+        if not ps_arn:
             return PreflightCheckResult(
                 name=name,
                 target=target,
-                status=PreflightCheckStatus.WARN,
-                live_value=f"Differs from this release ({region})",
-                action_required=(
-                    "The deployed access role was created by a different tarmac release and may lack permissions "
-                    f"this release needs. Re-run 'tarmac access bootstrap --region {region}' (CloudShell, root) to "
-                    "update it; the role keeps its name and your profiles keep working."
-                ),
+                status=PreflightCheckStatus.INFO,
+                live_value="Not found (access set up another way)",
+            )
+        if live and json.loads(live) == json.loads(deployment_policy()):
+            return PreflightCheckResult(
+                name=name, target=target, status=PreflightCheckStatus.PASS, live_value="Matches this release"
             )
         return PreflightCheckResult(
             name=name,
             target=target,
-            status=PreflightCheckStatus.INFO,
-            live_value="Not found (access set up another way)",
+            status=PreflightCheckStatus.WARN,
+            live_value="Differs from this release",
+            action_required="Re-run 'tarmac bootstrap' (CloudShell, root) to update it.",
         )
 
     def run_all_checks(self, region_override: str | None = None) -> PreflightReport:
@@ -819,7 +682,7 @@ class PreflightService:
 
         checks: list[PreflightCheckResult] = [
             self.check_not_root_identity(),
-            self.check_access_policy_current(home_region),
+            self.check_deployment_policy_current(),
             self.check_organization_status(),
             self.check_root_mfa(),
             self.check_iam_user_hygiene(),
@@ -830,7 +693,6 @@ class PreflightService:
             self.check_identity_center_mfa_policy(),
             self.check_cost_explorer(),
             self.check_cost_allocation_tags(),
-            *self.check_s3_bucket_collision(),
             self.check_sample_values(),
             self.check_existing_organization_trail(home_region),
             self.check_stack_name_prefix(home_region),

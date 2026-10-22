@@ -25,8 +25,7 @@ Parameters:
 
   DestinationBucketName:
     Type: String
-    Default: ''
-    Description: (Optional) Custom override for Log Archive S3 bucket name. Leave empty to use '<OrgName>-org-cloudtrail-logs-<LogArchiveAccountId>'
+    Description: Name of the Log Archive bucket that receives the trail's log files
 
   LogArchiveKmsKeyArn:
     Type: String
@@ -43,7 +42,6 @@ Parameters:
 
 Conditions:
   UseKmsEncryption: !Equals [!Ref EnableKmsEncryption, 'true']
-  UseCustomBucket: !Not [!Equals [!Ref DestinationBucketName, '']]
   UseCustomKmsKey: !Not [!Equals [!Ref LogArchiveKmsKeyArn, '']]
 
 Resources:
@@ -56,10 +54,7 @@ Resources:
             comment: "KMS CMK is enabled by default, but SSE-S3 is optionally allowed when EnableKmsEncryption is false to reduce costs."
     Properties:
       TrailName: !Ref TrailName
-      S3BucketName: !If
-        - UseCustomBucket
-        - !Ref DestinationBucketName
-        - !Sub '${OrgName}-org-cloudtrail-logs-${LogArchiveAccountId}'
+      S3BucketName: !Ref DestinationBucketName
       KMSKeyId: !If
         - UseKmsEncryption
         - !If
@@ -87,19 +82,13 @@ Outputs:
 
   BucketName:
     Description: Name of the S3 bucket for CloudTrail logs in Log Archive
-    Value: !If
-      - UseCustomBucket
-      - !Ref DestinationBucketName
-      - !Sub '${OrgName}-org-cloudtrail-logs-${LogArchiveAccountId}'
+    Value: !Ref DestinationBucketName
     Export:
       Name: !Sub '${AWS::StackName}-BucketName'
 
   BucketArn:
     Description: ARN of the S3 bucket for CloudTrail logs in Log Archive
-    Value: !If
-      - UseCustomBucket
-      - !Sub 'arn:aws:s3:::${DestinationBucketName}'
-      - !Sub 'arn:aws:s3:::${OrgName}-org-cloudtrail-logs-${LogArchiveAccountId}'
+    Value: !Sub 'arn:aws:s3:::${DestinationBucketName}'
     Export:
       Name: !Sub '${AWS::StackName}-BucketArn'
 
