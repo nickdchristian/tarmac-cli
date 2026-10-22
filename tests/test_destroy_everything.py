@@ -21,8 +21,8 @@ def _err(code: str, op: str = "Op") -> ClientError:
 
 
 @pytest.fixture
-def inv(tmp_path: Path) -> Inventory:
-    return Inventory(tmp_path / "inv.json")
+def inv() -> Inventory:
+    return Inventory()
 
 
 def _service(clients: dict[str, Any]) -> TeardownService:
@@ -47,11 +47,10 @@ def test_only_real_changes_are_recorded(inv: Inventory):
     assert not inv.observe("delete", "ou:Security", "succeeded", False, {})  # wrong verb
     assert not inv.observe("create", "stack:x", "succeeded", False, {})  # not a tracked kind
     assert inv.get("ou") == {"Security": {"ou_id": "ou-1"}}
-    assert Inventory(inv.path).get("ou") == {"Security": {"ou_id": "ou-1"}}  # persisted
 
 
-def test_audit_events_feed_the_active_inventory(tmp_path: Path):
-    active = inv_mod.activate(tmp_path)
+def test_audit_events_feed_the_active_inventory():
+    active = inv_mod.activate()
     audit("enable", "trusted-access:cloudtrail.amazonaws.com", Outcome.SUCCEEDED, "x", service="cloudtrail")
     audit("enable", "trusted-access:iam.amazonaws.com", Outcome.UNCHANGED, "x")
     audit("create", "identity-user:bob", Outcome.SUCCEEDED, "x", dry_run=True)
@@ -310,11 +309,20 @@ def test_everything_cannot_be_combined_with_a_phase(tmp_path: Path):
     assert "cannot be combined" in result.output
 
 
-def test_inventory_command_lists_recorded_items(tmp_path: Path):
-    Inventory(tmp_path / "inventory.json").record("ou:Security", {"ou_id": "ou-1"})
-    result = CliRunner().invoke(app, ["inventory", "-c", str(tmp_path), "--json"])
-    assert result.exit_code == 0
-    assert json.loads(result.output) == {"ou": {"Security": {"ou_id": "ou-1"}}}
+def test_inventory_command_lists_what_an_earlier_release_recorded_locally(tmp_path: Path):
+    from tarmac.services.scaffold import scaffold_project
+
+    scaffold_project(tmp_path)
+    local = tmp_path / inv_mod.LOCAL_FILE
+    local.parent.mkdir()
+    local.write_text(json.dumps({"version": 1, "entries": {"ou": {"Security": {"ou_id": "ou-1"}}}}))
+    with (
+        patch("tarmac.cli.deploy.AwsSessionManager"),
+        patch("tarmac.core.inventory.find_bucket", return_value=None),
+    ):
+        result = CliRunner().invoke(app, ["inventory", "-c", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"ou": {"Security": {"ou_id": "ou-1"}}}
 
 
 def test_dry_run_counts_child_ous_as_already_gone(inv: Inventory):
@@ -346,8 +354,8 @@ def test_contact_that_replaced_an_existing_one_is_not_removed(inv: Inventory):
     assert {i.resource_name: i.action for i in items} == {"BILLING": "SKIPPED", "SECURITY": "DELETED"}
 
 
-def test_recording_never_breaks_an_audited_action(tmp_path: Path):
-    inv_mod.activate(tmp_path)
+def test_recording_never_breaks_an_audited_action():
+    inv_mod.activate()
     audit("create", "ou:Odd", Outcome.SUCCEEDED, "x", ou_id="ou-1", when=Path("/not/json"))  # must not raise
     assert "Odd" in inv_mod.active().get("ou")  # type: ignore[union-attr]
     bad = MagicMock()
@@ -381,7 +389,8 @@ def test_full_teardown_runs_in_order_and_ends_with_the_deployment_permission_set
 
     order = [p.split("|")[0].strip() for p in phases]
     assert order.index("Organizational Units created by tarmac") < order.index("Phase 1")
-    assert phases[-1] == "Tarmac bootstrap permission sets"
-    assert phases[-2] == "Member accounts (kept)"
+    assert phases[-1] == "Tarmac inventory"
+    assert phases[-2] == "Tarmac bootstrap permission sets"
+    assert phases[-3] == "Member accounts (kept)"
     assert report.status == "SIMULATED"
     assert "Parent" in inv.get("ou")

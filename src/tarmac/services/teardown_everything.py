@@ -11,12 +11,15 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.audit import Outcome, audit
+from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, IdentityCenterError, aws_error_code, aws_error_message
 from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from ..core.org_accounts import is_active, iter_accounts
+from ..core.stack_names import Stack
 from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
-from .teardown_base import TeardownBase
+from .teardown_base import STACK, TeardownBase
+from .teardown_s3 import empty_s3_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -475,4 +478,44 @@ class EverythingTeardown(TeardownBase):
             else:
                 action, message = "FAILED", "Could not delete it"
             results.append(_item("Permission Set", name, action, message, account_id=mgmt_id))
+        return results
+
+    def teardown_inventory(
+        self, bundle: ConfigBundle, inventory: Inventory, dry_run: bool = False
+    ) -> list[TeardownItemReport]:
+        """Delete the inventory stack and its bucket, last, once nothing it records is left."""
+        results: list[TeardownItemReport] = self._new_results_list()
+        bucket = inventory.bucket
+        if bucket is None:
+            return results
+        mgmt_id = self._get_management_account_id()
+        stack_name = Stack.INVENTORY.for_org(bundle.org.organization.name)
+        if inventory.count() and not dry_run:
+            message = f"Kept: it still records {inventory.count()} item(s) that were not removed"
+            results.append(TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "SKIPPED", message))
+            return results
+        region = bundle.org.organization.primary_region
+        try:
+            cfn = self.session_mgr.get_client("cloudformation", region_name=region)
+            s3 = self.session_mgr.get_client("s3", region_name=region)
+            status = self.cfn_service._get_stack_status(cfn, stack_name)
+            if not dry_run:
+                inventory.bucket = None
+                empty_s3_bucket(s3, bucket, on_progress=self.on_progress)
+            if item := self._remove_stack(
+                cfn,
+                stack_name,
+                status,
+                "Management",
+                mgmt_id,
+                dry_run,
+                would="Would delete the inventory stack and its bucket",
+                deleted="Deleted the inventory stack",
+                release_protection=True,
+            ):
+                results.append(item)
+            if not dry_run:
+                results.extend(self._delete_retained_bucket(s3, bucket, "Management", mgmt_id))
+        except AWS_ERRORS as e:
+            results.append(TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "FAILED", str(e)))
         return results

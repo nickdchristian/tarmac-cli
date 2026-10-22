@@ -5,17 +5,22 @@ misspelled operation or parameter (for example `Delete={"Object": ...}`) fails h
 mid-teardown against a live account.
 """
 
+import io
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import boto3
 import pytest
+from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
 from tarmac.cli.bootstrap import _grant
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.exceptions import GovernanceError, IdentityCenterError
+from tarmac.core.inventory import Inventory
 from tarmac.services.cloudformation import CloudFormationService
 from tarmac.services.identity import IdentityService, deployment_policy
 from tarmac.services.scp import SCPService
@@ -453,3 +458,121 @@ def test_log_archive_buckets_and_key_are_read_from_the_stack():
         )
         assert svc._output_buckets(cfn, "s") == {"acme-logs-abc", "acme-access-abc"}
         assert svc._log_archive_key_id(cfn, "s") == "key-1"
+
+
+def _stored(entries: dict[str, Any], etag: str) -> dict[str, Any]:
+    body = json.dumps({"version": 1, "entries": entries}).encode()
+    return {"Body": StreamingBody(io.BytesIO(body), len(body)), "ETag": etag}
+
+
+_OBJECT = {"Bucket": "acme-tarmac-inventory-abc", "Key": "inventory.json"}
+
+
+def test_inventory_keeps_changes_made_before_connecting_and_writes_only_over_what_it_read(tmp_path: Path):
+    s3 = _client("s3")
+    inv = Inventory()
+    inv.record("ou:Prod", {"ou_id": "ou-2"})
+    with Stubber(s3) as stub:
+        stub.add_response("get_object", _stored({"ou": {"Security": {"ou_id": "ou-1"}}}, '"e1"'), _OBJECT)
+        stub.add_response("put_object", {"ETag": '"e2"'}, {**_OBJECT, "Body": stub.ANY, "IfMatch": '"e1"'})
+        inv.connect(s3, _OBJECT["Bucket"], tmp_path / "none.json")
+        stub.assert_no_pending_responses()
+    assert set(inv.get("ou")) == {"Security", "Prod"}
+
+
+def test_inventory_applies_its_changes_again_over_a_concurrent_write(tmp_path: Path):
+    s3 = _client("s3")
+    inv = Inventory()
+    with Stubber(s3) as stub:
+        stub.add_response("get_object", _stored({}, '"e1"'), _OBJECT)
+        inv.connect(s3, _OBJECT["Bucket"], tmp_path / "none.json")
+        stub.add_client_error(
+            "put_object",
+            "PreconditionFailed",
+            "At least one of the pre-conditions you specified did not hold",
+            http_status_code=412,
+            expected_params={**_OBJECT, "Body": stub.ANY, "IfMatch": '"e1"'},
+        )
+        stub.add_response("get_object", _stored({"ou": {"Other": {"ou_id": "ou-3"}}}, '"e2"'), _OBJECT)
+        stub.add_response("put_object", {"ETag": '"e3"'}, {**_OBJECT, "Body": stub.ANY, "IfMatch": '"e2"'})
+        inv.record("ou:Prod", {"ou_id": "ou-2"})
+        stub.assert_no_pending_responses()
+    assert set(inv.get("ou")) == {"Other", "Prod"}
+
+
+def test_an_empty_bucket_is_filled_from_the_local_inventory_of_an_earlier_release(tmp_path: Path):
+    s3 = _client("s3")
+    local = tmp_path / "inventory.json"
+    local.write_text(json.dumps({"version": 1, "entries": {"identity-user": {"admin": {}}}}))
+    inv = Inventory()
+    with Stubber(s3) as stub:
+        stub.add_client_error(
+            "get_object", "NoSuchKey", "The specified key does not exist.", 404, expected_params=_OBJECT
+        )
+        stub.add_response("put_object", {"ETag": '"e1"'}, {**_OBJECT, "Body": stub.ANY, "IfNoneMatch": "*"})
+        inv.connect(s3, _OBJECT["Bucket"], local)
+        stub.assert_no_pending_responses()
+    assert inv.get("identity-user") == {"admin": {}}
+    assert inv.location == "s3://acme-tarmac-inventory-abc/inventory.json"
+
+
+def _org_bundle() -> MagicMock:
+    bundle = MagicMock()
+    bundle.org.organization.name = "acme"
+    bundle.org.organization.primary_region = "us-east-1"
+    return bundle
+
+
+def test_full_teardown_deletes_the_inventory_bucket_once_nothing_is_recorded():
+    cfn, s3 = _client("cloudformation"), _client("s3")
+    mgr = _mgr(cloudformation=cfn, s3=s3)
+    mgr.get_caller_identity.return_value = {"Account": ACCOUNT}
+    inv = Inventory()
+    inv.bucket = _OBJECT["Bucket"]
+    stack = {"StackName": "acme-tarmac-inventory"}
+
+    def described(status: str, **extra: Any) -> dict[str, Any]:
+        return {"Stacks": [{**stack, "CreationTime": datetime.now(UTC), "StackStatus": status, **extra}]}
+
+    bucket = {"Bucket": _OBJECT["Bucket"]}
+    with Stubber(cfn) as cfn_stub, Stubber(s3) as s3_stub:
+        cfn_stub.add_response("describe_stacks", described("CREATE_COMPLETE"), stack)
+        s3_stub.add_response("head_bucket", {}, bucket)
+        s3_stub.add_response(
+            "list_object_versions", {"Versions": [{"Key": "inventory.json", "VersionId": "v1"}]}, bucket
+        )
+        s3_stub.add_response(
+            "delete_objects",
+            {},
+            {**bucket, "Delete": {"Objects": [{"Key": "inventory.json", "VersionId": "v1"}], "Quiet": True}},
+        )
+        s3_stub.add_response("list_objects_v2", {"KeyCount": 0}, bucket)
+        cfn_stub.add_response("describe_stacks", described("CREATE_COMPLETE"), stack)
+        cfn_stub.add_response(
+            "describe_stacks", described("CREATE_COMPLETE", EnableTerminationProtection=True), stack
+        )
+        cfn_stub.add_response(
+            "update_termination_protection",
+            {"StackId": "id"},
+            {**stack, "EnableTerminationProtection": False},
+        )
+        cfn_stub.add_response("delete_stack", {}, stack)
+        cfn_stub.add_response("describe_stacks", described("DELETE_COMPLETE"), stack)
+        s3_stub.add_response("delete_bucket", {}, bucket)
+        items = TeardownService(mgr).teardown_inventory(_org_bundle(), inv)
+        cfn_stub.assert_no_pending_responses()
+        s3_stub.assert_no_pending_responses()
+    assert [i.action for i in items] == ["DELETED"]
+    assert inv.bucket is None
+
+
+def test_full_teardown_keeps_the_inventory_bucket_while_it_records_leftovers():
+    mgr = _mgr()
+    mgr.get_caller_identity.return_value = {"Account": ACCOUNT}
+    inv = Inventory()
+    inv.record("ou:Prod", {"ou_id": "ou-2"})
+    inv.bucket = _OBJECT["Bucket"]
+    items = TeardownService(mgr).teardown_inventory(_org_bundle(), inv)
+    assert [(i.action, i.message) for i in items] == [
+        ("SKIPPED", "Kept: it still records 1 item(s) that were not removed")
+    ]

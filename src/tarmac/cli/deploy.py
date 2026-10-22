@@ -13,7 +13,7 @@ from rich.text import Text
 from ..core import inventory as inventory_mod
 from ..core.adoption import set_adopt_existing
 from ..core.aws_client import AwsSessionManager
-from ..core.config_loader import ConfigBundle, get_default_config_dir
+from ..core.config_loader import ConfigBundle
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
 from ..core.models import PreflightCheckStatus, TeardownItemReport
@@ -40,6 +40,7 @@ from .deploy_phases import (
     _run_phase_4_accounts,
     _run_phase_5_hardening,
     _run_phase_6_identity,
+    connect_inventory_or_raise,
 )
 from .plan_view import render_plan
 from .ui import (
@@ -154,7 +155,7 @@ def _run_phases(
 ) -> None:
     project_root = bundle.config_dir.parent
     runners = {
-        1: lambda: _run_phase_1_org(session_mgr, bundle),
+        1: lambda: _run_phase_1_org(session_mgr, bundle, project_root, custom_tags=custom_tags),
         2: lambda: _run_phase_2_ou(session_mgr, bundle, project_root, custom_tags=custom_tags),
         3: lambda: _run_phase_3_cloudtrail(
             session_mgr, bundle, target_region, project_root, custom_tags=custom_tags
@@ -174,6 +175,8 @@ def _run_phases(
             session_mgr, bundle, project_root, region_override=region_override, custom_tags=custom_tags
         ),
     }
+    if 1 not in phases:
+        connect_inventory_or_raise(session_mgr, bundle)
     for number in phases:
         with bind(phase=PHASE_NAMES[number]):
             runners[number]()
@@ -364,9 +367,12 @@ def _teardown_json_payload(report: Any) -> dict[str, Any]:
     }
 
 
-def _load_inventory(config_dir: Path | None, from_log: Path | None) -> inventory_mod.Inventory:
-    """The active inventory (recorded by earlier runs), topped up from a run log when one is given."""
-    inv = inventory_mod.active() or inventory_mod.activate(config_dir or get_default_config_dir())
+def _load_inventory(
+    session_mgr: AwsSessionManager, bundle: ConfigBundle, from_log: Path | None
+) -> inventory_mod.Inventory:
+    """The stored inventory (recorded by earlier runs), topped up from a run log when one is given."""
+    org = bundle.org.organization
+    inv = inventory_mod.connect(session_mgr, org.name, org.primary_region, bundle.config_dir)
     if from_log is not None:
         if not from_log.is_file():
             error_console.print(f"[red]✗[/red] Log file not found: {from_log}")
@@ -387,7 +393,7 @@ def _confirm_everything(bundle: Any, inv: inventory_mod.Inventory) -> None:
             "organization settings will be left alone. Rebuild it with --inventory-from-log <run log>."
         )
     else:
-        console.print(f"[dim]Inventory: {inv.count()} item(s) recorded at {inv.path}[/dim]")
+        console.print(f"[dim]Inventory: {inv.count()} item(s) recorded at {inv.location}[/dim]")
     expected = bundle.org.organization.name
     typed = typer.prompt(
         f"Type the organization name ({expected}) to confirm", default="", show_default=False
@@ -477,14 +483,14 @@ def destroy_command(
 
     _enforce_production_lock(bundle, dry_run=dry_run, force=force)
 
-    inv = _load_inventory(config_dir, inventory_from_log) if everything else None
-    _confirm_teardown(
-        bundle, inv, dry_run=dry_run, yes=yes, disable_security_services=disable_security_services
-    )
-
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
     require_credentials_or_exit(session_mgr)
+
+    inv = _load_inventory(session_mgr, bundle, inventory_from_log) if everything else None
+    _confirm_teardown(
+        bundle, inv, dry_run=dry_run, yes=yes, disable_security_services=disable_security_services
+    )
 
     def _cli_on_phase(phase_title: str) -> None:
         console.print(f"\n[bold blue]─── {phase_title} ───[/bold blue]")
@@ -577,15 +583,18 @@ def inventory_command(
     json_output: Annotated[bool, typer.Option("--json", help="Output the inventory as JSON")] = False,
 ) -> None:
     """Show what tarmac recorded as created by it (used by `tarmac destroy --everything`)."""
-    inv = _load_inventory(config_dir, from_log)
+    bundle = load_configs_or_exit(config_dir)
+    session_mgr = AwsSessionManager(region_name=bundle.org.organization.primary_region)
+    require_credentials_or_exit(session_mgr)
+    inv = _load_inventory(session_mgr, bundle, from_log)
     if json_output:
         print(json.dumps(inv.entries, indent=2, sort_keys=True))
         return
     print_header("Tarmac Inventory")
     if inv.count() == 0:
-        print_info(f"Nothing recorded yet ({inv.path}). Changes are recorded as tarmac makes them.")
+        print_info(f"Nothing recorded yet ({inv.location}). Changes are recorded as tarmac makes them.")
         return
-    table = create_table(title=str(inv.path))
+    table = create_table(title=inv.location)
     table.add_column("Kind", style="cyan")
     table.add_column("Item", style="white")
     for kind, entries in sorted(inv.entries.items()):

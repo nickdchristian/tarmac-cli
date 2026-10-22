@@ -79,7 +79,7 @@ account.
 
 | Phase | What it does |
 | :--- | :--- |
-| 1 | Organization settings, contacts, trusted services, root access management, cost tags |
+| 1 | Organization settings, contacts, trusted services, root access management, cost tags, the inventory bucket |
 | 2 | OUs and service control policies |
 | 3 | Log archive buckets and the organization CloudTrail |
 | 4 | Member accounts, their tags, budgets and default VPC cleanup |
@@ -88,7 +88,9 @@ account.
 
 Following AWS's guidance, the management account holds only what has to live there:
 
-- **Management account:** Organizations, SCPs, Identity Center, the trail's stack, and the AWS Config StackSet.
+- **Management account:** Organizations, SCPs, Identity Center, the trail's stack, the AWS Config StackSet, and
+  the inventory bucket, which records the OUs, users, groups and settings tarmac created so everyone running
+  tarmac shares it.
 - **Audit account:** delegated administrator for CloudTrail, AWS Config, GuardDuty, Security Hub and IAM root
   access management.
 - **Log archive account:** the CloudTrail and Config log buckets.
@@ -178,7 +180,8 @@ unless you pass `--force`, and skips anything tarmac didn't create.
 - `--preserve-backend` keeps the Terraform state.
 - `--disable-security-services` also turns off GuardDuty, Security Hub and Config. This deletes their findings.
 - `--everything` also removes the OUs, Identity Center users and groups, and organization settings tarmac created,
-  plus the `tarmac bootstrap` permission sets (except the one you're signed in with). It never closes accounts.
+  plus the `tarmac bootstrap` permission sets (except the one you're signed in with), and finally the inventory
+  bucket once everything it records is gone. It never closes accounts.
 
 ## Logging
 

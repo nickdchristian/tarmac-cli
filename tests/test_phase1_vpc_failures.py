@@ -39,6 +39,7 @@ def _session() -> MagicMock:
 def _patch_services(monkeypatch: pytest.MonkeyPatch, baseliner: MagicMock, org_service: MagicMock) -> None:
     monkeypatch.setattr(deploy_phases, "BaselineService", lambda *a, **k: baseliner)
     monkeypatch.setattr(deploy_phases, "OrganizationService", lambda *a, **k: org_service)
+    monkeypatch.setattr(deploy_phases, "_deploy_inventory_stack", lambda *a, **k: None)
 
 
 def test_failed_cleanup_stops_phase_1_and_records_no_milestone(bundle: ConfigBundle, monkeypatch):
@@ -47,7 +48,7 @@ def test_failed_cleanup_stops_phase_1_and_records_no_milestone(bundle: ConfigBun
     _patch_services(monkeypatch, baseliner, org_service)
 
     with pytest.raises(GovernanceError, match="default VPC cleanup failed"):
-        deploy_phases._run_phase_1_org(_session(), bundle)
+        deploy_phases._run_phase_1_org(_session(), bundle, bundle.config_dir)
 
     baseliner.mark_account_baselined.assert_not_called()
     org_service.record_phase_completed.assert_not_called()
@@ -58,7 +59,7 @@ def test_clean_run_still_completes_phase_1(bundle: ConfigBundle, monkeypatch):
     baseliner.cleanup_default_vpcs.return_value = [VpcCleanupReport(region="us-east-1", skipped=True)]
     _patch_services(monkeypatch, baseliner, org_service)
 
-    deploy_phases._run_phase_1_org(_session(), bundle)
+    deploy_phases._run_phase_1_org(_session(), bundle, bundle.config_dir)
 
     baseliner.mark_account_baselined.assert_called_once_with("111111111111")
     org_service.record_phase_completed.assert_called_once_with("111111111111", "org")

@@ -15,6 +15,7 @@ class Stack(StrEnum):
     PERMISSION_SETS = "sso-permission-sets"
     ROOT_ALERT = "management-root-alert"
     CONFIG_RECORDER = "config-recorder"
+    INVENTORY = "tarmac-inventory"
 
     def for_org(self, org_name: str) -> str:
         """The stack's name for an organization."""
