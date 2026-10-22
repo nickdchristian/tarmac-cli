@@ -78,7 +78,7 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
 
     assert status.org_id == "o-live123"
     assert status.feature_set == "ALL"
-    assert status.accounts_live == 2  # 2 active
+    assert status.accounts_live == 3  # 3 active
     assert status.accounts_suspended == 1  # 1 suspended
     assert status.cloudtrail_status == "CREATE_COMPLETE"
     assert status.backend_status == "CREATE_COMPLETE"
@@ -216,7 +216,8 @@ def test_drift_service_handles_import_complete_sso_region_and_remediation_comman
             p.paginate.return_value = [
                 {
                     "Accounts": [
-                        {"Id": "111111111111", "Name": bundle.accounts.accounts[0].name, "Status": "ACTIVE"}
+                        {"Id": "111111111111", "Name": bundle.accounts.accounts[0].name, "Status": "ACTIVE"},
+                        {"Id": "444444444444", "Name": "audit", "Status": "ACTIVE"},
                     ]
                 }
             ]
