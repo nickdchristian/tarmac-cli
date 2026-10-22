@@ -500,6 +500,7 @@ def test_cli_teardown_live_progress_and_json_isolation(monkeypatch, teardown_con
     import json
 
     monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.setattr("tarmac.services.teardown_base.TeardownBase._get_active_accounts", lambda self: {})
 
     # 1. Standard mode: live progress indicators in output
     res = runner.invoke(app, ["destroy", "--dry-run", "-c", str(teardown_config_dir), "-y"])
