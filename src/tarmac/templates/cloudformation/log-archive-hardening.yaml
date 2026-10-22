@@ -224,7 +224,9 @@ Resources:
           - id: CKV_AWS_18
             comment: "Access logs destination bucket cannot log to itself without recursive logging loop"
     Properties:
-      BucketName: !Sub '${OrgName}-log-archive-access-logs-${AWS::AccountId}'
+      BucketName: !Sub
+        - '${OrgName}-access-logs-${Suffix}'
+        - Suffix: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
@@ -286,7 +288,9 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub '${OrgName}-org-cloudtrail-logs-${AWS::AccountId}'
+      BucketName: !Sub
+        - '${OrgName}-cloudtrail-logs-${Suffix}'
+        - Suffix: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
       LoggingConfiguration:
         DestinationBucketName: !Ref AccessLogsBucket
         LogFilePrefix: cloudtrail-access/
@@ -388,7 +392,9 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub '${OrgName}-org-config-logs-${AWS::AccountId}'
+      BucketName: !Sub
+        - '${OrgName}-config-logs-${Suffix}'
+        - Suffix: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
       LoggingConfiguration:
         DestinationBucketName: !Ref AccessLogsBucket
         LogFilePrefix: config-access/

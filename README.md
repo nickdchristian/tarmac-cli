@@ -203,7 +203,10 @@ The organization trail stack now lives in the audit account, and tarmac no longe
 logging, give `cloudtrail.trail_name` a new value and run `tarmac deploy --phase 3`, which creates the new trail from
 the audit account. Once it shows a delivery time (`aws cloudtrail get-trail-status --name <new trail>`), turn off
 termination protection on the old stack and delete it. Phase 3 also needs the audit account now, and creates it if it
-is declared but missing. Your existing `ou_structure` is unchanged; the new OU
+is declared but missing. Bucket names now end in part of their stack's ID instead of the account ID, so a stack that is
+deleted and recreated never waits for S3 to free a name. Updating an existing stack replaces its buckets:
+CloudFormation creates new ones and keeps the old ones with their contents. Point Terraform at the new state bucket
+and run `terraform init -migrate-state`. Your existing `ou_structure` is unchanged; the new OU
 layout only applies to files that `tarmac init` creates.
 
 Member accounts need nothing extra: Organizations creates `OrganizationAccountAccessRole` in every account tarmac
@@ -483,7 +486,7 @@ accounts created later receive the recorder without re-running tarmac. StackSets
 so it gets the same template as an ordinary stack in each Region, using AWS Config's service-linked role (the
 deployment role is not allowed to create IAM roles). Suspended accounts are left out.
 
-History and snapshots go to their own bucket in the log archive account (`<org>-org-config-logs-<account id>`), created
+History and snapshots go to their own bucket in the log archive account (`<org>-config-logs-<8-character stack ID>`), created
 by the log archive stack in phase 3 when this is enabled. It is separate from the CloudTrail bucket because AWS Config
 cannot deliver to a bucket with Object Lock default retention, so Config history is **not** locked. It uses the same KMS
 key setting and log expiry (`cloudtrail.retention_days`) as the CloudTrail bucket. Enabling the setting later means
@@ -583,7 +586,8 @@ not managed by tarmac.
 
 ### Terraform state locking
 
-Phase 5 creates a versioned, encrypted S3 bucket for Terraform state. Locking is S3-only by default, so
+Phase 5 creates a versioned, encrypted S3 bucket for Terraform state, named `<org>-terraform-state-<8-character stack
+ID>`; the backend stack's `BucketName` output has the exact name. Locking is S3-only by default, so
 Terraform needs `use_lockfile = true` (Terraform 1.10 or later) and there is no DynamoDB table to pay for. Terraform now marks
 DynamoDB-based locking as deprecated
 ([S3 backend](https://developer.hashicorp.com/terraform/language/backend/s3)). Set `terraform_backend.enable_dynamodb: true`

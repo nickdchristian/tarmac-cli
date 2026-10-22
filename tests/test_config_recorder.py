@@ -726,17 +726,21 @@ def test_destroy_empties_and_deletes_the_config_bucket_with_the_other_log_bucket
     bundle.get_log_archive_account_name.return_value = "log-archive"
     bundle.resolve_account_id.return_value = "222222222222"
     svc.cfn_service = MagicMock()
-    svc.cfn_service._get_stack_status.return_value = None
+    svc.cfn_service._get_stack_status.return_value = "CREATE_COMPLETE"
+    svc.cfn_service._fetch_stack_outputs.return_value = {
+        "AccessLogsBucketName": "acme-access-logs-ec042910",
+        "CloudTrailBucketName": "acme-cloudtrail-logs-ec042910",
+        "ConfigBucketName": "acme-config-logs-ec042910",
+    }
 
     items = svc.teardown_log_archive(
         bundle, "eu-west-1", dry_run=True, account_id_map={"log-archive": "222222222222"}
     )
 
-    # Exactly the buckets log-archive-hardening.yaml creates, and never one named from the retired bucket_prefix.
     assert {i.resource_name for i in items if i.resource_type == "S3 Bucket"} == {
-        "acme-log-archive-access-logs-222222222222",
-        "acme-org-cloudtrail-logs-222222222222",
-        "acme-org-config-logs-222222222222",
+        "acme-access-logs-ec042910",
+        "acme-cloudtrail-logs-ec042910",
+        "acme-config-logs-ec042910",
     }
 
 

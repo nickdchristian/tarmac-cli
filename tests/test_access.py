@@ -60,7 +60,7 @@ def test_run_all_checks_includes_root_check() -> None:
     sentinel = PreflightService(_mgr(ROOT), MagicMock()).check_not_root_identity()
     for name in dir(svc):
         if name.startswith("check_") and name != "check_not_root_identity":
-            multi = name in {"check_alternate_contacts", "check_s3_bucket_collision"}
+            multi = name == "check_alternate_contacts"
             setattr(svc, name, MagicMock(return_value=[] if multi else sentinel))
     report = svc.run_all_checks()
     assert report.failures >= 1

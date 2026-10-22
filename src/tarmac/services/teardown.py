@@ -15,7 +15,7 @@ from .teardown_config import ConfigRecorderTeardown
 from .teardown_everything import EverythingTeardown
 from .teardown_governance import GovernanceTeardown
 from .teardown_logging import LoggingTeardown
-from .teardown_s3 import cleanup_orphaned_bucket, empty_s3_bucket, is_s3_bucket_empty, normalize_bucket_name
+from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 from .teardown_workloads import WorkloadTeardown
 
 logger = logging.getLogger(__name__)
@@ -25,9 +25,7 @@ __all__ = [
     "TeardownItemReport",
     "TeardownReport",
     "TeardownService",
-    "cleanup_orphaned_bucket",
     "empty_s3_bucket",
-    "is_s3_bucket_empty",
     "normalize_bucket_name",
 ]
 

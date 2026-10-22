@@ -18,9 +18,7 @@ from tarmac.services.teardown import (
     TeardownItemReport,
     TeardownReport,
     TeardownService,
-    cleanup_orphaned_bucket,
     empty_s3_bucket,
-    is_s3_bucket_empty,
     normalize_bucket_name,
 )
 
@@ -635,76 +633,6 @@ def test_teardown_terraform_backend_handles_bucket_arn_outputs(test_bundle):
     assert len(deleted_stacks) == 1
     mock_cfn.delete_stack.assert_called_once()
     assert mock_s3.delete_bucket.called
-
-
-def test_is_s3_bucket_empty():
-    mock_s3 = MagicMock()
-    mock_s3.head_bucket.return_value = {}
-
-    paginator_versions = MagicMock()
-    paginator_versions.paginate.return_value = [{"Versions": [], "DeleteMarkers": []}]
-    mock_s3.get_paginator.return_value = paginator_versions
-    mock_s3.list_objects_v2.return_value = {"KeyCount": 0, "Contents": []}
-
-    # Empty bucket
-    assert is_s3_bucket_empty(mock_s3, "empty-bucket") is True
-
-    # Bucket with versioned objects
-    paginator_versions.paginate.return_value = [{"Versions": [{"Key": "obj1"}]}]
-    assert is_s3_bucket_empty(mock_s3, "has-versions") is False
-
-    # Bucket with delete markers
-    paginator_versions.paginate.return_value = [{"DeleteMarkers": [{"Key": "dm1"}]}]
-    assert is_s3_bucket_empty(mock_s3, "has-markers") is False
-
-    # Bucket with standard objects
-    paginator_versions.paginate.return_value = []
-    mock_s3.list_objects_v2.return_value = {"KeyCount": 1, "Contents": [{"Key": "file.txt"}]}
-    assert is_s3_bucket_empty(mock_s3, "has-objects") is False
-
-    # Bucket does not exist (404)
-    mock_s3.head_bucket.side_effect = ClientError(
-        {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadBucket"
-    )
-    assert is_s3_bucket_empty(mock_s3, "non-existent") is True
-
-
-def test_cleanup_orphaned_bucket_empty_bucket_deleted():
-    mock_s3 = MagicMock()
-    mock_s3.head_bucket.return_value = {}
-    paginator = MagicMock()
-    paginator.paginate.return_value = []
-    mock_s3.get_paginator.return_value = paginator
-    mock_s3.list_objects_v2.return_value = {"KeyCount": 0}
-
-    result = cleanup_orphaned_bucket(mock_s3, "orphaned-empty-bucket", account_id="123456789012")
-    assert result is True
-    mock_s3.delete_bucket.assert_called_once_with(Bucket="orphaned-empty-bucket")
-
-
-def test_cleanup_orphaned_bucket_non_existent():
-    mock_s3 = MagicMock()
-    mock_s3.head_bucket.side_effect = ClientError(
-        {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadBucket"
-    )
-
-    result = cleanup_orphaned_bucket(mock_s3, "missing-bucket")
-    assert result is False
-    mock_s3.delete_bucket.assert_not_called()
-
-
-def test_cleanup_orphaned_bucket_contains_data_raises_governance_error():
-    mock_s3 = MagicMock()
-    mock_s3.head_bucket.return_value = {}
-    paginator = MagicMock()
-    paginator.paginate.return_value = [{"Versions": [{"Key": "important.log"}]}]
-    mock_s3.get_paginator.return_value = paginator
-
-    with pytest.raises(GovernanceError) as exc_info:
-        cleanup_orphaned_bucket(mock_s3, "bucket-with-data", account_id="123456789012")
-
-    assert "contains data" in str(exc_info.value)
-    mock_s3.delete_bucket.assert_not_called()
 
 
 # teardown only removes tarmac-owned trails and SCPs

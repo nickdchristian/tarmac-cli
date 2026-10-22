@@ -11,9 +11,9 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
-from ..core.org_accounts import active_account_ids, is_active, iter_accounts
+from ..core.org_accounts import is_active, iter_accounts
 from ..core.placeholders import find_placeholder_values
-from ..core.stack_names import TARMAC_STACK_SUFFIXES, Bucket
+from ..core.stack_names import TARMAC_STACK_SUFFIXES
 from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService, deployment_policy
 
 logger = logging.getLogger(__name__)
@@ -636,114 +636,6 @@ class PreflightService:
                 action_required=None,
             )
 
-    def check_s3_bucket_collision(self) -> list[PreflightCheckResult]:
-        """Verify that planned foundational S3 bucket names are not globally owned by another AWS account."""
-        results: list[PreflightCheckResult] = []
-        try:
-            s3 = self.session_mgr.get_client("s3")
-            caller = self.session_mgr.get_caller_identity()
-            mgmt_id = caller.get("Account", "")
-
-            active_accts: dict[str, str] = {}
-            try:
-                active_accts = active_account_ids(self.session_mgr.get_client("organizations"))
-            except AWS_ERRORS as e:
-                logger.debug("Could not list accounts for S3 bucket collision check: %s", e)
-
-            log_archive_name = self.bundle.get_log_archive_account_name() or "log-archive"
-            log_archive_id = self.bundle.resolve_account_id(log_archive_name, active_accts) or mgmt_id
-
-            backend_name = self.bundle.get_backend_account_name() or "deployment"
-            deployment_id = self.bundle.resolve_account_id(backend_name, active_accts) or mgmt_id
-
-            org_name = self.bundle.org.organization.name
-            prefixes_to_check = [
-                (
-                    "CloudTrail Logs",
-                    Bucket.CLOUDTRAIL_LOGS.for_account(org_name, log_archive_id),
-                    log_archive_id,
-                ),
-                (
-                    "Terraform State",
-                    Bucket.TERRAFORM_STATE.for_account(org_name, deployment_id),
-                    deployment_id,
-                ),
-            ]
-            for label, b_name, target_acct_id in prefixes_to_check:
-                target_s3 = s3
-                if target_acct_id and target_acct_id != mgmt_id:
-                    try:
-                        target_s3 = self.session_mgr.get_member_client(target_acct_id, "s3")
-                    except AWS_ERRORS as e:
-                        # Do NOT fall back to the management account's client: it would report the
-                        # bucket as "Available" or "Taken" based on the wrong account's view.
-                        logger.warning(
-                            "Cannot assume role into account %s for S3 check: %s", target_acct_id, e
-                        )
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.INFO,
-                                live_value=f"Check skipped (cannot access account {target_acct_id})",
-                            )
-                        )
-                        continue
-                try:
-                    target_s3.head_bucket(Bucket=b_name)
-                    results.append(
-                        PreflightCheckResult(
-                            name=f"S3 Bucket Availability ({label})",
-                            target=b_name,
-                            status=PreflightCheckStatus.PASS,
-                            live_value="Accessible / Owned",
-                        )
-                    )
-                except ClientError as e:
-                    code = str(e.response.get("Error", {}).get("Code", ""))
-                    if code in ("404", "NoSuchBucket"):
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.PASS,
-                                live_value="Available",
-                            )
-                        )
-                    elif code in ("403", "AccessDenied"):
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.FAIL,
-                                live_value="Forbidden (Taken Globally)",
-                                action_required=(
-                                    f"Bucket name '{b_name}' is globally claimed by another AWS account. "
-                                    "Bucket names come from organization.name: choose a different name."
-                                ),
-                            )
-                        )
-                    else:
-                        results.append(
-                            PreflightCheckResult(
-                                name=f"S3 Bucket Availability ({label})",
-                                target=b_name,
-                                status=PreflightCheckStatus.INFO,
-                                live_value=f"Check skipped ({code})",
-                            )
-                        )
-        except AWS_ERRORS as e:
-            logger.warning("S3 collision check failed: %s", e)
-            results.append(
-                PreflightCheckResult(
-                    name="S3 Bucket Availability",
-                    target="(all)",
-                    status=PreflightCheckStatus.INFO,
-                    live_value=f"Check skipped ({type(e).__name__})",
-                )
-            )
-        return results
-
     def check_deployment_policy_current(self) -> PreflightCheckResult:
         """Warn when the TarmacDeployment permission set's policy differs from this release's.
 
@@ -801,7 +693,6 @@ class PreflightService:
             self.check_identity_center_mfa_policy(),
             self.check_cost_explorer(),
             self.check_cost_allocation_tags(),
-            *self.check_s3_bucket_collision(),
             self.check_sample_values(),
             self.check_existing_organization_trail(home_region),
             self.check_stack_name_prefix(home_region),

@@ -12,7 +12,7 @@ from tarmac.core.config_schema import AnomalyDetectionConfig, OUDef
 from tarmac.services.baseline import BaselineService
 from tarmac.services.ou import OUService
 from tarmac.services.scaffold import scaffold_project
-from tarmac.services.teardown_s3 import cleanup_orphaned_bucket, empty_s3_bucket
+from tarmac.services.teardown_s3 import empty_s3_bucket
 
 
 def _audit(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
@@ -86,16 +86,3 @@ def test_bucket_purge_is_audited_with_the_object_count(caplog):
     [ev] = _audit(caplog)
     assert (ev["action"], ev["resource"]) == ("purge", "S3 Bucket:bkt")
     assert ev["details"]["objects_deleted"] == 1
-
-
-def test_orphaned_bucket_deletion_and_failure_are_audited(caplog):
-    caplog.set_level(logging.INFO, logger="tarmac")
-    s3 = MagicMock()
-    s3.get_paginator.return_value.paginate.return_value = [{}]
-    s3.list_objects_v2.return_value = {"KeyCount": 0}
-
-    assert cleanup_orphaned_bucket(s3, "orphan") is True
-    s3.delete_bucket.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "Op")
-    assert cleanup_orphaned_bucket(s3, "orphan") is False
-
-    assert [e["outcome"] for e in _audit(caplog)] == ["succeeded", "failed"]

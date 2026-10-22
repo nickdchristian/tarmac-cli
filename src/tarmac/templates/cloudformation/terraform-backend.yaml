@@ -47,8 +47,12 @@ Resources:
     Properties:
       BucketName: !If
         - HasOrgName
-        - !Sub '${OrgName}-terraform-state-${AWS::AccountId}'
-        - !Sub '${BucketPrefix}-${AWS::AccountId}'
+        - !Sub
+          - '${OrgName}-terraform-state-${Suffix}'
+          - Suffix: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
+        - !Sub
+          - '${BucketPrefix}-${Suffix}'
+          - Suffix: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:

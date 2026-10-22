@@ -29,11 +29,14 @@ def log_archive_parameters(
     return params
 
 
-def cloudtrail_parameters(bundle: ConfigBundle, log_archive_id: str, enable_kms: bool) -> dict[str, str]:
+def cloudtrail_parameters(
+    bundle: ConfigBundle, log_archive_id: str, bucket_name: str, enable_kms: bool
+) -> dict[str, str]:
     """Parameters for organization-cloudtrail.yaml."""
     return {
         "OrgName": bundle.org.organization.name,
         "LogArchiveAccountId": log_archive_id,
+        "DestinationBucketName": bucket_name,
         "TrailName": bundle.org.cloudtrail.trail_name,
         "EnableKmsEncryption": "true" if enable_kms else "false",
     }

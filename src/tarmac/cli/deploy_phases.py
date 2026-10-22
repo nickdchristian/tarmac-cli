@@ -9,7 +9,7 @@ from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
 from ..core.models import BaselineReport, StackDeployReport
 from ..core.org_accounts import get_active_account_id_map
-from ..core.stack_names import LOG_ARCHIVE_BUCKETS, Bucket, Stack
+from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
@@ -27,7 +27,6 @@ from ..services.stack_parameters import (
     log_archive_parameters,
     object_lock_advice,
 )
-from ..services.teardown import cleanup_orphaned_bucket
 from .deploy_config_recorder import deploy_config_recorder
 from .deploy_root_alert import deploy_management_root_alert
 from .ui import print_info, print_step, print_success, print_warning
@@ -187,12 +186,6 @@ def _deploy_log_archive_hardening_stack(
         "cloudformation/log-archive-hardening.yaml", project_root=project_root
     )
 
-    def on_before_create() -> None:
-        s3_client = session_mgr.get_member_client(log_archive_id, "s3", region_name=target_region)
-        for bucket in LOG_ARCHIVE_BUCKETS:
-            name = bucket.for_account(bundle.org.organization.name, log_archive_id)
-            cleanup_orphaned_bucket(s3_client, name, account_id=log_archive_id)
-
     resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
 
     return cfn_service.deploy_stack(
@@ -204,7 +197,6 @@ def _deploy_log_archive_hardening_stack(
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
         termination_protection=True,
-        on_before_create=on_before_create,
     )
 
 
@@ -289,7 +281,12 @@ def _run_phase_3_cloudtrail(
         session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region),
         Stack.CLOUDTRAIL.for_org(bundle.org.organization.name),
         template_file,
-        cloudtrail_parameters(bundle, log_archive_id, bool(bundle.org.cloudtrail.enable_kms)),
+        cloudtrail_parameters(
+            bundle,
+            log_archive_id,
+            log_archive_report.outputs.get("CloudTrailBucketName", ""),
+            bool(bundle.org.cloudtrail.enable_kms),
+        ),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         termination_protection=True,
@@ -391,17 +388,9 @@ def _deploy_backend_stack(
     cfn_client: Any,
     bundle: ConfigBundle,
     project_root: Path,
-    session_mgr: AwsSessionManager,
-    deployment_id: str,
-    target_region: str,
     custom_tags: dict[str, str] | None = None,
 ) -> None:
     template_file = resolve_resource_path("cloudformation/terraform-backend.yaml", project_root=project_root)
-
-    def on_before_create() -> None:
-        s3_client = session_mgr.get_member_client(deployment_id, "s3", region_name=target_region)
-        name = Bucket.TERRAFORM_STATE.for_account(bundle.org.organization.name, deployment_id)
-        cleanup_orphaned_bucket(s3_client, name, account_id=deployment_id)
 
     backend_stack = Stack.TERRAFORM_BACKEND.for_org(bundle.org.organization.name)
     enable_dynamodb, lock_warning = lock_table_wanted(
@@ -419,7 +408,6 @@ def _deploy_backend_stack(
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(bundle.get_backend_account_name()),
         termination_protection=True,
-        on_before_create=on_before_create,
     )
 
 
@@ -526,9 +514,6 @@ def _run_phase_5_hardening(
             session_mgr.get_member_client(deployment_id, "cloudformation", region_name=target_region),
             bundle,
             project_root,
-            session_mgr,
-            deployment_id,
-            target_region,
             custom_tags=custom_tags,
         )
     else:

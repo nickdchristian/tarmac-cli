@@ -422,7 +422,14 @@ class Planner:
             self._member_cfn(audit_id),
             trail_stack,
             audit_name,
-            cloudtrail_parameters(self.bundle, account_id, bool(self.bundle.org.cloudtrail.enable_kms)),
+            cloudtrail_parameters(
+                self.bundle,
+                account_id,
+                self.cfn._fetch_stack_outputs(
+                    self._member_cfn(account_id), Stack.LOG_ARCHIVE.for_org(self.org_name)
+                ).get("CloudTrailBucketName", ""),
+                bool(self.bundle.org.cloudtrail.enable_kms),
+            ),
             template="cloudformation/organization-cloudtrail.yaml",
         )
 
