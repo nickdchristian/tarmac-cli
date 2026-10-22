@@ -27,6 +27,7 @@ INST = "arn:aws:sso:::instance/ssoins-1234567890abcdef"
 PS = "arn:aws:sso:::permissionSet/ssoins-1234567890abcdef/ps-1234567890abcdef"
 ACCOUNT = "111122223333"
 USER = "90676d1a42-11112222-3333-4444-5555-666677778888"
+REQ = "11111111-2222-3333-4444-555555555555"
 
 
 def _client(service: str) -> Any:
@@ -200,7 +201,7 @@ def _assign(stub: Stubber, status: dict[str, str]) -> None:
     )
     stub.add_response(
         "create_account_assignment",
-        {"AccountAssignmentCreationStatus": {"Status": "IN_PROGRESS", "RequestId": "r-1"}},
+        {"AccountAssignmentCreationStatus": {"Status": "IN_PROGRESS", "RequestId": REQ}},
         {
             "InstanceArn": INST,
             "TargetId": ACCOUNT,
@@ -213,7 +214,7 @@ def _assign(stub: Stubber, status: dict[str, str]) -> None:
     stub.add_response(
         "describe_account_assignment_creation_status",
         {"AccountAssignmentCreationStatus": status},
-        {"InstanceArn": INST, "AccountAssignmentCreationRequestId": "r-1"},
+        {"InstanceArn": INST, "AccountAssignmentCreationRequestId": REQ},
     )
 
 
@@ -296,13 +297,13 @@ def test_bootstrap_grant_rerun_reprovisions_the_updated_policy():
         )
         stub.add_response(
             "provision_permission_set",
-            {"PermissionSetProvisioningStatus": {"Status": "IN_PROGRESS", "RequestId": "r-2"}},
+            {"PermissionSetProvisioningStatus": {"Status": "IN_PROGRESS", "RequestId": REQ}},
             {"InstanceArn": INST, "PermissionSetArn": PS, "TargetType": "ALL_PROVISIONED_ACCOUNTS"},
         )
         stub.add_response(
             "describe_permission_set_provisioning_status",
             {"PermissionSetProvisioningStatus": {"Status": "SUCCEEDED"}},
-            {"InstanceArn": INST, "ProvisionPermissionSetRequestId": "r-2"},
+            {"InstanceArn": INST, "ProvisionPermissionSetRequestId": REQ},
         )
         _grant(_identity(sso), INST, ACCOUNT, USER, "TarmacDeployment", "{}")
         stub.assert_no_pending_responses()
@@ -332,7 +333,7 @@ def test_delete_permission_set_removes_its_assignments_first():
         )
         stub.add_response(
             "delete_account_assignment",
-            {"AccountAssignmentDeletionStatus": {"Status": "IN_PROGRESS", "RequestId": "r-3"}},
+            {"AccountAssignmentDeletionStatus": {"Status": "IN_PROGRESS", "RequestId": REQ}},
             {
                 "InstanceArn": INST,
                 "TargetId": ACCOUNT,
@@ -345,7 +346,7 @@ def test_delete_permission_set_removes_its_assignments_first():
         stub.add_response(
             "describe_account_assignment_deletion_status",
             {"AccountAssignmentDeletionStatus": {"Status": "SUCCEEDED"}},
-            {"InstanceArn": INST, "AccountAssignmentDeletionRequestId": "r-3"},
+            {"InstanceArn": INST, "AccountAssignmentDeletionRequestId": REQ},
         )
         stub.add_response("delete_permission_set", {}, {"InstanceArn": INST, "PermissionSetArn": PS})
         assert _identity(sso).delete_permission_set(INST, PS) is True
