@@ -91,6 +91,20 @@ def test_cfn_deploy_stack_handles_rollback_complete(tmp_path: Path):
     assert report.action == "CREATED"
 
 
+def test_broken_stack_that_fails_to_delete_is_force_deleted():
+    from botocore.exceptions import WaiterError
+
+    mock_cfn = MagicMock()
+    mock_cfn.get_waiter.return_value.wait.side_effect = [WaiterError("w", "DELETE_FAILED", {}), None]
+
+    CloudFormationService(MagicMock())._delete_broken_stack(mock_cfn, "s")
+
+    assert mock_cfn.delete_stack.call_args_list[-1].kwargs == {
+        "StackName": "s",
+        "DeletionMode": "FORCE_DELETE_STACK",
+    }
+
+
 def test_cfn_deploy_stack_surfaces_event_failure_causes(tmp_path: Path):
     from botocore.exceptions import WaiterError
 
