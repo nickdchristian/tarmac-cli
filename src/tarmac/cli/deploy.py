@@ -102,12 +102,7 @@ def _validate_phase(phase: int | None, allowed: range) -> None:
 def _refuse_root_identity(session_mgr: AwsSessionManager) -> None:
     """Stop with unusable credentials, or with root credentials (they cannot assume member roles)."""
     require_credentials_or_exit(session_mgr)
-    try:
-        is_root = session_mgr.is_root_identity()
-    except Exception as e:  # unauthenticated: let the phases report it in context
-        logger.debug("Root identity check skipped: %s", e)
-        return
-    if is_root is True:
+    if session_mgr.is_root_identity() is True:
         error_console.print(
             Panel(
                 "You are signed in as the AWS root user. Root cannot call sts:AssumeRole, so tarmac cannot reach "
@@ -311,9 +306,9 @@ def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None
     # Check every tag source on its own: a lower-precedence `Environment: dev` must not hide `Environment: prod`.
     sources = [
         bundle.get_organization_tags(),
-        dict(bundle.org.tags or {}),
-        dict(bundle.org.organization.tags or {}),
-        dict(bundle.accounts.tags or {}),
+        bundle.org.tags,
+        bundle.org.organization.tags,
+        bundle.accounts.tags,
     ]
     is_prod = any(_is_production_tagged(tags) for tags in sources)
     if is_prod and not dry_run and not force:
