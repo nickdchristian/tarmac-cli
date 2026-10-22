@@ -604,8 +604,9 @@ class ImportService:
         self.report.files.append(path)
 
     def _validate(self, config_dir: Path) -> None:
+        config_dir = config_dir.resolve()
         with contextlib.chdir(self.project_root):
-            bundle, errors = load_all_configs(config_dir.resolve())
+            bundle, errors = load_all_configs(config_dir)
             self.report.validation_errors = list(errors)
             if bundle is not None:
                 self.report.validation_errors.extend(bundle.validate_cross_references())

@@ -207,6 +207,13 @@ def test_generated_config_loads(imported):
     assert not any("policy file" in e or "Duplicate" in e for e in report.validation_errors)
 
 
+def test_a_relative_config_dir_is_validated_where_it_was_written(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    svc = ImportService(FakeSession(with_sso=False), "us-east-1")  # type: ignore[arg-type]
+    report = svc.discover_and_write(Path("my-org"), include_identity=False)
+    assert not any("not found" in e for e in report.validation_errors)
+
+
 def test_replaced_files_are_kept_as_bak_only_when_they_change(tmp_path: Path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
