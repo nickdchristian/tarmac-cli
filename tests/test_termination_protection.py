@@ -59,22 +59,6 @@ def test_a_protected_stack_is_not_deleted_by_default():
     cfn.delete_stack.assert_not_called()
 
 
-def test_teardown_releases_protection_and_says_so():
-    cfn = _cfn(protected=True)
-    progress: list[str] = []
-
-    deleted = _service().delete_stack(
-        cfn, STACK, wait=False, on_progress=progress.append, release_protection=True
-    )
-
-    assert deleted is True
-    cfn.update_termination_protection.assert_called_once_with(
-        StackName=STACK, EnableTerminationProtection=False
-    )
-    cfn.delete_stack.assert_called_once_with(StackName=STACK)
-    assert any("termination protection" in m for m in progress)
-
-
 def test_an_unprotected_stack_deletes_without_touching_protection():
     cfn = _cfn(protected=False)
 

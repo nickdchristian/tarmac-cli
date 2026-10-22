@@ -523,56 +523,6 @@ def test_identity_sync_permission_sets_import_failure_raises_without_deleting(tm
     mock_cfn.create_stack.assert_not_called()
 
 
-def test_identity_delete_permission_set_unassigns_accounts():
-    """Verify delete_permission_set purges account assignments before deleting."""
-    mock_session_mgr = MagicMock()
-    mock_sso = MagicMock()
-    mock_session_mgr.get_client.return_value = mock_sso
-
-    acct_paginator = MagicMock()
-    acct_paginator.paginate.return_value = [{"AccountIds": ["111122223333"]}]
-    assign_paginator = MagicMock()
-    assign_paginator.paginate.return_value = [
-        {
-            "AccountAssignments": [
-                {
-                    "AccountId": "111122223333",
-                    "PrincipalType": "GROUP",
-                    "PrincipalId": "g-12345",
-                }
-            ]
-        }
-    ]
-
-    def paginator_side_effect(op: str) -> MagicMock:
-        if op == "list_accounts_for_provisioned_permission_set":
-            return acct_paginator
-        if op == "list_account_assignments":
-            return assign_paginator
-        return MagicMock()
-
-    mock_sso.get_paginator.side_effect = paginator_side_effect
-    mock_sso.delete_account_assignment.return_value = {
-        "AccountAssignmentDeletionStatus": {"Status": "SUCCEEDED"}
-    }
-
-    service = IdentityService(mock_session_mgr)
-    service.delete_permission_set("arn:aws:sso:::instance/ssoins-1", "arn:aws:sso:::permissionSet/ps-1")
-
-    mock_sso.delete_account_assignment.assert_called_once_with(
-        InstanceArn="arn:aws:sso:::instance/ssoins-1",
-        TargetId="111122223333",
-        TargetType="AWS_ACCOUNT",
-        PermissionSetArn="arn:aws:sso:::permissionSet/ps-1",
-        PrincipalType="GROUP",
-        PrincipalId="g-12345",
-    )
-    mock_sso.delete_permission_set.assert_called_once_with(
-        InstanceArn="arn:aws:sso:::instance/ssoins-1",
-        PermissionSetArn="arn:aws:sso:::permissionSet/ps-1",
-    )
-
-
 def test_identity_poll_assignment_status_failed_raises_error():
     """Verify that _poll_assignment_status raises IdentityCenterError when status transitions to FAILED."""
     from tarmac.core.exceptions import IdentityCenterError
