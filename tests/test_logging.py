@@ -24,6 +24,7 @@ def test_setup_logging_debug_mode():
 
     for noisy in ("botocore", "urllib3", "boto3", "s3transfer"):
         assert logging.getLogger(noisy).level == logging.WARNING
+    assert logging.getLogger("botocore.credentials").level == logging.ERROR
 
 
 def test_setup_logging_default_mode():
