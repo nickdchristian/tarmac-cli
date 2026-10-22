@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.3.1...v0.4.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **import:** `tarmac import --force` is removed; import always overwrites.
+* **inventory:** run `tarmac bootstrap` again to grant the deployment permission set access to the bucket, then `tarmac deploy --phase 1` (or a full deploy) before deploying single phases. TARMAC_INVENTORY_FILE is no longer read.
+
+### Features
+
+* **import:** overwrite existing config files, keeping changed ones as .bak ([#98](https://github.com/nickdchristian/tarmac-cli/issues/98)) ([44a6c97](https://github.com/nickdchristian/tarmac-cli/commit/44a6c9787eea4fe9f6e2decba2a84cf6e54258f0))
+* **inventory:** store the inventory in a bucket in the management account ([#96](https://github.com/nickdchristian/tarmac-cli/issues/96)) ([31f7ff9](https://github.com/nickdchristian/tarmac-cli/commit/31f7ff984c9507c91bbc6a55a9859a8193113936))
+
 ## [0.3.1](https://github.com/nickdchristian/tarmac-cli/compare/v0.3.0...v0.3.1) (2026-10-22)
 
 
