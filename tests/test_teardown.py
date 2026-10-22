@@ -45,6 +45,7 @@ def test_bundle(teardown_config_dir: Path):
 
 def test_empty_s3_bucket_purges_versions_and_delete_markers():
     mock_s3 = MagicMock()
+    mock_s3.delete_objects.return_value = {}
     mock_s3.head_bucket.return_value = {}
 
     paginator_versions = MagicMock()
@@ -463,6 +464,7 @@ def test_teardown_service_callbacks(test_bundle):
 def test_empty_s3_bucket_progress_callback():
     """Verify empty_s3_bucket invokes on_progress callback."""
     mock_s3 = MagicMock()
+    mock_s3.delete_objects.return_value = {}
     mock_s3.head_bucket.return_value = {}
 
     paginator_versions = MagicMock()
@@ -523,6 +525,7 @@ def test_normalize_bucket_name():
 
 def test_empty_s3_bucket_handles_bucket_arn():
     mock_s3 = MagicMock()
+    mock_s3.delete_objects.return_value = {}
     mock_s3.head_bucket.return_value = {}
     mock_paginator = MagicMock()
     mock_paginator.paginate.return_value = [{"Versions": [{"Key": "sample.log", "VersionId": "v1"}]}]
