@@ -38,7 +38,7 @@ place to do this.
    This creates your Identity Center user, gives it two permission sets on the management account
    (`TarmacDeployment` for tarmac, `ManagementAdministrator` for the console), and adds a `tarmac` profile to
    `~/.aws/config`. It ends by printing the steps for your first sign-in.
-5. Follow those steps, then deploy:
+5. Follow those steps to sign in, then deploy:
    ```bash
    export AWS_PROFILE=tarmac
    tarmac preflight           # checks the account is ready
@@ -117,8 +117,9 @@ run `tarmac bootstrap` again to update it; `tarmac preflight` warns when it's ou
 | `tarmac import` | Write config files from an existing organization |
 | `tarmac destroy` | Remove what tarmac deployed (see [Tearing down](#tearing-down)) |
 | `tarmac info` | Show who you're signed in as (`--strict` fails if tarmac can't run) |
-| `tarmac account list` / `suspend NAME` | List accounts, or move one to the Suspended OU (`--close` closes it) |
-| `tarmac logs FILE` | Summarise runs recorded with `--log-file` |
+| `tarmac account list` | List accounts in the organization |
+| `tarmac account suspend NAME` | Move an account to the Suspended OU (`--close` closes it) |
+| `tarmac logs FILE` | Summarize runs recorded with `--log-file` |
 | `tarmac inventory` | Show what tarmac has recorded creating |
 
 ## Options
