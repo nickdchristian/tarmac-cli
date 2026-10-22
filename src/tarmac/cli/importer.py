@@ -32,28 +32,18 @@ def import_command(
     no_identity: Annotated[
         bool, typer.Option("--no-identity", help="Do not read IAM Identity Center")
     ] = False,
-    force: Annotated[
-        bool, typer.Option("--force", "-f", help="Overwrite existing configuration files")
-    ] = False,
 ) -> None:
     """Read the live organization (read-only) and write matching Tarmac configuration.
 
     Run it as a role with read access to AWS Organizations (and Identity Center, unless --no-identity).
-    Nothing in AWS is changed. Review the files, then run `tarmac validate` and `tarmac deploy --dry-run`.
+    Existing files are replaced; one whose contents change is kept as <name>.bak. Nothing in AWS is changed. Review the files, then run `tarmac validate` and `tarmac deploy --dry-run`.
     """
     print_header("Import Existing Organization")
     try:
         session_mgr = AwsSessionManager(region_name=region)
         require_credentials_or_exit(session_mgr)
         service = ImportService(session_mgr, region or session_mgr.default_region)
-        report = service.discover_and_write(
-            config_dir, name=name, include_identity=not no_identity, force=force
-        )
-    except FileExistsError as exc:
-        error_console.print(
-            f"[red]✗[/red] {exc} already exist in {config_dir}. Use --force to overwrite, or pick another --config-dir."
-        )
-        raise typer.Exit(code=1) from exc
+        report = service.discover_and_write(config_dir, name=name, include_identity=not no_identity)
     except AWS_ERRORS as exc:
         error_console.print(f"[red]✗ Could not read the organization:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -64,6 +54,8 @@ def import_command(
     )
     for path in report.files:
         print_info(f"Wrote {path}")
+    for path in report.backups:
+        print_warning(f"Kept the previous version as {path}")
     for skipped in report.skipped_accounts:
         print_warning(f"Skipped account: {skipped}")
     if report.todos:

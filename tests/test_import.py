@@ -207,13 +207,19 @@ def test_generated_config_loads(imported):
     assert not any("policy file" in e or "Duplicate" in e for e in report.validation_errors)
 
 
-def test_refuses_to_overwrite_without_force(tmp_path: Path):
+def test_replaced_files_are_kept_as_bak_only_when_they_change(tmp_path: Path):
     cfg = tmp_path / "cfg"
     cfg.mkdir()
     (cfg / "organization.yaml").write_text("x: 1")
     svc = ImportService(FakeSession(with_sso=False), "us-east-1")  # type: ignore[arg-type]
-    with pytest.raises(FileExistsError):
-        svc.discover_and_write(cfg, include_identity=False)
+    svc.discover_and_write(cfg, include_identity=False)
+    assert (cfg / "organization.yaml.bak").read_text() == "x: 1"
+    assert svc.report.backups == [cfg / "organization.yaml.bak"]
+
+    again = ImportService(FakeSession(with_sso=False), "us-east-1")  # type: ignore[arg-type]
+    again.discover_and_write(cfg, include_identity=False)
+    assert again.report.backups == []
+    assert (cfg / "organization.yaml.bak").read_text() == "x: 1"
 
 
 def test_name_option_overrides_stack_prefix(tmp_path: Path):
@@ -339,12 +345,12 @@ def test_cli_exits_nonzero_when_the_result_does_not_validate(monkeypatch, tmp_pa
     assert "boom" in result.output
 
 
-def test_existing_files_make_the_cli_fail_cleanly(monkeypatch, tmp_path: Path):
+def test_the_cli_says_which_files_it_kept_as_bak(monkeypatch, tmp_path: Path):
     (tmp_path / "organization.yaml").write_text("x: 1")
     monkeypatch.setattr("tarmac.cli.importer.AwsSessionManager", lambda region_name=None: FakeSession(False))
     result = CliRunner().invoke(app, ["import", "-c", str(tmp_path), "--no-identity"])
-    assert result.exit_code == 1
-    assert "--force" in result.output
+    assert "Kept the previous version" in result.output
+    assert (tmp_path / "organization.yaml.bak").exists()
 
 
 def test_assignments_outside_accounts_yaml_are_reported_not_written(monkeypatch, tmp_path: Path):
