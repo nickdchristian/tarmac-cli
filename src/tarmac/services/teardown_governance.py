@@ -110,27 +110,16 @@ class GovernanceTeardown(TeardownBase):
         self, bundle: ConfigBundle, target_region: str
     ) -> tuple[IdentityService | None, str | None, list[str]]:
         """Discover Identity Center instance and return (service, instance_arn, candidate_regions)."""
-        id_cfg = bundle.identity.identity_center if bundle.identity else None
-        cfg_region = getattr(id_cfg, "region", None) if id_cfg else None
-        preferred_region = cfg_region if isinstance(cfg_region, str) and cfg_region else target_region
+        sso_region = bundle.identity.identity_center.region or target_region
         identity_service: IdentityService | None = None
         inst_arn: str | None = None
-        sso_region: str = preferred_region
-
-        if id_cfg:
-            try:
-                identity_service = IdentityService(self.session_mgr, preferred_region=preferred_region)
-                inst_arn, _ = identity_service.get_instance_details()
-                disc_region = getattr(identity_service, "region", None)
-                if isinstance(disc_region, str) and disc_region:
-                    sso_region = disc_region
-            except AWS_ERRORS as e:
-                logger.debug("Identity Center discovery during teardown: %s", e)
-
-        candidate_regions = list(
-            dict.fromkeys([r for r in (sso_region, target_region) if isinstance(r, str) and r])
-        )
-        return identity_service, inst_arn, candidate_regions
+        try:
+            identity_service = IdentityService(self.session_mgr, preferred_region=sso_region)
+            inst_arn, _ = identity_service.get_instance_details()
+            sso_region = identity_service.region
+        except AWS_ERRORS as e:
+            logger.debug("Identity Center discovery during teardown: %s", e)
+        return identity_service, inst_arn, list(dict.fromkeys((sso_region, target_region)))
 
     def teardown_identity(
         self, bundle: ConfigBundle, target_region: str, dry_run: bool = False
@@ -142,7 +131,6 @@ class GovernanceTeardown(TeardownBase):
             Stack.PERMISSION_SETS.for_org(bundle.org.organization.name),
             Stack.LEGACY_PERMISSION_SETS.for_org(bundle.org.organization.name),
         ]
-        id_cfg = bundle.identity.identity_center if bundle.identity else None
         identity_service, inst_arn, candidate_regions = self._resolve_identity_teardown_context(
             bundle, target_region
         )
@@ -171,42 +159,39 @@ class GovernanceTeardown(TeardownBase):
                     )
                     break
 
-        if id_cfg and identity_service and inst_arn:
-            try:
-                existing_ps = identity_service.list_permission_sets(inst_arn)
-                for ps_def in id_cfg.permission_sets:
-                    if ps_def.name in existing_ps:
-                        ps_arn = existing_ps[ps_def.name]
-                        if not identity_service.is_tarmac_managed_permission_set(inst_arn, ps_arn):
-                            action, message = (
-                                "SKIPPED",
-                                "Not tagged tarmac:managed-by=tarmac, so it was not created by "
-                                "tarmac; delete it manually if intended",
-                            )
-                        elif dry_run:
-                            action = "SIMULATED"
-                            message = f"Would delete retained Permission Set '{ps_def.name}' ({ps_arn})"
-                        else:
-                            self._notify_progress(
-                                f"Deleting retained Permission Set '{ps_def.name}' in IAM Identity Center..."
-                            )
-                            if identity_service.delete_permission_set(inst_arn, ps_arn) is False:
-                                action, message = (
-                                    "FAILED",
-                                    f"Could not delete retained Permission Set '{ps_def.name}'",
-                                )
-                            else:
-                                action, message = (
-                                    "DELETED",
-                                    f"Deleted retained Permission Set '{ps_def.name}'",
-                                )
-                        results.append(
-                            TeardownItemReport(
-                                "Permission Set", ps_def.name, "Management", mgmt_id, action, message
-                            )
+        if not (identity_service and inst_arn):
+            return results
+        try:
+            existing_ps = identity_service.list_permission_sets(inst_arn)
+            for ps_def in bundle.identity.identity_center.permission_sets:
+                ps_arn = existing_ps.get(ps_def.name)
+                if ps_arn is None:
+                    continue
+                if not identity_service.is_tarmac_managed_permission_set(inst_arn, ps_arn):
+                    action, message = (
+                        "SKIPPED",
+                        "Not tagged tarmac:managed-by=tarmac, so it was not created by "
+                        "tarmac; delete it manually if intended",
+                    )
+                elif dry_run:
+                    action = "SIMULATED"
+                    message = f"Would delete retained Permission Set '{ps_def.name}' ({ps_arn})"
+                else:
+                    self._notify_progress(
+                        f"Deleting retained Permission Set '{ps_def.name}' in IAM Identity Center..."
+                    )
+                    if identity_service.delete_permission_set(inst_arn, ps_arn) is False:
+                        action, message = (
+                            "FAILED",
+                            f"Could not delete retained Permission Set '{ps_def.name}'",
                         )
-            except AWS_ERRORS as e:
-                logger.debug("Identity Center direct cleanup: %s", e)
+                    else:
+                        action, message = "DELETED", f"Deleted retained Permission Set '{ps_def.name}'"
+                results.append(
+                    TeardownItemReport("Permission Set", ps_def.name, "Management", mgmt_id, action, message)
+                )
+        except AWS_ERRORS as e:
+            logger.debug("Identity Center direct cleanup: %s", e)
 
         return results
 
