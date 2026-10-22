@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 import boto3
 import pytest
 from botocore.response import StreamingBody
-from botocore.stub import Stubber
+from botocore.stub import ANY, Stubber
 
 from tarmac.cli.bootstrap import _grant
 from tarmac.core.aws_client import AwsSessionManager
@@ -474,7 +474,7 @@ def test_inventory_keeps_changes_made_before_connecting_and_writes_only_over_wha
     inv.record("ou:Prod", {"ou_id": "ou-2"})
     with Stubber(s3) as stub:
         stub.add_response("get_object", _stored({"ou": {"Security": {"ou_id": "ou-1"}}}, '"e1"'), _OBJECT)
-        stub.add_response("put_object", {"ETag": '"e2"'}, {**_OBJECT, "Body": stub.ANY, "IfMatch": '"e1"'})
+        stub.add_response("put_object", {"ETag": '"e2"'}, {**_OBJECT, "Body": ANY, "IfMatch": '"e1"'})
         inv.connect(s3, _OBJECT["Bucket"], tmp_path / "none.json")
         stub.assert_no_pending_responses()
     assert set(inv.get("ou")) == {"Security", "Prod"}
@@ -491,10 +491,10 @@ def test_inventory_applies_its_changes_again_over_a_concurrent_write(tmp_path: P
             "PreconditionFailed",
             "At least one of the pre-conditions you specified did not hold",
             http_status_code=412,
-            expected_params={**_OBJECT, "Body": stub.ANY, "IfMatch": '"e1"'},
+            expected_params={**_OBJECT, "Body": ANY, "IfMatch": '"e1"'},
         )
         stub.add_response("get_object", _stored({"ou": {"Other": {"ou_id": "ou-3"}}}, '"e2"'), _OBJECT)
-        stub.add_response("put_object", {"ETag": '"e3"'}, {**_OBJECT, "Body": stub.ANY, "IfMatch": '"e2"'})
+        stub.add_response("put_object", {"ETag": '"e3"'}, {**_OBJECT, "Body": ANY, "IfMatch": '"e2"'})
         inv.record("ou:Prod", {"ou_id": "ou-2"})
         stub.assert_no_pending_responses()
     assert set(inv.get("ou")) == {"Other", "Prod"}
@@ -509,7 +509,7 @@ def test_an_empty_bucket_is_filled_from_the_local_inventory_of_an_earlier_releas
         stub.add_client_error(
             "get_object", "NoSuchKey", "The specified key does not exist.", 404, expected_params=_OBJECT
         )
-        stub.add_response("put_object", {"ETag": '"e1"'}, {**_OBJECT, "Body": stub.ANY, "IfNoneMatch": "*"})
+        stub.add_response("put_object", {"ETag": '"e1"'}, {**_OBJECT, "Body": ANY, "IfNoneMatch": "*"})
         inv.connect(s3, _OBJECT["Bucket"], local)
         stub.assert_no_pending_responses()
     assert inv.get("identity-user") == {"admin": {}}

@@ -12,6 +12,7 @@ def test_stack_names_are_stable():
         "acme-sso-permission-sets",
         "acme-management-root-alert",
         "acme-config-recorder",
+        "acme-tarmac-inventory",
     }
 
 
