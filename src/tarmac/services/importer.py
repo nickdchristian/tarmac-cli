@@ -49,6 +49,7 @@ class ImportReport:
     existing_trails: list[str] = field(default_factory=list)
     existing_stacks: list[str] = field(default_factory=list)
     files: list[Path] = field(default_factory=list)
+    backups: list[Path] = field(default_factory=list)
     todos: list[str] = field(default_factory=list)
     validation_errors: list[str] = field(default_factory=list)
 
@@ -187,8 +188,7 @@ class ImportService:
                 content = detail.get("Content", "{}")
                 with contextlib.suppress(ValueError):
                     content = json.dumps(json.loads(content), indent=2)
-                target_path.write_text(content + "\n", encoding="utf-8")
-                self.report.files.append(target_path)
+                self._write(target_path, content + "\n")
                 policies.append(
                     {
                         "name": summary["Name"],
@@ -422,8 +422,7 @@ class ImportService:
                     rel = f"policies/permission-sets/{_slug(ps['Name'])}.json"
                     path = self.project_root / rel
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(json.dumps(json.loads(inline), indent=2) + "\n", encoding="utf-8")
-                    self.report.files.append(path)
+                    self._write(path, json.dumps(json.loads(inline), indent=2) + "\n")
                     definition["inline_policy_file"] = rel
                 result[arn] = {"definition": definition}
                 self.report.permission_sets.append(ps["Name"])
@@ -483,13 +482,8 @@ class ImportService:
         *,
         name: str | None = None,
         include_identity: bool = True,
-        force: bool = False,
     ) -> ImportReport:
         """Inspect the organization and write organization/accounts/identity YAML into config_dir."""
-        targets = [config_dir / f"{base}.yaml" for base in ("organization", "accounts", "identity")]
-        existing = [p for p in targets if p.exists()]
-        if existing and not force:
-            raise FileExistsError(", ".join(p.name for p in existing))
         config_dir.mkdir(parents=True, exist_ok=True)
         # Same convention as `tarmac init --with-templates`: policy files sit beside a "config" directory.
         self.project_root = config_dir.parent if config_dir.name == "config" else config_dir
@@ -599,9 +593,14 @@ class ImportService:
             f"# {title}.\n"
             "# Review before deploying: Tarmac will reconcile the organization to match this file.\n\n"
         )
-        path.write_text(
-            header + yaml.safe_dump(data, sort_keys=False, default_flow_style=False), encoding="utf-8"
-        )
+        self._write(path, header + yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
+
+    def _write(self, path: Path, text: str) -> None:
+        if path.exists() and path.read_text(encoding="utf-8") != text:
+            backup = path.with_name(path.name + ".bak")
+            path.replace(backup)
+            self.report.backups.append(backup)
+        path.write_text(text, encoding="utf-8")
         self.report.files.append(path)
 
     def _validate(self, config_dir: Path) -> None:

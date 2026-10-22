@@ -52,7 +52,8 @@ stops.
 
 ## Using an existing organization
 
-`tarmac import` reads your organization and writes matching config files. It changes nothing in AWS.
+`tarmac import` reads your organization and writes matching config files, keeping any file it changes as
+`<name>.bak`. It changes nothing in AWS.
 
 ```bash
 tarmac import --config-dir my-org
