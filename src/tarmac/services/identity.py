@@ -22,6 +22,13 @@ from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
 
+DEPLOYMENT_PERMISSION_SET = "TarmacDeployment"
+
+
+def deployment_policy() -> str:
+    """The least-privilege inline policy of the permission set tarmac runs as."""
+    return resolve_resource_path("policies/iam/tarmac-deployment.json").read_text(encoding="utf-8")
+
 
 SUPPORTED_SSO_REGIONS: list[str] = [
     "us-east-1",

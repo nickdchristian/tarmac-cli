@@ -261,7 +261,7 @@ class CloudFormationService:
                 f"stack:{stack_name}",
                 Outcome.FAILED,
                 f"Could not turn on termination protection for '{stack_name}': {aws_error_message(e)}. "
-                "If this is AccessDenied, re-run 'tarmac access bootstrap' to refresh the role's permissions.",
+                "If this is AccessDenied, re-run 'tarmac bootstrap' to refresh the deployment permission set.",
             )
             return
         audit(

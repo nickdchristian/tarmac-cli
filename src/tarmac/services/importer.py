@@ -23,7 +23,7 @@ from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
 from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
-from .identity import IdentityService
+from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService
 from .preflight import _LIVE_STACK_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -399,6 +399,8 @@ class ImportService:
                 ps = sso.describe_permission_set(InstanceArn=instance_arn, PermissionSetArn=arn)[
                     "PermissionSet"
                 ]
+                if ps["Name"] == DEPLOYMENT_PERMISSION_SET:
+                    continue
                 managed = [
                     p["Arn"]
                     for mp in sso.get_paginator("list_managed_policies_in_permission_set").paginate(

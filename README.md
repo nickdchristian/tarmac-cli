@@ -80,9 +80,8 @@ Identity Center (SSO) login first. Only the steps AWS does not allow to be autom
    authentication**, turn on **Send email OTP**.
 3. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac
    (`pip install --user tarmac-cli`), run `tarmac init`, put your own email in `admin_user` in `identity.yaml`, and
-   run `tarmac access bootstrap`. It creates that user, an `AdministratorAccess` permission set assigned to the
-   management account, and a `tarmac` profile in `~/.aws/config` (and the tarmac role, see
-   [Bootstrap access](#bootstrap-access-why-tarmac-cannot-run-as-root)).
+   run `tarmac bootstrap`. It creates that user with tarmac's least-privilege permission set on the management
+   account, and a `tarmac` profile in `~/.aws/config` (see [Bootstrap access](#bootstrap-access-why-tarmac-cannot-run-as-root)).
 4. `aws sso login --use-device-code --profile tarmac` (see [Using AWS CloudShell](#using-aws-cloudshell) for why the
    device-code flag is needed). The first sign-in emails you a code, then asks for a password and an MFA device.
 5. `export AWS_PROFILE=tarmac`, then confirm with `tarmac info --strict`.
@@ -157,46 +156,44 @@ adoption safe:
 ### Bootstrap access (why tarmac cannot run as root)
 
 Tarmac configures member accounts by assuming `OrganizationAccountAccessRole` in each of them, and the AWS root
-user is not allowed to call `sts:AssumeRole`. (Root access keys are also discouraged.) So a brand-new account
-needs one non-root principal first. `tarmac preflight` and `tarmac deploy` refuse to continue as root.
+user is not allowed to call `sts:AssumeRole`. (Root access keys are also discouraged.) So tarmac runs as an IAM
+Identity Center user, and `tarmac preflight` and `tarmac deploy` refuse to continue as root.
 
-1. Sign in to the management account console as root, enable **IAM Identity Center** and turn on Send email OTP (see
-   [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account)). Choose the Identity Center Region
-   deliberately: an organization can have it in one Region only, and moving it later means deleting the instance and creating
-   another ([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)).
-2. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac there
-   (`pip install tarmac-cli`), run `tarmac init`, and run:
+`tarmac bootstrap`, run once as root from AWS CloudShell after enabling IAM Identity Center (see
+[Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account)), sets that up:
 
-   ```bash
-   tarmac access bootstrap
-   ```
+* the `admin_user` from `identity.yaml` in Identity Center,
+* the `TarmacDeployment` permission set, holding [tarmac's policy](src/tarmac/templates/policies/iam/tarmac-deployment.json)
+  with 4-hour sessions, assigned to that user on the management account,
+* a `tarmac` profile in `~/.aws/config` that signs in with it.
 
-   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a policy scoped to what tarmac does (see below; MFA
-   enforced for IAM users, IAM Identity Center sessions pass; 4-hour sessions). It also creates your Identity Center login
-   (`admin_user` from `identity.yaml`, with an `AdministratorAccess` permission set on the management account) and a
-   `tarmac` profile in `~/.aws/config`. Sign in with `aws sso login --use-device-code --profile tarmac` and run tarmac as
-   that identity. Without Identity Center enabled it deploys the role only and says what to do next.
-3. `tarmac info --strict` confirms the credentials are non-root and can read the organization; it exits 1 and says why
-   when they cannot.
+Choose the Identity Center Region deliberately: an organization can have it in one Region only, and moving it later means
+deleting the instance and creating another
+([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)). `tarmac info --strict`
+confirms the credentials are non-root and can read the organization; it exits 1 and says why when they cannot. If you
+already have non-root administrator credentials for the management account (an existing Identity Center login, or a CI
+role), you can skip `tarmac bootstrap` and use those.
 
-Before Identity Center exists you can instead run `tarmac access bootstrap --with-bootstrap-user`. (The IAM Identity Center path above avoids creating an IAM user with a long-lived key and is the simpler route.) That also creates an
-assume-only IAM user (`tarmac-bootstrap`) and adds a `[profile tarmac]` block to `~/.aws/config`. Create an access key and
-an MFA device for the user in the IAM console, put the key in a `[profile tarmac-bootstrap]` profile, and run
-`AWS_PROFILE=tarmac tarmac info --strict`. Delete the user and its key once SSO works.
+**What the permission set allows.** In the management account it gets only the API calls tarmac makes: Organizations,
+CloudFormation, the organization trail, IAM Identity Center, GuardDuty/Security Hub delegation, Cost Explorer and a few
+read-only checks. For member accounts it may only assume `OrganizationAccountAccessRole`. It has no `iam:PassRole` and
+cannot create IAM roles or users. A test checks the policy against every AWS API call in tarmac's source, so adding a new
+call without updating the policy fails CI, and another test keeps it under Identity Center's inline policy limit with
+headroom. `tarmac preflight` warns when the permission set's policy differs from your installed release: re-run
+`tarmac bootstrap` after an upgrade to update it. The policy has not yet been exercised end-to-end against a real
+organization; if a run reports `AccessDenied`, report the missing action (as a stopgap, attach `AdministratorAccess` to
+the permission set in the Identity Center console). It guards against mistakes, not against its own user: anything that
+can manage permission sets and assume `OrganizationAccountAccessRole` can grant itself more.
 
-`tarmac access template` prints the underlying CloudFormation template if you would rather deploy it yourself.
-
-**What the role can do.** In the management account it gets only the API calls tarmac makes: Organizations, CloudFormation,
-the organization trail, IAM Identity Center, GuardDuty/Security Hub delegation, Cost Explorer and a few read-only checks. For
-member accounts it may only assume `OrganizationAccountAccessRole`. It has no `iam:PassRole`, cannot create IAM roles or
-users, and an explicit deny stops it modifying its own role and policy, so changing the role is a root/admin task (re-run
-`tarmac access bootstrap`). A test checks the policy against every AWS API call in tarmac's source, so adding a new call
-without updating the policy fails CI, and another test keeps the policy under IAM's size limit with headroom. `tarmac preflight` compares the deployed `tarmac-access` stack with the template in your installed release and warns to re-run `tarmac access bootstrap` after an upgrade that changed it (it only looks at a stack with that default name). If a run reports `AccessDenied` for a new feature, deploy with
-`ManagedPolicyArn=arn:aws:iam::aws:policy/AdministratorAccess` as a stopgap and report the missing action. The policy has not
-yet been exercised end-to-end against a real organization; review it before relying on it in production.
+**Upgrading from 0.2 or earlier.** Tarmac no longer uses the `tarmac-access` stack, `TarmacDeploymentRole` or the
+`tarmac-bootstrap` IAM user. Remove any `[profile tarmac]` block those left in `~/.aws/config` before running
+`tarmac bootstrap`. Once you can sign in with the new profile, turn off the stack's termination protection and delete it
+(`aws cloudformation update-termination-protection --no-enable-termination-protection --stack-name tarmac-access`, then
+`aws cloudformation delete-stack --stack-name tarmac-access`); delete the `tarmac-bootstrap` user's access keys and MFA
+device first if you created them.
 
 Member accounts need nothing extra: Organizations creates `OrganizationAccountAccessRole` in every account tarmac
-creates, trusting the management account, and the tarmac role reaches it through that. Accounts that were invited
+creates, trusting the management account, and tarmac reaches it from there. Accounts that were invited
 (not created) need that role added by hand.
 
 ---
@@ -242,7 +239,6 @@ the package. `<org>` is `organization.name` from `organization.yaml`.
 
 | Template | Stack | Account / Region | Deployed by | What it creates |
 | :--- | :--- | :--- | :--- | :--- |
-| [`tarmac-access.yaml`](src/tarmac/templates/cloudformation/tarmac-access.yaml) | `tarmac-access` | Management / `us-east-1` by default | `tarmac access bootstrap` | The `TarmacDeploymentRole` tarmac runs as, its managed policy, and optionally an assume-only `tarmac-bootstrap` IAM user |
 | [`log-archive-hardening.yaml`](src/tarmac/templates/cloudformation/log-archive-hardening.yaml) | `<org>-log-archive-hardening` | Log Archive / primary | Phase 3 | The central CloudTrail bucket, an access-logs bucket, a separate AWS Config bucket (when Config recorders are enabled) and a KMS key (when `cloudtrail.enable_kms` is on) |
 | [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Management / primary | Phase 3 | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket |
 | [`account-budget.yaml`](src/tarmac/templates/cloudformation/account-budget.yaml) | `<account>-monthly-budget` | Each member account with a budget / primary | Phase 4 | A monthly cost budget and an SNS topic for its email and webhook alerts |
@@ -259,12 +255,13 @@ the package. `<org>` is `organization.name` from `organization.yaml`.
 
 Two stacks are generated from your configuration rather than a template file: `<org>-organization-scps` (the SCPs
 declared in `organization.yaml`) and `<org>-sso-permission-sets` (the permission sets in `identity.yaml`).
+`tarmac bootstrap` creates the `TarmacDeployment` permission set with
+[`tarmac-deployment.json`](src/tarmac/templates/policies/iam/tarmac-deployment.json) as its policy.
 
 To review or change any of this before it reaches AWS:
 
 * `tarmac init --with-templates` copies the templates and SCPs into your project (`cloudformation/`, `policies/scp/`).
   Tarmac uses your copies in preference to the bundled ones, so you can keep them in version control and review changes.
-* `tarmac access template` prints the access-role template on its own.
 * `tarmac deploy --dry-run` compares every stack with what is deployed (template, parameters and tags) and lists
   what each phase would change, without changing anything.
 
@@ -276,14 +273,15 @@ To review or change any of this before it reaches AWS:
 | :--- | :--- |
 | **`tarmac init`** | Scaffold starter configuration manifests and CloudFormation templates. |
 | **`tarmac validate`** | Validate configuration manifests against Pydantic schemas and cross-references. |
+| **`tarmac bootstrap`** | Run once as root: create your IAM Identity Center login with tarmac's least-privilege permission set, and its AWS CLI profile. |
 | **`tarmac preflight`** | Run 17 diagnostic checks for management account operational readiness. |
 | **`tarmac info`** | Display caller identity, AWS account details, and Organization status. `--strict` exits 1 unless the credentials can run tarmac. |
 | **`tarmac deploy`** | Run the landing zone deployment. `--phase N` runs one phase, `--dry-run` shows what would change. |
 | **`tarmac status`** | Compare the live environment with the configuration. `--detail` adds every drifted or missing item, the live OUs and the cost anomaly monitors; `--strict` exits 1 on drift. |
 | **`tarmac import`** | Read an existing organization (read-only) and write matching configuration files. |
-| **`tarmac destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the access role. |
+| **`tarmac destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the `TarmacDeployment` permission set. |
 
-Everything that changes AWS goes through `tarmac deploy`, one phase at a time if you like:
+After `tarmac bootstrap`, everything that changes AWS goes through `tarmac deploy`, one phase at a time if you like:
 
 | To change | Run |
 | :--- | :--- |
@@ -304,9 +302,6 @@ Everything that changes AWS goes through `tarmac deploy`, one phase at a time if
   * `tarmac info` also shows the Identity Center instance, identity store and access portal URL.
   * `tarmac inventory` — Show what tarmac has recorded as created by it.
   * `tarmac logs FILE` — Summarize runs recorded with `--log-file`.
-* **Access**:
-  * `tarmac access bootstrap` — Create the role tarmac runs as and your IAM Identity Center login with its AWS CLI
-    profile. `tarmac access template` prints the role's template.
 
 </details>
 
@@ -322,12 +317,10 @@ point you can copy into your project's `policies/scp/` and reference from `organ
    your `primary_region` and the region of your IAM Identity Center instance.
 2. Keep the `NotAction` list of global services (IAM, Organizations, Route 53, CloudFront, Support, STS, ...), or
    those calls are denied everywhere.
-3. Keep the `TarmacDeploymentRole` and `OrganizationAccountAccessRole` exemption. Tarmac removes default VPCs in
-   every enabled region of each member account, and Phase 2 (SCPs) runs before the Phase 4 baseline, so without
-   the exemption that cleanup fails in the regions you blocked. Drop `OrganizationAccountAccessRole` from the
-   exemption only if you set `delete_default_vpc: false` (or have already cleaned those VPCs). The example names the
-   default role, `TarmacDeploymentRole`; if you bootstrapped with `--role-name`, change the exemption to that name, or
-   tarmac is locked out of the regions you blocked.
+3. Keep the `OrganizationAccountAccessRole` exemption. Tarmac removes default VPCs in every enabled region of each
+   member account through that role, and Phase 2 (SCPs) runs before the Phase 4 baseline, so without the exemption
+   that cleanup fails in the regions you blocked. Drop it only if you set `delete_default_vpc: false` (or have already
+   cleaned those VPCs).
 
 SCPs do not apply to the management account. Test it on one OU before attaching it to the root.
 
@@ -342,10 +335,10 @@ action names are taken from the AWS Service Authorization Reference
 ([GuardDuty](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonguardduty.html),
 [Security Hub](https://docs.aws.amazon.com/service-authorization/latest/reference/list_awssecurityhub.html)).
 
-The policy exempts `TarmacDeploymentRole` and `OrganizationAccountAccessRole`, which is how tarmac reaches member accounts, so
+The policy exempts `OrganizationAccountAccessRole`, which is how tarmac reaches member accounts, so
 `tarmac destroy --disable-security-services` keeps working. Add the role your own administrators use (for example an
-`AWSReservedSSO_*` role) to the `aws:PrincipalARN` list, or they cannot turn the services off either; change `TarmacDeploymentRole`
-if you bootstrapped with `--role-name`. It is not run against a live organization; attach it to one test OU first.
+`AWSReservedSSO_*` role) to the `aws:PrincipalARN` list, or they cannot turn the services off either. It is not run against a
+live organization; attach it to one test OU first.
 
 AWS Config is left out on purpose. AWS publishes an
 [example SCP for Config](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps_examples_config.html)
@@ -585,11 +578,11 @@ tarmac destroy --preserve-backend
 ### Termination protection
 
 The stacks that hold data or access are created with CloudFormation termination protection: the organization trail, the
-log-archive and audit-account hardening stacks, the Terraform state backend and the `tarmac-access` stack. A stray
+log-archive and audit-account hardening stacks and the Terraform state backend. A stray
 `aws cloudformation delete-stack` is refused for them. `tarmac destroy` is the deliberate way to remove them: it turns
 protection off on each stack just before deleting it and prints a warning saying so (and `--dry-run` shows what it would
 delete). `--preserve-backend` leaves the state backend, and its protection, untouched. Enabling protection needs
-`cloudformation:UpdateTerminationProtection`, so re-run `tarmac access bootstrap` once to refresh the access role; until then
+`cloudformation:UpdateTerminationProtection`, so re-run `tarmac bootstrap` once to refresh the permission set; until then
 a deploy reports that protection could not be turned on and carries on.
 
 ### Root user alerts
@@ -609,8 +602,8 @@ security_services:
     all_regions: false   # true also watches every declared Region for root API calls
 ```
 
-Without a security contact email or webhook there is nobody to alert, so tarmac skips the stack and says so. The access role
-needs the `events:` and `sns:` actions this adds: re-run `tarmac access bootstrap` once.
+Without a security contact email or webhook there is nobody to alert, so tarmac skips the stack and says so. The permission
+set needs the `events:` and `sns:` actions this adds: re-run `tarmac bootstrap` once.
 
 ### Starting over
 
@@ -624,7 +617,7 @@ sets, milestone tags) so `tarmac deploy` can rebuild it. It deliberately **keeps
   the delegated administrators, deletes the GuardDuty detectors and disables Security Hub in the audit,
   management and declared member accounts). **This deletes finding history**, so it is opt-in. Failures per
   account/region are reported, and a failed step makes the command exit non-zero;
-* IAM Identity Center users and groups, OUs, organization settings and the access role (kept unless you pass
+* IAM Identity Center users and groups, OUs, organization settings and the `TarmacDeployment` permission set (kept unless you pass
   `--everything`, below).
 
 The log-archive KMS key is scheduled for deletion (30-day window, cancel with `aws kms cancel-key-deletion`)
@@ -640,8 +633,8 @@ tarmac destroy --everything               # asks you to type the organization na
 On top of a normal destroy, `--everything` removes, in dependency order: the Identity Center users and groups
 tarmac created (and their assignments), the OUs tarmac created (only when empty), the organization settings tarmac
 enabled (delegated administrators, root credentials management and root sessions, trusted service access,
-alternate contacts, cost-allocation-tag activation), the milestone tags, and finally the `tarmac-access` stack
-(`TarmacDeploymentRole`) and the `tarmac-bootstrap` IAM user with its keys and MFA device.
+alternate contacts, cost-allocation-tag activation), the milestone tags, and finally the `TarmacDeployment` permission
+set from `tarmac bootstrap`.
 
 What counts as "created by tarmac" is decided by evidence, never by name:
 
@@ -655,12 +648,9 @@ What counts as "created by tarmac" is decided by evidence, never by name:
 
 **Member accounts are never closed by this command.** It lists the accounts tarmac manages with the exact
 `tarmac account suspend NAME --close` command for each. An alternate contact that replaced one which already existed is
-left in place (tarmac cannot restore the old one), and the `tarmac-bootstrap` user is only deleted when it carries
-the `tarmac:managed-by=tarmac` tag. Disabling Identity Center trusted access is also left to you, because it can
-delete the Identity Center instance. If you run the teardown as `TarmacDeploymentRole`, the
-access stack's deletion is started but not awaited. The role cannot manage IAM users, so when the access stack
-contains a bootstrap user the stack is kept and the command tells you to remove the user as an administrator
-(for example your SSO admin) and run it again.
+left in place (tarmac cannot restore the old one). Disabling Identity Center trusted access is also left to you, because
+it can delete the Identity Center instance. If you run the teardown signed in with `TarmacDeployment`, the permission set
+is kept (deleting it would end the session) and the command tells you to delete it in the Identity Center console.
 
 If a teardown leaves a CloudFormation stack in `DELETE_FAILED` (for example a bucket that could not be emptied),
 fix the cause and re-run teardown or deploy: both now delete and recreate stacks stuck in `DELETE_FAILED`,
@@ -675,17 +665,16 @@ fix the cause and re-run teardown or deploy: both now delete and recreate stacks
 
 | What you see | Why | What to do |
 |---|---|---|
-| `Root credentials cannot assume roles in member accounts` | The shell is using root credentials (for example CloudShell's own session). | Run `tarmac access bootstrap` once if you have no SSO login yet, then `export AWS_PROFILE=tarmac` and re-run; see [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account). |
-| `aws sso login` says `No AWS accounts are available to you` | Your Identity Center user has no permission set on the management account. | Run `tarmac access bootstrap` as root (or an admin) again. |
+| `Root credentials cannot assume roles in member accounts` | The shell is using root credentials (for example CloudShell's own session). | Run `tarmac bootstrap` once if you have no SSO login yet, then `export AWS_PROFILE=tarmac` and re-run; see [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account). |
+| `aws sso login` says `No AWS accounts are available to you` | Your Identity Center user has no permission set on the management account. | Run `tarmac bootstrap` as root (or an admin) again. |
 | The SSO sign-in page redirects to `127.0.0.1` and fails | CloudShell has no browser to receive the callback. | Use `aws sso login --use-device-code`. |
-| `The config profile (...) could not be found` | `aws configure sso` stopped before writing the profile. | Fix the cause above, then run `aws configure sso` again. |
+| `The config profile (tarmac) could not be found` | `tarmac bootstrap` stopped before writing the profile. | Fix the error it reported, then run `tarmac bootstrap` again. |
 | `tarmac info` shows Identity Center as not found | Identity Center lives in one Region, which may not be your shell's. | Set `AWS_REGION` to it, or pass `--region`. |
 | Phase 2: `Failed to import resources into stack '<name>-organization-scps'` and a change set reason of `p-... already exists in stack ...` | The SCP belongs to a stack named for a different `organization.name`. | Set `organization.name` back to the original name (the prefix of the stack in the message). |
 | Phase 5: `You must enable service access before you delegate an administrator` (`config-multiaccountsetup`) | Trusted access for that service was not enabled (fixed in newer releases). | `aws organizations enable-aws-service-access --service-principal config-multiaccountsetup.amazonaws.com`, then re-run phase 5. |
 | `refusing to create an account with the sample email` | `accounts.yaml` still has an address from `tarmac init`. | Use a real, unique address you can receive mail at. |
 | `refusing to adopt or move it` | An account with that name exists under a different email. | Put the account's actual email in `accounts.yaml`. |
 | Warning: `An organization trail already exists` | A trail from before tarmac is still recording. | Delete the old trail once the new one is delivering logs; see above. |
-| `UPDATE_ROLLBACK_COMPLETE` on the `tarmac-access` stack | A stack update failed and was rolled back. | `aws cloudformation describe-stack-events --stack-name tarmac-access --query "StackEvents[?contains(ResourceStatus,'FAILED')].[LogicalResourceId,ResourceStatusReason]" --output text` shows why. |
 | A warning such as `No updates are to be performed` or `already a delegated administrator` | AWS reporting that nothing needed doing. | Nothing; these are logged as `unchanged` and are not errors. |
 
 Always start with `tarmac logs --run latest`: it shows the failing action, its AWS error and the phase it happened in.

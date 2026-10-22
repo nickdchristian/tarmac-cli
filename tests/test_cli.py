@@ -17,7 +17,7 @@ def test_cli_help_and_subcommand_helps():
     assert result.exit_code == 0
     assert "Tarmac: Enterprise AWS Governance & Multi-Account Landing Zone CLI" in result.stdout
     for subcmd in [
-        "access",
+        "bootstrap",
         "account",
         "deploy",
         "destroy",

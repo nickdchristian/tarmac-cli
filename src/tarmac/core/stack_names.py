@@ -1,7 +1,6 @@
 """Names of the CloudFormation stacks, StackSets and S3 buckets tarmac creates.
 
-Every stack is named "<organization.name>-<suffix>" except the access stack, which exists before any
-configuration does. Buckets are "<organization.name>-<suffix>-<account id>", matching the templates.
+Every stack is named "<organization.name>-<suffix>". Buckets are "<organization.name>-<suffix>-<account id>", matching the templates.
 """
 
 from enum import StrEnum
@@ -33,8 +32,6 @@ TARMAC_STACK_SUFFIXES: tuple[str, ...] = (
     Stack.AUDIT_ACCOUNT,
     Stack.PERMISSION_SETS,
 )
-
-ACCESS_STACK = "tarmac-access"
 
 
 class Bucket(StrEnum):
