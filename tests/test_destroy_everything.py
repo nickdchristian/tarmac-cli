@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -233,7 +233,7 @@ def test_group_assignments_are_removed_before_the_group(inv: Inventory, monkeypa
 
 def _teardown_access(arn: str, permission_sets: dict[str, str]) -> tuple[list[Any], MagicMock]:
     service = _service({})
-    service.session_mgr.get_caller_identity.return_value = {"Account": "111", "Arn": arn}
+    cast(MagicMock, service.session_mgr).get_caller_identity.return_value = {"Account": "111", "Arn": arn}
     identity = MagicMock()
     identity.return_value.get_instance_details.return_value = ("arn:inst", "d-1")
     identity.return_value.list_permission_sets.return_value = permission_sets

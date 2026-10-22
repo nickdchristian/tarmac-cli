@@ -8,7 +8,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 required=(
-  "tarmac/templates/cloudformation/tarmac-access.yaml"
+  "tarmac/templates/policies/iam/tarmac-deployment.json"
   "tarmac/templates/cloudformation/organization-cloudtrail.yaml"
   "tarmac/templates/policies/scp/foundational-guardrails.json"
   "tarmac/py.typed"
@@ -26,9 +26,9 @@ fi
 
 cd "$work"
 "$TARMAC_BIN" --version
-"$TARMAC_BIN" access template | grep -q "TarmacDeploymentRole"
+"$TARMAC_BIN" bootstrap --help >/dev/null
 "$TARMAC_BIN" init project/config --with-templates >/dev/null
-test -f project/cloudformation/tarmac-access.yaml
+test -f project/cloudformation/organization-cloudtrail.yaml
 test -f project/policies/scp/foundational-guardrails.json
 "$TARMAC_BIN" validate --config-dir project/config >/dev/null
 echo "wheel smoke test passed"
