@@ -200,14 +200,11 @@ def _deploy_log_archive_hardening_stack(
     )
 
 
-def _foundational_account_id(
-    session_mgr: AwsSessionManager, bundle: ConfigBundle, name: str, accts: dict[str, str]
+def _provision_log_archive_account(
+    session_mgr: AwsSessionManager, bundle: ConfigBundle, log_archive_name: str, accts: dict[str, str]
 ) -> str:
-    """ID of a foundational account, creating it when it is declared but does not exist yet ("" if undeclared)."""
-    account_id = bundle.resolve_account_id(name, accts)
-    if account_id:
-        return account_id
-    acct_def = bundle.get_account(name)
+    """Create the declared log archive account when it does not exist yet; return its ID ("" if undeclared)."""
+    acct_def = bundle.get_account(log_archive_name)
     if not acct_def:
         return ""
     print_info(
@@ -225,10 +222,10 @@ def _foundational_account_id(
             )
         )
     if prov_results and prov_results[0].account_id:
-        account_id = prov_results[0].account_id
-        accts[acct_def.name] = account_id
-        print_success(f"Phase 3: Provisioned foundational account '{acct_def.name}' ({account_id}).")
-        return account_id
+        log_archive_id = prov_results[0].account_id
+        accts[acct_def.name] = log_archive_id
+        print_success(f"Phase 3: Provisioned foundational account '{acct_def.name}' ({log_archive_id}).")
+        return log_archive_id
     return ""
 
 
@@ -247,18 +244,13 @@ def _run_phase_3_cloudtrail(
 
     accts = get_active_account_id_map(session_mgr)
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
-    log_archive_id = _foundational_account_id(session_mgr, bundle, log_archive_name, accts)
+    log_archive_id = bundle.resolve_account_id(log_archive_name, accts) or ""
+    if not log_archive_id:
+        log_archive_id = _provision_log_archive_account(session_mgr, bundle, log_archive_name, accts)
     if not log_archive_id:
         raise GovernanceError(
             f"Phase 3 failed: Log Archive account '{log_archive_name}' could not be resolved from active accounts. "
             "Ensure the account is declared in accounts.yaml and provisioned before deploying CloudTrail."
-        )
-    audit_name = bundle.get_audit_account_name() or "audit"
-    audit_id = _foundational_account_id(session_mgr, bundle, audit_name, accts)
-    if not audit_id:
-        raise GovernanceError(
-            f"Phase 3 failed: Audit account '{audit_name}' could not be resolved from active accounts. "
-            "Declare it in accounts.yaml: it runs the organization trail as CloudTrail's delegated administrator."
         )
 
     log_archive_report = _deploy_log_archive_hardening_stack(
@@ -273,7 +265,6 @@ def _run_phase_3_cloudtrail(
     )
     print_success(f"Phase 3: Log Archive hardening stack {log_archive_report.action}.")
 
-    OrganizationService(session_mgr).register_cloudtrail_delegated_administrator(audit_id)
     template_file = resolve_resource_path(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
@@ -446,7 +437,8 @@ def _deploy_hardening_stacks(
         return
 
     OrganizationService(session_mgr).register_service_delegated_administrators(
-        audit_id, ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com"]
+        audit_id,
+        ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com", "cloudtrail.amazonaws.com"],
     )
     cfn_service.deploy_stack(
         session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region),

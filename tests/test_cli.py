@@ -84,12 +84,7 @@ def test_cli_deploy_run_with_custom_tags(sample_config_dir, monkeypatch):
     mock_org = MagicMock()
     mock_org.describe_organization.return_value = {"Organization": {"Id": "o-test12345"}}
     mock_org.get_paginator.return_value.paginate.return_value = [
-        {
-            "Accounts": [
-                {"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"},
-                {"Id": "999999999999", "Name": "audit", "Status": "ACTIVE"},
-            ]
-        }
+        {"Accounts": [{"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"}]}
     ]
     mock_session_mgr.get_client.return_value = mock_org
     mock_session_mgr.get_member_client.return_value = MagicMock()
@@ -135,12 +130,7 @@ def test_cli_deploy_phase_3_deploys_log_archive_hardening_before_trail(sample_co
     mock_org = MagicMock()
     mock_org.describe_organization.return_value = {"Organization": {"Id": "o-test12345"}}
     mock_org.get_paginator.return_value.paginate.return_value = [
-        {
-            "Accounts": [
-                {"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"},
-                {"Id": "999999999999", "Name": "audit", "Status": "ACTIVE"},
-            ]
-        }
+        {"Accounts": [{"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"}]}
     ]
     mock_session_mgr.get_client.return_value = mock_org
     mock_session_mgr.get_member_client.return_value = MagicMock()
@@ -926,3 +916,31 @@ def test_deploy_hardening_stacks_skips_log_archive_when_requested(sample_config_
     assert len(deployed) == 1
     assert "audit-account-hardening" in deployed[0]
     assert all("log-archive-hardening" not in s for s in deployed)
+
+
+def test_deploy_hardening_stacks_delegates_cloudtrail_to_audit(sample_config_dir):
+    from unittest.mock import MagicMock, patch
+
+    from tarmac.cli.deploy_phases import _deploy_hardening_stacks
+    from tarmac.core.config_loader import load_all_configs
+
+    bundle, _ = load_all_configs(sample_config_dir)
+    assert bundle is not None
+
+    with patch("tarmac.cli.deploy_phases.OrganizationService") as org:
+        _deploy_hardening_stacks(
+            MagicMock(),
+            MagicMock(),
+            bundle,
+            "eu-west-1",
+            sample_config_dir.parent,
+            "o-test123",
+            {"Audit": "777777777777"},
+            skip_log_archive_hardening=True,
+        )
+
+    register = org.return_value.register_service_delegated_administrators
+    assert register.call_args.args == (
+        "777777777777",
+        ["config-multiaccountsetup.amazonaws.com", "config.amazonaws.com", "cloudtrail.amazonaws.com"],
+    )

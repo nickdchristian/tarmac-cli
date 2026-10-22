@@ -19,10 +19,9 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
-from ..core.models import TAG_MANAGED_BY
 from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
-from ..core.stack_names import TARMAC_STACK_SUFFIXES
+from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
 from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
 from .preflight import _LIVE_STACK_STATUSES
@@ -200,19 +199,20 @@ class ImportService:
                 self.report.scps.append(summary["Name"])
         return policies
 
-    def _trails(self) -> str | None:
+    def _trails(self, org_name: str) -> str | None:
         """Names of organization trails; returns tarmac's own trail, else the first, for cloudtrail.trail_name."""
-        client = self.session_mgr.get_client("cloudtrail", region_name=self.region)
         try:
-            trails = client.describe_trails(includeShadowTrails=False)["trailList"]
+            trails = self.session_mgr.get_client("cloudtrail", region_name=self.region).describe_trails(
+                includeShadowTrails=False
+            )["trailList"]
         except _READ_ERRORS as exc:
             logger.debug("Could not list trails: %s", exc)
             return None
         org_trails = [t for t in trails if t.get("IsOrganizationTrail")]
         names = [str(t["Name"]) for t in org_trails]
         self.report.existing_trails = names
-        own = self._tarmac_trail_ids(client, org_trails)
-        ours = [str(t["Name"]) for t in org_trails if t.get("TrailARN") in own]
+        own = self._tarmac_trail_ids(org_name)
+        ours = [str(t["Name"]) for t in org_trails if {t.get("Name"), t.get("TrailARN")} & own]
         foreign = [n for n in names if n not in ours]
         if foreign:
             self.report.todos.append(
@@ -223,24 +223,19 @@ class ImportService:
         candidates = ours or names
         return candidates[0] if candidates else None
 
-    @staticmethod
-    def _tarmac_trail_ids(client: Any, trails: list[dict[str, Any]]) -> set[str]:
-        """ARNs of the trails tagged as tarmac's."""
-        arns = [str(t["TrailARN"]) for t in trails if t.get("TrailARN")]
-        if not arns:
-            return set()
+    def _tarmac_trail_ids(self, org_name: str) -> set[str]:
+        """Physical IDs of the trail in tarmac's own CloudTrail stack, if that stack exists."""
         try:
-            tag_list = client.list_tags(ResourceIdList=arns).get("ResourceTagList", [])
+            resources = self.session_mgr.get_client(
+                "cloudformation", region_name=self.region
+            ).describe_stack_resources(StackName=Stack.CLOUDTRAIL.for_org(org_name))
         except _READ_ERRORS as exc:
-            logger.debug("Could not read trail tags: %s", exc)
+            logger.debug("No CloudTrail stack for %s: %s", org_name, exc)
             return set()
         return {
-            str(entry["ResourceId"])
-            for entry in tag_list
-            if any(
-                t.get("Key") == TAG_MANAGED_BY and t.get("Value") == "tarmac"
-                for t in entry.get("TagsList", [])
-            )
+            str(r["PhysicalResourceId"])
+            for r in resources.get("StackResources", [])
+            if r.get("ResourceType") == "AWS::CloudTrail::Trail" and r.get("PhysicalResourceId")
         }
 
     def _stack_prefix(self) -> str | None:
@@ -511,7 +506,7 @@ class ImportService:
 
         accounts = self._accounts(mgmt_id, ou_names, root_id)
         scps = self._scps(ou_names)
-        trail_name = self._trails()
+        trail_name = self._trails(org_name)
         contacts = self._contacts(mgmt_email)
         trusted = self._trusted_services()
 

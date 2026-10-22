@@ -440,23 +440,6 @@ class OrganizationService:
             )
         return registered
 
-    def register_cloudtrail_delegated_administrator(self, account_id: str) -> None:
-        """Uses CloudTrail's API, because Organizations' does not create CloudTrail's service-linked roles."""
-        try:
-            self.session_mgr.get_client("cloudtrail").register_organization_delegated_admin(
-                MemberAccountId=account_id
-            )
-        except ClientError as e:
-            if aws_error_code(e) != "AccountRegisteredException":
-                raise
-            return
-        audit(
-            "register",
-            f"delegated-admin:cloudtrail.amazonaws.com:{account_id}",
-            Outcome.SUCCEEDED,
-            f"Registered account {account_id} as CloudTrail's delegated administrator",
-        )
-
     def get_completed_phases(self, mgmt_account_id: str) -> set[str]:
         """Retrieve the set of completed deployment phases from Management Account tags."""
         try:

@@ -399,23 +399,21 @@ class Planner:
 
     def _phase_3(self, phase: PhasePlan) -> None:
         name = self.bundle.get_log_archive_account_name() or "log-archive"
-        audit_name = self.bundle.get_audit_account_name() or "audit"
         trail_stack = Stack.CLOUDTRAIL.for_org(self.org_name)
         account_id = self._account_id(name)
-        audit_id = self._account_id(audit_name)
-        for missing in [n for n, i in ((name, account_id), (audit_name, audit_id)) if not i]:
-            declared = self.bundle.get_account(missing)
+        if not account_id:
+            declared = self.bundle.get_account(name)
             phase.items.append(
                 PlanItem(
                     "account",
-                    missing,
+                    name,
                     "CREATE",
                     f"in OU {declared.ou}" if declared else "not declared in accounts.yaml",
                 )
             )
         self._log_archive_stack(phase)
-        if not account_id or not audit_id:
-            self._missing_account(phase, audit_name if account_id else name, trail_stack)
+        if not account_id:
+            self._missing_account(phase, name, trail_stack)
             return
         self._stack(
             phase,

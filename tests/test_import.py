@@ -404,24 +404,22 @@ def test_assignments_outside_accounts_yaml_are_reported_not_written(monkeypatch,
 
 def test_tarmacs_own_trail_is_not_flagged_as_a_conflict(tmp_path: Path):
     session = FakeSession(with_sso=False)
-    trail = session.clients["cloudtrail"]
-    trail.describe_trails.return_value = {
+    session.clients["cloudtrail"].describe_trails.return_value = {
         "trailList": [
-            {"Name": "old-org-trail", "TrailARN": "arn:old", "IsOrganizationTrail": True},
-            {"Name": "acme-trail", "TrailARN": "arn:acme", "IsOrganizationTrail": True},
+            {"Name": "old-org-trail", "IsOrganizationTrail": True},
+            {"Name": "acme-trail", "IsOrganizationTrail": True},
         ]
     }
-    trail.list_tags.return_value = {
-        "ResourceTagList": [
-            {"ResourceId": "arn:old", "TagsList": []},
-            {"ResourceId": "arn:acme", "TagsList": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]},
-        ]
+    cfn = session.clients["cloudformation"]
+    cfn.describe_stack_resources.return_value = {
+        "StackResources": [{"ResourceType": "AWS::CloudTrail::Trail", "PhysicalResourceId": "acme-trail"}]
     }
     report = ImportService(session, "us-east-1").discover_and_write(  # type: ignore[arg-type]
         tmp_path / "cfg", include_identity=False
     )
     org = yaml.safe_load((tmp_path / "cfg" / "organization.yaml").read_text())
 
+    cfn.describe_stack_resources.assert_called_once_with(StackName="acme-organization-cloudtrail")
     assert org["cloudtrail"]["trail_name"] == "acme-trail"
     trail_todos = [t for t in report.todos if "Organization trail(s) already exist" in t]
     assert len(trail_todos) == 1
@@ -431,13 +429,21 @@ def test_tarmacs_own_trail_is_not_flagged_as_a_conflict(tmp_path: Path):
 
 def test_no_trail_warning_when_only_tarmacs_trail_exists(tmp_path: Path):
     session = FakeSession(with_sso=False)
-    trail = session.clients["cloudtrail"]
-    trail.describe_trails.return_value = {
-        "trailList": [{"Name": "acme-trail", "TrailARN": "arn:acme", "IsOrganizationTrail": True}]
+    session.clients["cloudtrail"].describe_trails.return_value = {
+        "trailList": [
+            {
+                "Name": "acme-trail",
+                "TrailARN": "arn:aws:cloudtrail:us-east-1:111:trail/acme-trail",
+                "IsOrganizationTrail": True,
+            }
+        ]
     }
-    trail.list_tags.return_value = {
-        "ResourceTagList": [
-            {"ResourceId": "arn:acme", "TagsList": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}
+    session.clients["cloudformation"].describe_stack_resources.return_value = {
+        "StackResources": [
+            {
+                "ResourceType": "AWS::CloudTrail::Trail",
+                "PhysicalResourceId": "arn:aws:cloudtrail:us-east-1:111:trail/acme-trail",
+            }
         ]
     }
     report = ImportService(session, "us-east-1").discover_and_write(  # type: ignore[arg-type]

@@ -41,7 +41,7 @@ DRY_RUN_ALLOWED = frozenset({"sso-oidc.CreateToken"})
 
 # AWS answers some calls with an error that only means "already done". Tarmac handles these itself and records the
 # result as UNCHANGED, so the call recorder keeps them out of the warnings.
-_BENIGN_ERROR_CODES = frozenset({"AccountAlreadyRegisteredException", "AccountRegisteredException"})
+_BENIGN_ERROR_CODES = frozenset({"AccountAlreadyRegisteredException"})
 _BENIGN_ERROR_TEXT = (
     "No updates are to be performed",
     "already exists",
