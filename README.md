@@ -199,14 +199,6 @@ tarmac logs run.jsonl --outcome failed
 | `refusing to create an account with the sample email` | Give the account a real, unique email |
 | `refusing to adopt or move it` | Put the account's real email in `accounts.yaml` |
 
-## Upgrading from 0.2
-
-- `tarmac access` is replaced by `tarmac bootstrap`. Remove the old `[profile tarmac]` from `~/.aws/config`, run
-  `tarmac bootstrap`, then turn off termination protection on the `tarmac-access` stack, delete it, and delete
-  the `tarmac-bootstrap` IAM user.
-- Bucket names now end in part of their stack's ID. The next deploy creates new buckets and keeps the old ones.
-  Point Terraform at the new state bucket and run `terraform init -migrate-state`.
-
 ## Development
 
 ```bash
