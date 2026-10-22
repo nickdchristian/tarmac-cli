@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.0...v0.4.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* **import:** validate a relative --config-dir where the files were written ([#100](https://github.com/nickdchristian/tarmac-cli/issues/100)) ([fc4b9e4](https://github.com/nickdchristian/tarmac-cli/commit/fc4b9e45474e31a9de1156aa2cb8bb56e6444631))
+
 ## [0.4.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.3.1...v0.4.0) (2026-10-22)
 
 
