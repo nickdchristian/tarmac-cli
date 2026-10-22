@@ -34,12 +34,12 @@ def neutral_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolate_inventory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Keep the created-by-tarmac inventory out of the repository's example config."""
+def isolate_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start each test without an inventory, and let deploys of single phases run without its bucket."""
     from tarmac.core import inventory
 
-    monkeypatch.setenv("TARMAC_INVENTORY_FILE", str(tmp_path / "inventory.json"))
     inventory.deactivate()
+    monkeypatch.setattr("tarmac.cli.deploy.connect_inventory_or_raise", lambda *_a: None)
 
 
 @pytest.fixture

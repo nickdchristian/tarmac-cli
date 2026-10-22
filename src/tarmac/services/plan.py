@@ -248,6 +248,16 @@ class Planner:
 
     def _phase_1(self, phase: PhasePlan) -> None:
         org = OrganizationService(self.session_mgr)
+        self._stack(
+            phase,
+            self.session_mgr.get_client(
+                "cloudformation", region_name=self.bundle.org.organization.primary_region
+            ),
+            Stack.INVENTORY.for_org(self.org_name),
+            "management",
+            {},
+            template="cloudformation/tarmac-inventory.yaml",
+        )
         phase.items.append(
             PlanItem("organization", self.org_name, NO_CHANGE, self.org_id)
             if self.org_id

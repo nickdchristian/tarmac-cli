@@ -112,6 +112,8 @@ class TeardownService(
             items.extend(self.report_accounts_kept())
             self._notify_phase("Tarmac bootstrap permission sets")
             items.extend(self.teardown_access(dry_run=dry_run))
+            self._notify_phase("Tarmac inventory")
+            items.extend(self.teardown_inventory(bundle, inventory, dry_run=dry_run))
 
         status = (
             "SIMULATED"

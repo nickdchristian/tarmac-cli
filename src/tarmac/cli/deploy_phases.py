@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
@@ -97,10 +98,47 @@ def _cleanup_management_default_vpcs(session_mgr: AwsSessionManager) -> None:
     baseliner.mark_account_baselined(mgmt_id)
 
 
-def _run_phase_1_org(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
+def _deploy_inventory_stack(
+    session_mgr: AwsSessionManager,
+    bundle: ConfigBundle,
+    project_root: Path,
+    custom_tags: dict[str, str] | None = None,
+) -> None:
+    """Create the bucket that records what tarmac creates, then store this run's record there."""
+    region = bundle.org.organization.primary_region
+    CloudFormationService(session_mgr).deploy_stack(
+        session_mgr.get_client("cloudformation", region_name=region),
+        Stack.INVENTORY.for_org(bundle.org.organization.name),
+        resolve_resource_path("cloudformation/tarmac-inventory.yaml", project_root=project_root),
+        tags=custom_tags,
+        org_tags=bundle.get_organization_tags(),
+        termination_protection=True,
+    )
+    inventory.connect(session_mgr, bundle.org.organization.name, region, bundle.config_dir)
+
+
+def connect_inventory_or_raise(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
+    """Store this run's record of what tarmac creates in the bucket phase 1 created."""
+    inv = inventory.connect(
+        session_mgr, bundle.org.organization.name, bundle.org.organization.primary_region, bundle.config_dir
+    )
+    if inv.bucket is None:
+        raise GovernanceError(
+            "The bucket that records what tarmac creates does not exist yet.",
+            details="Run `tarmac deploy --phase 1` first: it creates the bucket.",
+        )
+
+
+def _run_phase_1_org(
+    session_mgr: AwsSessionManager,
+    bundle: ConfigBundle,
+    project_root: Path,
+    custom_tags: dict[str, str] | None = None,
+) -> None:
     """Phase 1: AWS Organizations Bootstrap, Contacts, and Management Account Hardening."""
     print_step("1", "Organizations Bootstrap & Contacts")
 
+    _deploy_inventory_stack(session_mgr, bundle, project_root, custom_tags)
     org_service = OrganizationService(session_mgr)
     org_id = org_service.ensure_organization()
     org_service.set_account_contacts(bundle.org.contacts)
