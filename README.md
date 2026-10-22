@@ -30,7 +30,7 @@ place to do this.
    tarmac init          # writes config/organization.yaml, accounts.yaml, identity.yaml
    ```
    Edit the files. Put yourself in `admin_user` in `identity.yaml`, and give every account in `accounts.yaml` a
-   real, unique email (`you+prod@gmail.com` style addresses work).
+   real, unique email (plus addresses such as `aws+prod@example.com` work if your mail provider supports them).
 4. Still in CloudShell, as root:
    ```bash
    tarmac bootstrap
