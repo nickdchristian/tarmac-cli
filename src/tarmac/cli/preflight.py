@@ -8,7 +8,14 @@ import typer
 from ..core.aws_client import AwsSessionManager
 from ..core.models import PreflightCheckStatus, PreflightReport
 from ..services.preflight import PreflightService
-from .common import ConfigDirOption, JsonOption, RegionOption, exit_on_error, load_configs_or_exit
+from .common import (
+    ConfigDirOption,
+    JsonOption,
+    RegionOption,
+    exit_on_error,
+    load_configs_or_exit,
+    require_credentials_or_exit,
+)
 from .ui import (
     console,
     create_table,
@@ -133,6 +140,7 @@ def run_preflight_checks(
 
     with exit_on_error("Pre-flight Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
+        require_credentials_or_exit(session_mgr)
         report = PreflightService(session_mgr, bundle).run_all_checks(region_override=region)
 
         if json_output:
