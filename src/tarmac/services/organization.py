@@ -441,11 +441,7 @@ class OrganizationService:
         return registered
 
     def register_cloudtrail_delegated_administrator(self, account_id: str) -> None:
-        """Make the account CloudTrail's delegated administrator.
-
-        Uses CloudTrail's API rather than Organizations', because only CloudTrail's also creates its service-linked roles.
-        """
-        key = f"delegated-admin:cloudtrail.amazonaws.com:{account_id}"
+        """Uses CloudTrail's API, because Organizations' does not create CloudTrail's service-linked roles."""
         try:
             self.session_mgr.get_client("cloudtrail").register_organization_delegated_admin(
                 MemberAccountId=account_id
@@ -453,16 +449,10 @@ class OrganizationService:
         except ClientError as e:
             if aws_error_code(e) != "AccountRegisteredException":
                 raise
-            audit(
-                "register",
-                key,
-                Outcome.UNCHANGED,
-                f"Account {account_id} is already CloudTrail's delegated administrator",
-            )
             return
         audit(
             "register",
-            key,
+            f"delegated-admin:cloudtrail.amazonaws.com:{account_id}",
             Outcome.SUCCEEDED,
             f"Registered account {account_id} as CloudTrail's delegated administrator",
         )

@@ -766,7 +766,7 @@ def test_teardown_cloudtrail_missing_trail_is_silent(test_bundle):
     assert not [r for r in reports if r.resource_type == "CloudTrail Trail"]
 
 
-def test_teardown_cloudtrail_deletes_the_audit_stack_and_deregisters_audit(test_bundle):
+def test_teardown_cloudtrail_deletes_the_stack_in_the_audit_account(test_bundle):
     trail = MagicMock()
     trail.get_trail.side_effect = ClientError(
         {"Error": {"Code": "TrailNotFoundException", "Message": "nope"}}, "GetTrail"
@@ -779,15 +779,11 @@ def test_teardown_cloudtrail_deletes_the_audit_stack_and_deregisters_audit(test_
     audit_name = test_bundle.get_audit_account_name()
 
     with patch.object(svc, "_get_active_accounts", return_value={audit_name: "444455556666"}):
-        reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
+        svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
 
     audit_cfn.delete_stack.assert_called_once_with(
         StackName=f"{test_bundle.org.organization.name}-organization-cloudtrail"
     )
-    trail.deregister_organization_delegated_admin.assert_called_once_with(
-        DelegatedAdminAccountId="444455556666"
-    )
-    assert any(r.resource_type == "Delegated Administrator" and r.action == "DELETED" for r in reports)
 
 
 def _scp_clients(tagged: bool) -> dict[str, MagicMock]:

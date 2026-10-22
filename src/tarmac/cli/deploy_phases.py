@@ -294,7 +294,7 @@ def _run_phase_3_cloudtrail(
         org_tags=bundle.get_organization_tags(),
         termination_protection=True,
     )
-    print_success(f"Phase 3 complete: CloudTrail stack {report.action} in {audit_name}.")
+    print_success(f"Phase 3 complete: CloudTrail stack {report.action}.")
     _record_phase(session_mgr, "cloudtrail")
 
 

@@ -67,10 +67,9 @@ service_control_policies:
         - "root"
 
 # Organizational Unit (OU) Hierarchy
-# Based on the OUs AWS recommends in "Organizing Your AWS Environment Using Multiple Accounts".
 ou_structure:
   - name: "Security"
-    description: "Only the log archive and security tooling (audit) accounts"
+    description: "Security and compliance accounts"
   - name: "Infrastructure"
     description: "Shared infrastructure and networking accounts"
   - name: "Workloads"

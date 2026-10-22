@@ -75,8 +75,7 @@ class StatusService:
                     audit_id, "cloudformation", region_name=target_region
                 )
                 ct_status = stack_status(audit_cfn, Stack.CLOUDTRAIL.for_org(bundle.org.organization.name))
-            except AWS_ERRORS as e:
-                logger.debug("Could not inspect CloudTrail stack in account %s: %s", audit_id, e)
+            except AWS_ERRORS:
                 ct_status = "ACCESS_ERROR"
 
         backend_name = bundle.get_backend_account_name() or "deployment"

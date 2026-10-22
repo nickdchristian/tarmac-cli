@@ -225,7 +225,7 @@ class ImportService:
 
     @staticmethod
     def _tarmac_trail_ids(client: Any, trails: list[dict[str, Any]]) -> set[str]:
-        """ARNs of the trails tagged as tarmac's. The tag finds the trail whichever account holds its stack."""
+        """ARNs of the trails tagged as tarmac's."""
         arns = [str(t["TrailARN"]) for t in trails if t.get("TrailARN")]
         if not arns:
             return set()

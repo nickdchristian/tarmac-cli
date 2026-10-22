@@ -135,7 +135,6 @@
         "cloudtrail:AddTags",
         "cloudtrail:RemoveTags",
         "cloudtrail:RegisterOrganizationDelegatedAdmin",
-        "cloudtrail:DeregisterOrganizationDelegatedAdmin",
         "iam:GetRole"
       ],
       "Resource": "*"
