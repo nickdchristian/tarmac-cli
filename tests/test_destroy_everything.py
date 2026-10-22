@@ -351,7 +351,9 @@ def test_recording_never_breaks_an_audited_action(tmp_path: Path):
     audit("create", "ou:Other", Outcome.SUCCEEDED, "x")  # must not raise
 
 
-def test_full_teardown_runs_in_order_and_ends_with_the_deployment_permission_set(inv: Inventory, tmp_path: Path):
+def test_full_teardown_runs_in_order_and_ends_with_the_deployment_permission_set(
+    inv: Inventory, tmp_path: Path
+):
     from tarmac.core.config_loader import load_all_configs
     from tarmac.services.scaffold import scaffold_project
 
