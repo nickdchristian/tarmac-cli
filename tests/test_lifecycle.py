@@ -92,7 +92,7 @@ def test_assume_role_gives_up_when_access_stays_denied():
 # redeploy after a failed teardown: DELETE_FAILED / CREATE_FAILED stacks
 
 
-@pytest.mark.parametrize("status", ["DELETE_FAILED", "CREATE_FAILED", "ROLLBACK_COMPLETE"])
+@pytest.mark.parametrize("status", ["DELETE_FAILED", "CREATE_FAILED", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED"])
 def test_deploy_stack_recreates_stacks_stuck_in_unusable_states(status):
     svc = CloudFormationService(MagicMock())
     cfn = MagicMock()

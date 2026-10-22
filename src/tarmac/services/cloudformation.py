@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Stacks in these states can never be updated in place; they must be deleted and recreated.
 UNUSABLE_STACK_STATES = frozenset(
-    {"ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS", "CREATE_FAILED", "DELETE_FAILED"}
+    {"ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "REVIEW_IN_PROGRESS", "CREATE_FAILED", "DELETE_FAILED"}
 )
 
 
