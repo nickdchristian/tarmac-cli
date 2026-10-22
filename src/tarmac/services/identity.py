@@ -23,6 +23,8 @@ from .cloudformation import CloudFormationService
 logger = logging.getLogger(__name__)
 
 DEPLOYMENT_PERMISSION_SET = "TarmacDeployment"
+MANAGEMENT_ADMIN_PERMISSION_SET = "ManagementAdministrator"
+BOOTSTRAP_PERMISSION_SETS = (DEPLOYMENT_PERMISSION_SET, MANAGEMENT_ADMIN_PERMISSION_SET)
 
 
 def deployment_policy() -> str:

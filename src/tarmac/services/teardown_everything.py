@@ -15,7 +15,7 @@ from ..core.exceptions import AWS_ERRORS, IdentityCenterError, aws_error_code, a
 from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from ..core.org_accounts import is_active, iter_accounts
-from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService
+from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
 from .teardown_base import TeardownBase
 
 logger = logging.getLogger(__name__)
@@ -448,36 +448,33 @@ class EverythingTeardown(TeardownBase):
         return False
 
     def teardown_access(self, dry_run: bool = False) -> list[TeardownItemReport]:
-        """Remove the TarmacDeployment permission set from `tarmac bootstrap`, unless this run is signed in with it."""
+        """Remove the permission sets from `tarmac bootstrap`, except one this run is signed in with."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
-
-        def report(action: str, message: str) -> None:
-            results.append(
-                _item("Permission Set", DEPLOYMENT_PERMISSION_SET, action, message, account_id=mgmt_id)
-            )
-
         try:
             identity = IdentityService(self.session_mgr)
             instance_arn, _ = identity.get_instance_details()
-            ps_arn = identity.list_permission_sets(instance_arn).get(DEPLOYMENT_PERMISSION_SET)
+            existing = identity.list_permission_sets(instance_arn)
             caller_arn = str(self.session_mgr.get_caller_identity().get("Arn", ""))
         except IdentityCenterError:
             return results
         except AWS_ERRORS as exc:
-            report("FAILED", str(exc))
+            results.append(_item("Permission Set", "bootstrap", "FAILED", str(exc), account_id=mgmt_id))
             return results
-        if ps_arn is None:
-            return results
-        if f"AWSReservedSSO_{DEPLOYMENT_PERMISSION_SET}_" in caller_arn:
-            report(
-                "SKIPPED",
-                "This run is signed in with it; delete it in the IAM Identity Center console as root.",
-            )
-        elif dry_run:
-            report("SIMULATED", "Would delete it and its assignments")
-        elif identity.delete_permission_set(instance_arn, ps_arn):
-            report("DELETED", "Deleted it and its assignments")
-        else:
-            report("FAILED", "Could not delete it")
+        for name in BOOTSTRAP_PERMISSION_SETS:
+            ps_arn = existing.get(name)
+            if ps_arn is None:
+                continue
+            if f"AWSReservedSSO_{name}_" in caller_arn:
+                action, message = (
+                    "SKIPPED",
+                    "This run is signed in with it; delete it in the IAM Identity Center console.",
+                )
+            elif dry_run:
+                action, message = "SIMULATED", "Would delete it and its assignments"
+            elif identity.delete_permission_set(instance_arn, ps_arn):
+                action, message = "DELETED", "Deleted it and its assignments"
+            else:
+                action, message = "FAILED", "Could not delete it"
+            results.append(_item("Permission Set", name, action, message, account_id=mgmt_id))
         return results

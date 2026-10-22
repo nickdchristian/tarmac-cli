@@ -295,7 +295,7 @@ _EVERYTHING_REMOVES = (
     "Organizational Units tarmac created, if they are empty",
     "Identity Center users and groups tarmac created, with their assignments",
     "Trusted access, delegated administrators, root-access features, alternate contacts and cost tags tarmac enabled",
-    "The TarmacDeployment permission set from tarmac bootstrap (unless this run is signed in with it)",
+    "The permission sets from tarmac bootstrap (except the one this run is signed in with)",
 )
 
 

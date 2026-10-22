@@ -249,11 +249,16 @@ def test_the_deployment_permission_set_is_deleted_last():
     assert [i.action for i in items] == ["DELETED"]
 
 
-def test_a_run_signed_in_with_it_leaves_it_for_root():
+def test_a_run_signed_in_with_one_leaves_that_one():
     arn = "arn:aws:sts::111:assumed-role/AWSReservedSSO_TarmacDeployment_abc123/me"
-    items, identity = _teardown_access(arn, {"TarmacDeployment": "arn:ps"})
-    identity.delete_permission_set.assert_not_called()
-    assert [i.action for i in items] == ["SKIPPED"]
+    items, identity = _teardown_access(
+        arn, {"TarmacDeployment": "arn:ps", "ManagementAdministrator": "arn:admin"}
+    )
+    identity.delete_permission_set.assert_called_once_with("arn:inst", "arn:admin")
+    assert [(i.resource_name, i.action) for i in items] == [
+        ("TarmacDeployment", "SKIPPED"),
+        ("ManagementAdministrator", "DELETED"),
+    ]
 
 
 def test_nothing_to_do_without_the_permission_set():
@@ -376,7 +381,7 @@ def test_full_teardown_runs_in_order_and_ends_with_the_deployment_permission_set
 
     order = [p.split("|")[0].strip() for p in phases]
     assert order.index("Organizational Units created by tarmac") < order.index("Phase 1")
-    assert phases[-1] == "Tarmac deployment permission set"
+    assert phases[-1] == "Tarmac bootstrap permission sets"
     assert phases[-2] == "Member accounts (kept)"
     assert report.status == "SIMULATED"
     assert "Parent" in inv.get("ou")

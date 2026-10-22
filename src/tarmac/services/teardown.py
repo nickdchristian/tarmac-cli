@@ -122,7 +122,7 @@ class TeardownService(
         if inventory is not None:
             self._notify_phase("Member accounts (kept)")
             items.extend(self.report_accounts_kept())
-            self._notify_phase("Tarmac deployment permission set")
+            self._notify_phase("Tarmac bootstrap permission sets")
             items.extend(self.teardown_access(dry_run=dry_run))
 
         status = (

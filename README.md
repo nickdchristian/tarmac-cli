@@ -162,10 +162,12 @@ Identity Center user, and `tarmac preflight` and `tarmac deploy` refuse to conti
 `tarmac bootstrap`, run once as root from AWS CloudShell after enabling IAM Identity Center (see
 [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account)), sets that up:
 
-* the `admin_user` from `identity.yaml` in Identity Center,
-* the `TarmacDeployment` permission set, holding [tarmac's policy](src/tarmac/templates/policies/iam/tarmac-deployment.json)
-  with 4-hour sessions, assigned to that user on the management account,
-* a `tarmac` profile in `~/.aws/config` that signs in with it.
+* the `admin_user` from `identity.yaml` (you) in Identity Center,
+* two permission sets assigned to that user on the management account, both with 4-hour sessions:
+  `TarmacDeployment`, holding [tarmac's policy](src/tarmac/templates/policies/iam/tarmac-deployment.json), which tarmac
+  runs as, and `ManagementAdministrator` (`AdministratorAccess`) for your own work in the console, so root is no
+  longer needed,
+* a `tarmac` profile in `~/.aws/config` that signs in as `TarmacDeployment`.
 
 Choose the Identity Center Region deliberately: an organization can have it in one Region only, and moving it later means
 deleting the instance and creating another
@@ -279,7 +281,7 @@ To review or change any of this before it reaches AWS:
 | **`tarmac deploy`** | Run the landing zone deployment. `--phase N` runs one phase, `--dry-run` shows what would change. |
 | **`tarmac status`** | Compare the live environment with the configuration. `--detail` adds every drifted or missing item, the live OUs and the cost anomaly monitors; `--strict` exits 1 on drift. |
 | **`tarmac import`** | Read an existing organization (read-only) and write matching configuration files. |
-| **`tarmac destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the `TarmacDeployment` permission set. |
+| **`tarmac destroy`** | Safely destroy deployed governance stacks (protected by production safety locks). `--everything` also removes OUs, Identity Center users/groups, org settings and the permission sets from `tarmac bootstrap`. |
 
 After `tarmac bootstrap`, everything that changes AWS goes through `tarmac deploy`, one phase at a time if you like:
 
@@ -617,7 +619,7 @@ sets, milestone tags) so `tarmac deploy` can rebuild it. It deliberately **keeps
   the delegated administrators, deletes the GuardDuty detectors and disables Security Hub in the audit,
   management and declared member accounts). **This deletes finding history**, so it is opt-in. Failures per
   account/region are reported, and a failed step makes the command exit non-zero;
-* IAM Identity Center users and groups, OUs, organization settings and the `TarmacDeployment` permission set (kept unless you pass
+* IAM Identity Center users and groups, OUs, organization settings and the permission sets from `tarmac bootstrap` (kept unless you pass
   `--everything`, below).
 
 The log-archive KMS key is scheduled for deletion (30-day window, cancel with `aws kms cancel-key-deletion`)
@@ -633,8 +635,8 @@ tarmac destroy --everything               # asks you to type the organization na
 On top of a normal destroy, `--everything` removes, in dependency order: the Identity Center users and groups
 tarmac created (and their assignments), the OUs tarmac created (only when empty), the organization settings tarmac
 enabled (delegated administrators, root credentials management and root sessions, trusted service access,
-alternate contacts, cost-allocation-tag activation), the milestone tags, and finally the `TarmacDeployment` permission
-set from `tarmac bootstrap`.
+alternate contacts, cost-allocation-tag activation), the milestone tags, and finally the `TarmacDeployment` and
+`ManagementAdministrator` permission sets from `tarmac bootstrap`.
 
 What counts as "created by tarmac" is decided by evidence, never by name:
 
@@ -649,8 +651,8 @@ What counts as "created by tarmac" is decided by evidence, never by name:
 **Member accounts are never closed by this command.** It lists the accounts tarmac manages with the exact
 `tarmac account suspend NAME --close` command for each. An alternate contact that replaced one which already existed is
 left in place (tarmac cannot restore the old one). Disabling Identity Center trusted access is also left to you, because
-it can delete the Identity Center instance. If you run the teardown signed in with `TarmacDeployment`, the permission set
-is kept (deleting it would end the session) and the command tells you to delete it in the Identity Center console.
+it can delete the Identity Center instance. The permission set the teardown itself is signed in with is kept (deleting it
+would end the session), and the command tells you to delete it in the Identity Center console.
 
 If a teardown leaves a CloudFormation stack in `DELETE_FAILED` (for example a bucket that could not be emptied),
 fix the cause and re-run teardown or deploy: both now delete and recreate stacks stuck in `DELETE_FAILED`,

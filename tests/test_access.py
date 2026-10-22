@@ -165,12 +165,21 @@ def test_bootstrap_creates_the_login_and_writes_the_profile(
     result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
     assert result.exit_code == 0, result.output
     sso = identity.return_value.sso_client
-    assert sso.create_permission_set.call_args.kwargs["Name"] == "TarmacDeployment"
+    assert [c.kwargs["Name"] for c in sso.create_permission_set.call_args_list] == [
+        "TarmacDeployment",
+        "ManagementAdministrator",
+    ]
+    sso.attach_managed_policy_to_permission_set.assert_called_once_with(
+        InstanceArn="arn:inst",
+        PermissionSetArn="arn:ps-new",
+        ManagedPolicyArn="arn:aws:iam::aws:policy/AdministratorAccess",
+    )
     policy = sso.put_inline_policy_to_permission_set.call_args.kwargs
     assert (policy["PermissionSetArn"], json.loads(policy["InlinePolicy"])) == (
         "arn:ps-new",
         json.loads(deployment_policy()),
     )
+    assert sso.create_account_assignment.call_count == 2
     assert sso.create_account_assignment.call_args.kwargs == {
         "InstanceArn": "arn:inst",
         "TargetId": "111111111111",
@@ -191,7 +200,9 @@ def test_bootstrap_creates_the_login_and_writes_the_profile(
 def test_bootstrap_rerun_refreshes_the_policy(
     writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    identity = _identity({"TarmacDeployment": "arn:ps-old"}, assigned=True)
+    identity = _identity(
+        {"TarmacDeployment": "arn:ps-old", "ManagementAdministrator": "arn:admin"}, assigned=True
+    )
     result = _bootstrap(identity, writable_config_dir, tmp_path, monkeypatch)
     assert result.exit_code == 0, result.output
     sso = identity.return_value.sso_client

@@ -7,7 +7,12 @@ import typer
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, IdentityCenterError
 from ..core.models import TAG_MANAGED_BY
-from ..services.identity import DEPLOYMENT_PERMISSION_SET, IdentityService, deployment_policy
+from ..services.identity import (
+    DEPLOYMENT_PERMISSION_SET,
+    MANAGEMENT_ADMIN_PERMISSION_SET,
+    IdentityService,
+    deployment_policy,
+)
 from .common import ConfigDirOption, load_configs_or_exit
 from .ui import error_console, print_info, print_success
 
@@ -31,11 +36,58 @@ def _append_section(config_path: Path, name: str, fields: dict[str, str]) -> boo
     return True
 
 
-def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
-    """Create your IAM Identity Center login with tarmac's least-privilege permission set, and its AWS CLI profile.
+def _grant(
+    identity: IdentityService,
+    instance_arn: str,
+    account_id: str,
+    user_id: str | None,
+    name: str,
+    policy: str | None,
+) -> None:
+    """Give the user permission set `name` on the account: with inline `policy`, or AdministratorAccess when None."""
+    sso = identity.sso_client
+    ps_arn = identity.list_permission_sets(instance_arn).get(name)
+    if ps_arn is None:
+        ps_arn = sso.create_permission_set(
+            InstanceArn=instance_arn,
+            Name=name,
+            SessionDuration="PT4H",
+            Tags=[{"Key": TAG_MANAGED_BY, "Value": "tarmac"}],
+        )["PermissionSet"]["PermissionSetArn"]
+        if policy is None:
+            sso.attach_managed_policy_to_permission_set(
+                InstanceArn=instance_arn,
+                PermissionSetArn=ps_arn,
+                ManagedPolicyArn="arn:aws:iam::aws:policy/AdministratorAccess",
+            )
+    if policy is not None:
+        sso.put_inline_policy_to_permission_set(
+            InstanceArn=instance_arn, PermissionSetArn=ps_arn, InlinePolicy=policy
+        )
+    assignments = sso.list_account_assignments(
+        InstanceArn=instance_arn, AccountId=account_id, PermissionSetArn=ps_arn
+    )["AccountAssignments"]
+    if not any(a["PrincipalId"] == user_id for a in assignments):
+        sso.create_account_assignment(
+            InstanceArn=instance_arn,
+            TargetId=account_id,
+            TargetType="AWS_ACCOUNT",
+            PermissionSetArn=ps_arn,
+            PrincipalType="USER",
+            PrincipalId=user_id,
+        )
+    elif policy is not None:
+        sso.provision_permission_set(
+            InstanceArn=instance_arn, PermissionSetArn=ps_arn, TargetType="ALL_PROVISIONED_ACCOUNTS"
+        )
 
-    Run this once as root from AWS CloudShell after enabling IAM Identity Center, and again after upgrading tarmac
-    to refresh the permission set's policy.
+
+def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
+    """Create your IAM Identity Center login for the management account, and the AWS CLI profile tarmac runs with.
+
+    The admin_user from identity.yaml gets two permission sets there: TarmacDeployment, tarmac's least-privilege
+    policy, and ManagementAdministrator for the console. Run this once as root from AWS CloudShell after enabling
+    IAM Identity Center, and again after upgrading tarmac to refresh TarmacDeployment's policy.
     """
     bundle = load_configs_or_exit(config_dir)
     admin = bundle.identity.identity_center.admin_user
@@ -57,39 +109,15 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
     try:
         identity = IdentityService(session_mgr, preferred_region=sso_region)
         user_id = identity.get_or_create_user(admin)
-        sso = identity.sso_client
-        ps_arn = identity.list_permission_sets(instance_arn).get(DEPLOYMENT_PERMISSION_SET)
-        if ps_arn is None:
-            ps_arn = sso.create_permission_set(
-                InstanceArn=instance_arn,
-                Name=DEPLOYMENT_PERMISSION_SET,
-                Description="Least-privilege access tarmac runs with",
-                SessionDuration="PT4H",
-                Tags=[{"Key": TAG_MANAGED_BY, "Value": "tarmac"}],
-            )["PermissionSet"]["PermissionSetArn"]
-        sso.put_inline_policy_to_permission_set(
-            InstanceArn=instance_arn, PermissionSetArn=ps_arn, InlinePolicy=deployment_policy()
-        )
-        assignments = sso.list_account_assignments(
-            InstanceArn=instance_arn, AccountId=account_id, PermissionSetArn=ps_arn
-        )["AccountAssignments"]
-        if any(a["PrincipalId"] == user_id for a in assignments):
-            sso.provision_permission_set(
-                InstanceArn=instance_arn, PermissionSetArn=ps_arn, TargetType="ALL_PROVISIONED_ACCOUNTS"
-            )
-        else:
-            sso.create_account_assignment(
-                InstanceArn=instance_arn,
-                TargetId=account_id,
-                TargetType="AWS_ACCOUNT",
-                PermissionSetArn=ps_arn,
-                PrincipalType="USER",
-                PrincipalId=user_id,
-            )
+        _grant(identity, instance_arn, account_id, user_id, DEPLOYMENT_PERMISSION_SET, deployment_policy())
+        _grant(identity, instance_arn, account_id, user_id, MANAGEMENT_ADMIN_PERMISSION_SET, None)
     except AWS_ERRORS as e:
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")
         raise typer.Exit(code=1)
-    print_success(f"'{admin.username}' can sign in to account {account_id} with {DEPLOYMENT_PERMISSION_SET}.")
+    print_success(
+        f"'{admin.username}' can sign in to account {account_id} as {DEPLOYMENT_PERMISSION_SET} (tarmac) "
+        f"and {MANAGEMENT_ADMIN_PERMISSION_SET} (the console)."
+    )
 
     config_path = Path("~/.aws/config").expanduser()
     _append_section(
