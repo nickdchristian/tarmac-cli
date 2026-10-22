@@ -442,21 +442,29 @@ class ImportService:
         outside: dict[str, int] = {}  # assignments to accounts that are not in accounts.yaml
         user_assignments = 0
         for ps_arn, ps in permission_sets.items():
-            for apage in sso.get_paginator("list_accounts_for_provisioned_permission_set").paginate(
-                InstanceArn=instance_arn, PermissionSetArn=ps_arn
-            ):
-                for account_id in apage.get("AccountIds", []):
-                    imported = account_id in account_names
-                    for ppage in sso.get_paginator("list_account_assignments").paginate(
+            account_ids = (
+                account_id
+                for page in sso.get_paginator("list_accounts_for_provisioned_permission_set").paginate(
+                    InstanceArn=instance_arn, PermissionSetArn=ps_arn
+                )
+                for account_id in page.get("AccountIds", [])
+            )
+            for account_id in account_ids:
+                imported = account_id in account_names
+                assignments = (
+                    a
+                    for page in sso.get_paginator("list_account_assignments").paginate(
                         InstanceArn=instance_arn, AccountId=account_id, PermissionSetArn=ps_arn
-                    ):
-                        for a in ppage.get("AccountAssignments", []):
-                            if a.get("PrincipalType") != "GROUP":
-                                user_assignments += 1
-                            elif not imported:
-                                outside[account_id] = outside.get(account_id, 0) + 1
-                            elif (group := by_id.get(a["PrincipalId"])) is not None:
-                                _add_assignment(group, ps["definition"]["name"], account_names[account_id])
+                    )
+                    for a in page.get("AccountAssignments", [])
+                )
+                for a in assignments:
+                    if a.get("PrincipalType") != "GROUP":
+                        user_assignments += 1
+                    elif not imported:
+                        outside[account_id] = outside.get(account_id, 0) + 1
+                    elif (group := by_id.get(a["PrincipalId"])) is not None:
+                        _add_assignment(group, ps["definition"]["name"], account_names[account_id])
         if outside:
             self.report.todos.append(
                 f"{sum(outside.values())} group assignment(s) on {len(outside)} account(s) that are not in "
