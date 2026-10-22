@@ -194,8 +194,12 @@ can manage permission sets and assume `OrganizationAccountAccessRole` can grant 
 `aws cloudformation delete-stack --stack-name tarmac-access`); delete the `tarmac-bootstrap` user's access keys and MFA
 device first if you created them.
 
-An organization trail stack created by 0.2 or earlier stays in the management account, and tarmac keeps updating it
-there; only new deployments create it in the audit account. Your existing `ou_structure` is unchanged; the new OU
+The organization trail stack now lives in the audit account, and tarmac no longer manages the
+`<org>-organization-cloudtrail` stack an earlier release left in the management account. To move without a gap in
+logging, give `cloudtrail.trail_name` a new value and run `tarmac deploy --phase 3`, which creates the new trail from
+the audit account. Once it shows a delivery time (`aws cloudtrail get-trail-status --name <new trail>`), turn off
+termination protection on the old stack and delete it. Phase 3 also needs the audit account now, and creates it if it
+is declared but missing. Your existing `ou_structure` is unchanged; the new OU
 layout only applies to files that `tarmac init` creates.
 
 Member accounts need nothing extra: Organizations creates `OrganizationAccountAccessRole` in every account tarmac
@@ -264,7 +268,7 @@ is where you try SCP changes before they reach other OUs; Sandbox and Suspended 
 | Template | Stack | Account / Region | Deployed by | What it creates |
 | :--- | :--- | :--- | :--- | :--- |
 | [`log-archive-hardening.yaml`](src/tarmac/templates/cloudformation/log-archive-hardening.yaml) | `<org>-log-archive-hardening` | Log Archive / primary | Phase 3 | The central CloudTrail bucket, an access-logs bucket, a separate AWS Config bucket (when Config recorders are enabled) and a KMS key (when `cloudtrail.enable_kms` is on) |
-| [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Audit / primary (management for a stack created before 0.3) | Phase 3 | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket. Phase 3 first registers the audit account as CloudTrail's delegated administrator |
+| [`organization-cloudtrail.yaml`](src/tarmac/templates/cloudformation/organization-cloudtrail.yaml) | `<org>-organization-cloudtrail` | Audit / primary | Phase 3 | One multi-Region organization trail with log file validation, delivering to the Log Archive bucket. Phase 3 first registers the audit account as CloudTrail's delegated administrator |
 | [`account-budget.yaml`](src/tarmac/templates/cloudformation/account-budget.yaml) | `<account>-monthly-budget` | Each member account with a budget / primary | Phase 4 | A monthly cost budget and an SNS topic for its email and webhook alerts |
 | [`terraform-backend.yaml`](src/tarmac/templates/cloudformation/terraform-backend.yaml) | `<org>-terraform-backend` | Deployment / primary | Phase 5 | The Terraform state bucket, plus a DynamoDB lock table only when `enable_dynamodb` asks for one |
 | [`audit-account-hardening.yaml`](src/tarmac/templates/cloudformation/audit-account-hardening.yaml) | `<org>-audit-account-hardening` | Audit / primary | Phase 5 | An AWS Config aggregator, a KMS-encrypted SNS alert topic, and EventBridge rules forwarding Config non-compliance, GuardDuty findings, Security Hub findings and root activity to it |

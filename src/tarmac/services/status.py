@@ -12,7 +12,6 @@ from ..core.exceptions import AWS_ERRORS, IdentityCenterError
 from ..core.org_accounts import is_active, is_closed
 from ..core.stack_names import Stack
 from .accounts import AccountService
-from .cloudformation import cloudtrail_stack_home
 from .identity import IdentityService
 from .ou import OUService
 
@@ -68,8 +67,17 @@ class StatusService:
 
         cfn_client = self.session_mgr.get_client("cloudformation", region_name=target_region)
         acct_map = {str(a["Name"]): str(a["Id"]) for a in active_accts}
-        ct_cfn, _ = cloudtrail_stack_home(self.session_mgr, bundle, target_region, acct_map)
-        ct_status = stack_status(ct_cfn, Stack.CLOUDTRAIL.for_org(bundle.org.organization.name))
+        audit_id = bundle.resolve_account_id(bundle.get_audit_account_name() or "audit", acct_map)
+        ct_status = "NOT_FOUND"
+        if audit_id:
+            try:
+                audit_cfn = self.session_mgr.get_member_client(
+                    audit_id, "cloudformation", region_name=target_region
+                )
+                ct_status = stack_status(audit_cfn, Stack.CLOUDTRAIL.for_org(bundle.org.organization.name))
+            except AWS_ERRORS as e:
+                logger.debug("Could not inspect CloudTrail stack in account %s: %s", audit_id, e)
+                ct_status = "ACCESS_ERROR"
 
         backend_name = bundle.get_backend_account_name() or "deployment"
         deployment_id = bundle.resolve_account_id(backend_name, acct_map)

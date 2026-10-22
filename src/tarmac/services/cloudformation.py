@@ -12,10 +12,8 @@ from botocore.exceptions import BotoCoreError, ClientError, WaiterError
 
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
-from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, DeploymentError, aws_error_message
 from ..core.models import StackDeployReport
-from ..core.stack_names import Stack
 from ..core.tagging import merge_tags, to_cfn_tags
 
 logger = logging.getLogger(__name__)
@@ -108,23 +106,6 @@ def _stack_parameter(cfn_client: Any, stack_name: str, key: str) -> str | None:
         if isinstance(param, dict) and param.get("ParameterKey") == key:
             return str(param.get("ParameterValue"))
     return None
-
-
-def cloudtrail_stack_home(
-    session_mgr: AwsSessionManager, bundle: ConfigBundle, region: str, accounts: dict[str, str]
-) -> tuple[Any, str]:
-    """CloudFormation client and account ID for the organization trail's stack.
-
-    The audit account runs the trail as CloudTrail's delegated administrator, as the AWS Security Reference
-    Architecture recommends. A stack that an earlier release created in the management account stays there, and the
-    trail is managed from the management account when there is no audit account.
-    """
-    mgmt_cfn = session_mgr.get_client("cloudformation", region_name=region)
-    audit_id = bundle.resolve_account_id(bundle.get_audit_account_name(), accounts)
-    stack_name = Stack.CLOUDTRAIL.for_org(bundle.org.organization.name)
-    if audit_id and CloudFormationService(session_mgr)._get_stack_status(mgmt_cfn, stack_name) is None:
-        return session_mgr.get_member_client(audit_id, "cloudformation", region_name=region), audit_id
-    return mgmt_cfn, str(session_mgr.get_caller_identity().get("Account", ""))
 
 
 class CloudFormationService:

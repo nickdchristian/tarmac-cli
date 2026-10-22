@@ -27,7 +27,7 @@ from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .baseline import BUDGET_TEMPLATE, budget_parameters, budget_stack_name
-from .cloudformation import CloudFormationService, cloudtrail_stack_home, lock_table_wanted
+from .cloudformation import CloudFormationService, lock_table_wanted
 from .config_recorder import ConfigRecorderService, service_linked_role_arn
 from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
@@ -402,30 +402,26 @@ class Planner:
         audit_name = self.bundle.get_audit_account_name() or "audit"
         trail_stack = Stack.CLOUDTRAIL.for_org(self.org_name)
         account_id = self._account_id(name)
-        if not account_id:
-            declared = self.bundle.get_account(name)
+        audit_id = self._account_id(audit_name)
+        for missing in [n for n, i in ((name, account_id), (audit_name, audit_id)) if not i]:
+            declared = self.bundle.get_account(missing)
             phase.items.append(
                 PlanItem(
                     "account",
-                    name,
+                    missing,
                     "CREATE",
                     f"in OU {declared.ou}" if declared else "not declared in accounts.yaml",
                 )
             )
-        audit_declared = self.bundle.get_account(audit_name)
-        audit_missing = bool(audit_declared) and not self._account_id(audit_name)
-        if audit_declared and audit_missing:
-            phase.items.append(PlanItem("account", audit_name, "CREATE", f"in OU {audit_declared.ou}"))
         self._log_archive_stack(phase)
-        if not account_id or audit_missing:
-            self._missing_account(phase, name if not account_id else audit_name, trail_stack)
+        if not account_id or not audit_id:
+            self._missing_account(phase, audit_name if account_id else name, trail_stack)
             return
-        cfn_client, home_id = cloudtrail_stack_home(self.session_mgr, self.bundle, self.region, self.accounts)
         self._stack(
             phase,
-            cfn_client,
+            self._member_cfn(audit_id),
             trail_stack,
-            "management" if home_id == self.management_id else audit_name,
+            audit_name,
             cloudtrail_parameters(self.bundle, account_id, bool(self.bundle.org.cloudtrail.enable_kms)),
             template="cloudformation/organization-cloudtrail.yaml",
         )

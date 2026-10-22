@@ -17,12 +17,10 @@ from typing import Any
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AWS_ERRORS
-from ..core.org_accounts import is_active
 from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .baseline import budget_stack_name
-from .cloudformation import cloudtrail_stack_home
 from .ou import OUService
 from .scp import SCPService
 from .status import stack_status
@@ -339,11 +337,6 @@ class DriftService:
         prefix = bundle.org.organization.name
         mgmt_cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
 
-        active = {name: str(a["Id"]) for name, a in live_accts.items() if is_active(a)}
-        ct_cfn, _ = cloudtrail_stack_home(self.session_mgr, bundle, target_region, active)
-        ct_status = stack_status(ct_cfn, Stack.CLOUDTRAIL.for_org(prefix))
-        self._record_stack_drift("CloudTrail", ct_status, report)
-
         sso_region = (
             bundle.identity.identity_center.region
             if (
@@ -368,6 +361,7 @@ class DriftService:
                 Stack.LOG_ARCHIVE,
             ),
             ("AuditHardening", bundle.get_audit_account_name() or "audit", Stack.AUDIT_ACCOUNT),
+            ("CloudTrail", bundle.get_audit_account_name() or "audit", Stack.CLOUDTRAIL),
         ]
         for friendly_name, acct_name, stack in stacks_to_check:
             self._audit_member_stack(

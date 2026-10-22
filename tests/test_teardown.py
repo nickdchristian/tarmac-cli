@@ -114,8 +114,11 @@ def test_teardown_cloudtrail(test_bundle):
         "ResourceTagList": [{"TagsList": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}]
     }
 
+    mock_session_mgr.get_member_client.return_value = mock_cfn
+
     service = TeardownService(mock_session_mgr)
-    reports = service.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
+    with patch.object(service, "_get_active_accounts", return_value={"audit": "444455556666"}):
+        reports = service.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
 
     deleted_reports = [r for r in reports if r.action == "DELETED"]
     assert len(deleted_reports) >= 1

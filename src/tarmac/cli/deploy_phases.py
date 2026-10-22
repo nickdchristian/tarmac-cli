@@ -13,7 +13,7 @@ from ..core.stack_names import LOG_ARCHIVE_BUCKETS, Bucket, Stack
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
-from ..services.cloudformation import CloudFormationService, cloudtrail_stack_home, lock_table_wanted
+from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
@@ -261,7 +261,13 @@ def _run_phase_3_cloudtrail(
             f"Phase 3 failed: Log Archive account '{log_archive_name}' could not be resolved from active accounts. "
             "Ensure the account is declared in accounts.yaml and provisioned before deploying CloudTrail."
         )
-    _foundational_account_id(session_mgr, bundle, bundle.get_audit_account_name() or "audit", accts)
+    audit_name = bundle.get_audit_account_name() or "audit"
+    audit_id = _foundational_account_id(session_mgr, bundle, audit_name, accts)
+    if not audit_id:
+        raise GovernanceError(
+            f"Phase 3 failed: Audit account '{audit_name}' could not be resolved from active accounts. "
+            "Declare it in accounts.yaml: it runs the organization trail as CloudTrail's delegated administrator."
+        )
 
     log_archive_report = _deploy_log_archive_hardening_stack(
         cfn_service,
@@ -275,14 +281,12 @@ def _run_phase_3_cloudtrail(
     )
     print_success(f"Phase 3: Log Archive hardening stack {log_archive_report.action}.")
 
-    cfn_client, home_id = cloudtrail_stack_home(session_mgr, bundle, target_region, accts)
-    if home_id != session_mgr.get_caller_identity().get("Account", ""):
-        OrganizationService(session_mgr).register_cloudtrail_delegated_administrator(home_id)
+    OrganizationService(session_mgr).register_cloudtrail_delegated_administrator(audit_id)
     template_file = resolve_resource_path(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
     report = cfn_service.deploy_stack(
-        cfn_client,
+        session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region),
         Stack.CLOUDTRAIL.for_org(bundle.org.organization.name),
         template_file,
         cloudtrail_parameters(bundle, log_archive_id, bool(bundle.org.cloudtrail.enable_kms)),
@@ -290,7 +294,7 @@ def _run_phase_3_cloudtrail(
         org_tags=bundle.get_organization_tags(),
         termination_protection=True,
     )
-    print_success(f"Phase 3 complete: CloudTrail stack {report.action} in account {home_id}.")
+    print_success(f"Phase 3 complete: CloudTrail stack {report.action} in {audit_name}.")
     _record_phase(session_mgr, "cloudtrail")
 
 
