@@ -30,7 +30,7 @@ accounts:
   # ---------------------------------------------------------------------------
   - name: "deployment"
     email: "aws-deployment@example.com"
-    ou: "Infrastructure"
+    ou: "Deployments"
     tags:
       Environment: "Infrastructure"
       Purpose: "CI/CD and Terraform State Backend"
@@ -93,7 +93,7 @@ accounts:
   # ---------------------------------------------------------------------------
   - name: "prod-app"
     email: "aws-prod@example.com"
-    ou: "Production"
+    ou: "Prod"
     tags:
       Environment: "Production"
       Workload: "Core"
@@ -111,7 +111,7 @@ accounts:
 
   - name: "stage-app"
     email: "aws-stage@example.com"
-    ou: "NonProduction"
+    ou: "Test"
     tags:
       Environment: "Stage"
       Workload: "Core"
@@ -125,7 +125,7 @@ accounts:
 
   - name: "dev-app"
     email: "aws-dev@example.com"
-    ou: "NonProduction"
+    ou: "Test"
     tags:
       Environment: "Development"
       Workload: "Core"

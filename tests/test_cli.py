@@ -679,7 +679,7 @@ def test_cli_status_detail_shows_drift(monkeypatch, sample_config_dir):
             DriftItem(
                 category="Account",
                 name="dev-app",
-                declared="OU: NonProduction",
+                declared="OU: Test",
                 live="Missing",
                 status="MISSING",
                 remediation="tarmac deploy --phase 4",
@@ -845,8 +845,9 @@ def test_cli_deploy_phase_4_aborts_on_failed_account_provisioning(sample_config_
     mock_ou_service.list_all_ous.return_value = {
         "Security": "ou-sec",
         "Infrastructure": "ou-inf",
-        "Production": "ou-prd",
-        "NonProduction": "ou-np",
+        "Deployments": "ou-dep",
+        "Prod": "ou-prd",
+        "Test": "ou-tst",
         "Suspended": "ou-sus",
     }
     mock_acct_service = MagicMock()
