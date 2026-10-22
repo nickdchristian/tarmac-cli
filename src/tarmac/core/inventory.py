@@ -121,9 +121,7 @@ class Inventory:
                     self._pull()
                     self._replay()
             logger.warning("Could not write inventory %s: other runs kept changing it", self.location)
-        except ClientError as e:
-            logger.warning("Could not write inventory %s: %s", self.location, aws_error_message(e))
-        except BotoCoreError as e:
+        except (ClientError, BotoCoreError) as e:
             logger.warning("Could not write inventory %s: %s", self.location, e)
 
     def record(self, resource: str, details: dict[str, Any] | None = None) -> bool:
@@ -210,8 +208,9 @@ def find_bucket(cfn_client: Any, org_name: str) -> str | None:
         if "does not exist" in aws_error_message(e):
             return None
         raise
-    outputs = stacks[0].get("Outputs", []) if stacks else []
-    return next((str(o["OutputValue"]) for o in outputs if o["OutputKey"] == "BucketName"), None)
+    return next(
+        (str(o["OutputValue"]) for o in stacks[0].get("Outputs", []) if o["OutputKey"] == "BucketName"), None
+    )
 
 
 def connect(session_mgr: Any, org_name: str, region: str, config_dir: Path) -> Inventory:
