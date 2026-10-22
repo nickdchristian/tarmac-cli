@@ -196,7 +196,7 @@ class ConfigBundle:
     def _check_identity_assignments(self, account_names: set[str]) -> list[str]:
         """Validate identity center group assignments point to valid permission sets and accounts."""
         errors: list[str] = []
-        all_acct_names = account_names.union({"all", "management"})
+        all_acct_names = account_names.union({"all"})
         valid_perm_sets = {ps.name for ps in self.identity.identity_center.permission_sets}
 
         for grp in self.identity.identity_center.groups:

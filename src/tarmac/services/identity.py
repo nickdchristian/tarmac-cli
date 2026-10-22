@@ -754,8 +754,6 @@ class IdentityService:
             norm_t = normalize_account_name(t)
             if norm_t in norm_map:
                 resolved.append(norm_map[norm_t])
-            elif t == "management":
-                resolved.append(self.session_mgr.get_caller_identity()["Account"])
             elif t.isdigit() and len(t) == 12:
                 resolved.append(t)
         return resolved

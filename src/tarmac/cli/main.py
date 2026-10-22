@@ -372,8 +372,8 @@ def show_info(
 def _credentials_verdict(is_root: bool, can_run_tarmac: bool) -> str:
     if is_root:
         return (
-            "[bold red]✗ Root credentials cannot assume roles in member accounts. Run 'tarmac access bootstrap' "
-            "from CloudShell, then use the tarmac role or an SSO admin.[/bold red]"
+            "[bold red]✗ Root credentials cannot assume roles in member accounts. Run 'tarmac access sso' "
+            "to create an IAM Identity Center login, then sign in with it.[/bold red]"
         )
     if not can_run_tarmac:
         return (

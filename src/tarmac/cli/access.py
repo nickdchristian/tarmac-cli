@@ -5,19 +5,22 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import GovernanceError
+from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code
 from ..core.stack_names import ACCESS_STACK
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
 from ..services.identity import IdentityService
+from .common import ConfigDirOption, load_configs_or_exit
 from .ui import console, error_console, print_header, print_info, print_success
 
 app = typer.Typer(help="Bootstrap the non-root role tarmac runs as", no_args_is_help=True)
 
 TEMPLATE_PATH = "cloudformation/tarmac-access.yaml"
 BOOTSTRAP_USER = "tarmac-bootstrap"
+ADMIN_PERMISSION_SET = "AdministratorAccess"
 
 
 def _append_section(config_path: Path, name: str, fields: dict[str, str]) -> bool:
@@ -118,22 +121,56 @@ def access_bootstrap(
     else:
         print_info(
             "Next: enable IAM Identity Center (pick its Region deliberately: it can only be moved by deleting the "
-            "instance) and turn on 'Send email OTP', then run: tarmac deploy --phase 6 && tarmac access profile"
+            "instance) and turn on 'Send email OTP', then run: tarmac access sso"
         )
 
 
-@app.command("profile")
-def access_profile(
+@app.command("sso")
+def access_sso(
+    config_dir: ConfigDirOption = None,
     profile: Annotated[str, typer.Option("--profile-name", help="AWS CLI profile to write")] = "tarmac",
 ) -> None:
-    """Write an IAM Identity Center profile for the management account, in place of 'aws configure sso'."""
+    """Create your IAM Identity Center login for the management account and write its AWS CLI profile.
+
+    Run this once as root (from AWS CloudShell) after enabling IAM Identity Center in the console. It creates the
+    admin_user from identity.yaml, an AdministratorAccess permission set, and assigns both to the management account.
+    """
+    admin = load_configs_or_exit(config_dir).identity.identity_center.admin_user
     try:
         session_mgr = AwsSessionManager()
         account_id = session_mgr.get_caller_identity()["Account"]
-        _, store_id, sso_region = IdentityService.discover_instance(session_mgr)
-    except GovernanceError as e:
-        error_console.print(f"[red]Could not write the profile:[/red] {e}")
+        instance_arn, store_id, sso_region = IdentityService.discover_instance(session_mgr)
+        identity = IdentityService(session_mgr, preferred_region=sso_region)
+        user_id = identity.get_or_create_user(admin)
+        sso = identity.sso_client
+        ps_arn = identity.list_permission_sets(instance_arn).get(ADMIN_PERMISSION_SET)
+        if ps_arn is None:
+            ps_arn = sso.create_permission_set(
+                InstanceArn=instance_arn, Name=ADMIN_PERMISSION_SET, SessionDuration="PT4H"
+            )["PermissionSet"]["PermissionSetArn"]
+            sso.attach_managed_policy_to_permission_set(
+                InstanceArn=instance_arn,
+                PermissionSetArn=ps_arn,
+                ManagedPolicyArn="arn:aws:iam::aws:policy/AdministratorAccess",
+            )
+        try:
+            sso.create_account_assignment(
+                InstanceArn=instance_arn,
+                TargetId=account_id,
+                TargetType="AWS_ACCOUNT",
+                PermissionSetArn=ps_arn,
+                PrincipalType="USER",
+                PrincipalId=user_id,
+            )
+        except ClientError as e:
+            if aws_error_code(e) != "ConflictException":
+                raise
+    except AWS_ERRORS as e:
+        error_console.print(f"[red]Could not set up the Identity Center login:[/red] {e}")
         raise typer.Exit(code=1)
+    print_success(
+        f"Identity Center user '{admin.username}' has {ADMIN_PERMISSION_SET} on account {account_id}."
+    )
 
     config_path = Path("~/.aws/config").expanduser()
     _append_section(
@@ -151,14 +188,14 @@ def access_profile(
         {
             "sso_session": profile,
             "sso_account_id": account_id,
-            "sso_role_name": "AdministratorAccess",
+            "sso_role_name": ADMIN_PERMISSION_SET,
             "region": session_mgr.default_region,
         },
     )
     print_success(f"{'Added' if added else 'Kept existing'} profile '{profile}' in {config_path}.")
     print_info(
         f"Next: aws sso login --use-device-code --profile {profile}, then export AWS_PROFILE={profile} "
-        "and run: tarmac info --strict"
+        "and run: tarmac deploy"
     )
 
 
