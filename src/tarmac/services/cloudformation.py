@@ -519,21 +519,18 @@ class CloudFormationService:
         """Retrieve failure causes from recent stack events and pre-deployment validation."""
         reasons: list[str] = []
         try:
-            if hasattr(cfn_client, "describe_events"):
-                try:
-                    op_events = cfn_client.describe_events(StackName=stack_name)
-                    for ev in op_events.get("OperationEvents", []):
-                        if ev.get("EventType") == "VALIDATION_ERROR":
-                            res_id = str(
-                                ev.get("LogicalResourceId") or ev.get("ValidationPath") or "Template"
-                            )
-                            v_reason = str(
-                                ev.get("ResourceStatusReason") or ev.get("ValidationStatusReason") or ""
-                            )
-                            if v_reason:
-                                reasons.append(f"{res_id}: {v_reason}")
-                except AWS_ERRORS as exc:  # best effort: extra failure detail only
-                    logger.debug("Could not read change-set validation events for '%s': %s", stack_name, exc)
+            try:
+                op_events = cfn_client.describe_events(StackName=stack_name)
+                for ev in op_events.get("OperationEvents", []):
+                    if ev.get("EventType") == "VALIDATION_ERROR":
+                        res_id = str(ev.get("LogicalResourceId") or ev.get("ValidationPath") or "Template")
+                        v_reason = str(
+                            ev.get("ResourceStatusReason") or ev.get("ValidationStatusReason") or ""
+                        )
+                        if v_reason:
+                            reasons.append(f"{res_id}: {v_reason}")
+            except AWS_ERRORS as exc:  # best effort: extra failure detail only
+                logger.debug("Could not read change-set validation events for '%s': %s", stack_name, exc)
 
             events_resp = cfn_client.describe_stack_events(StackName=stack_name)
             for ev in events_resp.get("StackEvents", []):
