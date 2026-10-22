@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/nickdchristian/tarmac-cli/compare/v0.3.0...v0.3.1) (2026-10-22)
+
+
+### Documentation
+
+* rewrite the README to be shorter and easier to follow ([#91](https://github.com/nickdchristian/tarmac-cli/issues/91)) ([a43663a](https://github.com/nickdchristian/tarmac-cli/commit/a43663a186895ae2900464f780ff04f859ec630e))
+
 ## [0.3.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.2.0...v0.3.0) (2026-10-22)
 
 
