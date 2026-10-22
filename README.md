@@ -124,7 +124,7 @@ run `tarmac bootstrap` again to update it; `tarmac preflight` warns when it's ou
 
 ## Options
 
-All of these go in `organization.yaml`. Paid options are off until you turn them on.
+All of these go in `organization.yaml`. Options with a real cost are off until you turn them on.
 
 **Log retention and locking.** CloudTrail logs are kept forever unless you set a retention. Object Lock stops anyone
 deleting logs during the lock period. It's recommended, but S3 can never turn it off again, so tarmac asks you to
