@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.2.0...v0.3.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **bootstrap:** 'tarmac deploy --phase 1' no longer runs as root. Enable IAM Identity Center first (it creates the organization) and run 'tarmac access sso'.
+
+### Features
+
+* **bootstrap:** run tarmac as an IAM Identity Center login created by tarmac bootstrap ([#89](https://github.com/nickdchristian/tarmac-cli/issues/89)) ([14e8110](https://github.com/nickdchristian/tarmac-cli/commit/14e8110c73120fb41319cd821a8a98cb24f1d1e8))
+
 ## [0.2.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.1.10...v0.2.0) (2026-10-21)
 
 
