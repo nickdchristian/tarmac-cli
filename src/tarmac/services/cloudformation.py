@@ -412,7 +412,7 @@ class CloudFormationService:
         except (ClientError, WaiterError) as e:
             raise DeploymentError(
                 f"Failed to delete broken stack '{stack_name}'",
-                details=str(e),
+                details=self._fetch_failure_reasons(cfn_client, stack_name) or str(e),
             ) from e
 
     def delete_stack(
