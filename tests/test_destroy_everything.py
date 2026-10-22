@@ -351,7 +351,7 @@ def test_recording_never_breaks_an_audited_action(tmp_path: Path):
     audit("create", "ou:Other", Outcome.SUCCEEDED, "x")  # must not raise
 
 
-def test_full_teardown_runs_in_order_and_ends_with_the_access_role(inv: Inventory, tmp_path: Path):
+def test_full_teardown_runs_in_order_and_ends_with_the_deployment_permission_set(inv: Inventory, tmp_path: Path):
     from tarmac.core.config_loader import load_all_configs
     from tarmac.services.scaffold import scaffold_project
 
@@ -374,7 +374,7 @@ def test_full_teardown_runs_in_order_and_ends_with_the_access_role(inv: Inventor
 
     order = [p.split("|")[0].strip() for p in phases]
     assert order.index("Organizational Units created by tarmac") < order.index("Phase 1")
-    assert phases[-1] == "Tarmac access role and bootstrap user"
+    assert phases[-1] == "Tarmac deployment permission set"
     assert phases[-2] == "Member accounts (kept)"
     assert report.status == "SIMULATED"
     assert "Parent" in inv.get("ou")
