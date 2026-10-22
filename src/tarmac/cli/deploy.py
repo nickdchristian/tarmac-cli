@@ -594,7 +594,8 @@ def inventory_command(
     if inv.count() == 0:
         print_info(f"Nothing recorded yet ({inv.location}). Changes are recorded as tarmac makes them.")
         return
-    table = create_table(title=inv.location)
+    print_info(f"Stored in {inv.location}")
+    table = create_table()
     table.add_column("Kind", style="cyan")
     table.add_column("Item", style="white")
     for kind, entries in sorted(inv.entries.items()):
