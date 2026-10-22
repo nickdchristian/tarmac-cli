@@ -125,9 +125,6 @@ def access_bootstrap(
 @app.command("profile")
 def access_profile(
     profile: Annotated[str, typer.Option("--profile-name", help="AWS CLI profile to write")] = "tarmac",
-    aws_config: Annotated[
-        Path, typer.Option("--aws-config", help="AWS config file to add the profile to")
-    ] = Path("~/.aws/config"),
 ) -> None:
     """Write an IAM Identity Center profile for the management account, in place of 'aws configure sso'."""
     try:
@@ -138,7 +135,7 @@ def access_profile(
         error_console.print(f"[red]Could not write the profile:[/red] {e}")
         raise typer.Exit(code=1)
 
-    config_path = aws_config.expanduser()
+    config_path = Path("~/.aws/config").expanduser()
     _append_section(
         config_path,
         f"sso-session {profile}",
@@ -158,7 +155,7 @@ def access_profile(
             "region": session_mgr.default_region,
         },
     )
-    print_success(f"{'Added' if added else 'Kept existing'} profile '{profile}' in {aws_config}.")
+    print_success(f"{'Added' if added else 'Kept existing'} profile '{profile}' in {config_path}.")
     print_info(
         f"Next: aws sso login --use-device-code --profile {profile}, then export AWS_PROFILE={profile} "
         "and run: tarmac info --strict"

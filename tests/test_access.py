@@ -220,8 +220,9 @@ def test_bootstrap_dry_run_and_failure() -> None:
         assert runner.invoke(app, ["access", "bootstrap"]).exit_code == 1
 
 
-def test_profile_writes_an_sso_profile_for_the_management_account(tmp_path: Path) -> None:
-    cfg = tmp_path / "config"
+def test_profile_writes_an_sso_profile_for_the_management_account(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = tmp_path / ".aws" / "config"
     mgr = _bootstrap_mgr()
     mgr.default_region = "eu-west-1"
     with (
@@ -231,7 +232,7 @@ def test_profile_writes_an_sso_profile_for_the_management_account(tmp_path: Path
             return_value=("arn:inst", "d-123", "us-east-1"),
         ),
     ):
-        result = runner.invoke(app, ["access", "profile", "--aws-config", str(cfg)])
+        result = runner.invoke(app, ["access", "profile"])
     assert result.exit_code == 0
     text = cfg.read_text(encoding="utf-8")
     assert (
@@ -242,7 +243,8 @@ def test_profile_writes_an_sso_profile_for_the_management_account(tmp_path: Path
     assert "sso_role_name = AdministratorAccess\nregion = eu-west-1\n" in text
 
 
-def test_profile_fails_cleanly_without_identity_center(tmp_path: Path) -> None:
+def test_profile_fails_cleanly_without_identity_center(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     from tarmac.core.exceptions import IdentityCenterError
 
     with (
@@ -252,9 +254,9 @@ def test_profile_fails_cleanly_without_identity_center(tmp_path: Path) -> None:
             side_effect=IdentityCenterError("No IAM Identity Center instance found across AWS regions."),
         ),
     ):
-        result = runner.invoke(app, ["access", "profile", "--aws-config", str(tmp_path / "config")])
+        result = runner.invoke(app, ["access", "profile"])
     assert result.exit_code == 1
-    assert not (tmp_path / "config").exists()
+    assert not (tmp_path / ".aws").exists()
 
 
 # least-privilege policy
