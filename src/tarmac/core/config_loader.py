@@ -93,7 +93,7 @@ def load_yaml(file_path: Path) -> dict[str, Any]:
         with file_path.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return data or {}
-    except Exception as e:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
         raise ConfigurationError(f"Failed to parse YAML file: {file_path.name}", details=str(e)) from e
 
 
@@ -244,7 +244,7 @@ class ConfigBundle:
                 content = resolved_path.read_text(encoding="utf-8")
                 try:
                     json.loads(content)
-                except Exception as e:
+                except json.JSONDecodeError as e:
                     errors.append(
                         f"SCP '{scp.name}' policy file '{scp.policy_file}' contains invalid JSON: {e}"
                     )
@@ -375,7 +375,7 @@ def _load_model(config_dir: Path, base_name: str, model_cls: type[T], errors: li
         errors.append(f"Validation error in {base_name} configuration: {e}")
     except ConfigurationError as e:
         errors.append(str(e))
-    except Exception as e:
+    except TypeError as e:
         errors.append(f"Error loading {base_name} config: {e}")
     return None
 

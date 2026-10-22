@@ -73,9 +73,6 @@ def test_deploy_refuses_root_but_allows_roles() -> None:
     with pytest.raises(typer.Exit):
         _refuse_root_identity(_mgr(ROOT))
     _refuse_root_identity(_mgr(ROLE))
-    unauth = MagicMock(spec=AwsSessionManager)
-    unauth.is_root_identity.side_effect = RuntimeError("no creds")
-    _refuse_root_identity(unauth)  # must not raise: phases report auth problems themselves
 
 
 def test_info_strict_reports_root_and_role() -> None:

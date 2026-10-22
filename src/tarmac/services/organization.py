@@ -144,8 +144,7 @@ class OrganizationService:
             response = self.account_client.get_alternate_contact(AlternateContactType=contact_type)
         except (ClientError, BotoCoreError):
             return None
-        current = response.get("AlternateContact") if isinstance(response, dict) else None
-        return current if isinstance(current, dict) else None
+        return response.get("AlternateContact")
 
     @staticmethod
     def _contact_matches(current: dict[str, Any] | None, desired: Any) -> bool:
@@ -175,10 +174,9 @@ class OrganizationService:
         """Centralized root access features that are already on (empty when they cannot be read)."""
         try:
             response = self.iam_client.list_organizations_features()
-        except (ClientError, BotoCoreError, TypeError, AttributeError):
+        except (ClientError, BotoCoreError):
             return set()
-        features = response.get("EnabledFeatures", []) if isinstance(response, dict) else []
-        return {str(f) for f in features} if isinstance(features, list) else set()
+        return set(response.get("EnabledFeatures", []))
 
     def missing_trusted_services(self, services: list[str] | None = None) -> list[str]:
         """The services that do not have trusted access yet (all of them when it cannot be read)."""

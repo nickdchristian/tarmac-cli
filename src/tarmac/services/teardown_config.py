@@ -18,7 +18,7 @@ class ConfigRecorderTeardown(TeardownBase):
         """Remove recorders before the log bucket, so Config is not left writing to a bucket being deleted."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
-        if not self._has_credentials() or not mgmt_id:
+        if not mgmt_id:
             return results
 
         regions = list(dict.fromkeys([target_region, *bundle.org.organization.additional_regions]))

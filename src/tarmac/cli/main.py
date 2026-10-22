@@ -2,7 +2,6 @@
 
 import dataclasses
 import json
-import logging
 import os
 import sys
 from pathlib import Path
@@ -14,6 +13,7 @@ from rich.panel import Panel
 from .. import __version__
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, load_all_configs
+from ..core.exceptions import AWS_ERRORS
 from ..core.logging import setup_logging, start_run
 from ..core.placeholders import find_placeholder_values
 from ..core.stack_names import Stack
@@ -47,8 +47,6 @@ from .ui import (
     print_success,
     print_warning,
 )
-
-logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="tarmac",
@@ -251,7 +249,7 @@ def _fetch_org_details(session_mgr: AwsSessionManager) -> tuple[dict[str, str], 
             "master_id": str(org_desc.get("MasterAccountId", "")),
             "feature_set": str(org_desc.get("FeatureSet", "")),
         }, ""
-    except Exception as e:
+    except AWS_ERRORS as e:
         return {}, str(e)
 
 
@@ -269,12 +267,9 @@ def _find_sso_instance(session_mgr: AwsSessionManager, region: str) -> tuple[str
 
 
 def _resolve_sso_region(default_region: str) -> str:
-    try:
-        bundle, _ = load_all_configs()
-        if bundle and bundle.identity.identity_center.region:
-            return bundle.identity.identity_center.region
-    except Exception as exc:
-        logger.debug("Could not resolve SSO region from config, using default: %s", exc)
+    bundle, _ = load_all_configs()
+    if bundle and bundle.identity.identity_center.region:
+        return bundle.identity.identity_center.region
     return default_region
 
 
@@ -412,9 +407,8 @@ def _eval_accounts_status(status: Any) -> tuple[str, str, str, str, str | None]:
     action = f"{diff} account(s) pending creation. Run: tarmac deploy --phase 4" if not synced else None
 
     live_label = f"{status.accounts_live} accounts live"
-    suspended_count = getattr(status, "accounts_suspended", 0)
-    if suspended_count > 0:
-        live_label += f" ({suspended_count} suspended)"
+    if status.accounts_suspended > 0:
+        live_label += f" ({status.accounts_suspended} suspended)"
 
     return (
         "Member Accounts",

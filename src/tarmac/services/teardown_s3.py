@@ -30,7 +30,7 @@ def _delete_s3_batch(s3_client: Any, bucket_name: str, batch: list[dict[str, str
     s3:BypassGovernanceRetention). Compliance-mode locks cannot be bypassed by anyone and fail with a clear message.
     """
     resp = s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": batch, "Quiet": True})
-    errors = resp.get("Errors", []) if isinstance(resp, dict) else []
+    errors = resp.get("Errors", [])
     denied = [e for e in errors if e.get("Code") == "AccessDenied"]
     if denied:
         retry = [{k: e[k] for k in ("Key", "VersionId") if e.get(k)} for e in denied]
@@ -39,7 +39,7 @@ def _delete_s3_batch(s3_client: Any, bucket_name: str, batch: list[dict[str, str
             Delete={"Objects": retry, "Quiet": True},
             BypassGovernanceRetention=True,
         )
-        retry_errors = retried.get("Errors", []) if isinstance(retried, dict) else []
+        retry_errors = retried.get("Errors", [])
         bypassed = len(retry) - len(retry_errors)
         if bypassed > 0:
             audit(

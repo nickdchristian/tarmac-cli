@@ -546,11 +546,7 @@ class PreflightService:
             sq = self.session_mgr.get_client("service-quotas", region_name="us-east-1")
             try:
                 resp = sq.get_service_quota(ServiceCode="organizations", QuotaCode="L-25807E2B")
-                quota_val = 0
-                if isinstance(resp, dict):
-                    raw_val = resp.get("Quota", {}).get("Value")
-                    if isinstance(raw_val, (int, float)) and not isinstance(raw_val, bool):
-                        quota_val = int(raw_val)
+                quota_val = int(resp.get("Quota", {}).get("Value", 0))
                 if quota_val > 0:
                     remaining = quota_val - active_accounts
                     if active_accounts + declared_count > quota_val:
@@ -594,9 +590,8 @@ class PreflightService:
         """Verify that Organization Root has capacity for declared SCPs (AWS limit: 5 per target)."""
         try:
             org = self.session_mgr.get_client("organizations")
-            roots_resp = org.list_roots()
-            roots = roots_resp.get("Roots", []) if isinstance(roots_resp, dict) else []
-            if not roots or not isinstance(roots, list) or not isinstance(roots[0], dict):
+            roots = org.list_roots().get("Roots", [])
+            if not roots:
                 return PreflightCheckResult(
                     name="SCP Attachment Quota",
                     target="Organization Root",
@@ -607,8 +602,7 @@ class PreflightService:
             paginator = org.get_paginator("list_policies_for_target")
             attached_count = 0
             for page in paginator.paginate(TargetId=root_id, Filter="SERVICE_CONTROL_POLICY"):
-                if isinstance(page, dict):
-                    attached_count += len(page.get("Policies", []))
+                attached_count += len(page.get("Policies", []))
             if attached_count >= 5:
                 return PreflightCheckResult(
                     name="SCP Attachment Quota",

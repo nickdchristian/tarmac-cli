@@ -411,8 +411,6 @@ class EverythingTeardown(TeardownBase):
     def report_accounts_kept(self) -> list[TeardownItemReport]:
         """List the member accounts tarmac manages; closing them stays a deliberate, per-account step."""
         results: list[TeardownItemReport] = self._new_results_list()
-        if not self._has_credentials():
-            return results
         org: Any = self.session_mgr.get_client("organizations")
         try:
             for acct in iter_accounts(org):

@@ -10,7 +10,7 @@ from typing import Any, cast
 import boto3
 from botocore.config import Config
 from botocore.credentials import RefreshableCredentials
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from botocore.session import get_session as get_botocore_session
 
 from .aws_audit import instrument_session
@@ -69,7 +69,7 @@ class AwsSessionManager:
                 "Failed to authenticate with AWS credentials.",
                 details=aws_error_message(e),
             ) from e
-        except Exception as e:
+        except BotoCoreError as e:
             logger.error("Unexpected error obtaining caller identity: %s", e)
             raise AWSAuthenticationError("AWS authentication failed.", details=str(e)) from e
 

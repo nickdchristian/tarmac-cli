@@ -15,8 +15,6 @@ class Stack(StrEnum):
     PERMISSION_SETS = "sso-permission-sets"
     ROOT_ALERT = "management-root-alert"
     CONFIG_RECORDER = "config-recorder"
-    # Name used by earlier releases; teardown still removes it.
-    LEGACY_PERMISSION_SETS = "permission-sets"
 
     def for_org(self, org_name: str) -> str:
         """The stack's name for an organization."""

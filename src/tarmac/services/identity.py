@@ -673,7 +673,7 @@ class IdentityService:
                 for item in page.get("AccountAssignments", []):
                     if item.get("PrincipalType") == "GROUP" and item.get("PrincipalId") == group_id:
                         return True
-        except (ClientError, BotoCoreError, TypeError, AttributeError):
+        except (ClientError, BotoCoreError):
             return False
         return False
 

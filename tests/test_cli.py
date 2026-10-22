@@ -355,13 +355,17 @@ def test_cli_global_profile(monkeypatch):
     import os
     from unittest.mock import MagicMock
 
+    from botocore.exceptions import ClientError
+
     mock_session_mgr = MagicMock()
     mock_session_mgr.get_caller_identity.return_value = {
         "Account": "123",
         "Arn": "arn:aws:iam::123:root",
     }
     mock_org = MagicMock()
-    mock_org.describe_organization.side_effect = Exception("No org")
+    mock_org.describe_organization.side_effect = ClientError(
+        {"Error": {"Code": "AWSOrganizationsNotInUseException", "Message": "No org"}}, "DescribeOrganization"
+    )
     mock_session_mgr.get_client.return_value = mock_org
 
     monkeypatch.setattr("tarmac.cli.main.AwsSessionManager", lambda **kw: mock_session_mgr)

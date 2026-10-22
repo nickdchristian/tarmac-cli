@@ -391,7 +391,7 @@ class SecurityServicesService:
             )
         except ClientError:
             return  # Cannot tell; Security Hub will refuse an opt-in Region itself.
-        status = regions[0].get("OptInStatus") if isinstance(regions, list) and regions else None
+        status = regions[0].get("OptInStatus") if regions else None
         if status in ("opted-in", "not-opted-in"):
             raise GovernanceError(
                 f"{region} is an opt-in Region, and Security Hub central configuration cannot use one as its home "

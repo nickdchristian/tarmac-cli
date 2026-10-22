@@ -120,26 +120,12 @@ class TeardownBase:
         if self.on_phase is not None:
             self.on_phase(phase_name)
 
-    def _has_credentials(self) -> bool:
-        """Return False only if a real boto3 session is present without resolved credentials."""
-        root_session = getattr(self.session_mgr, "_root_session", None)
-        if root_session is not None and callable(getattr(root_session, "get_credentials", None)):
-            try:
-                return root_session.get_credentials() is not None
-            except AWS_ERRORS:
-                return False
-        return True
-
     def _get_active_accounts(self) -> dict[str, str]:
         """Fetch all ACTIVE accounts in the organization as {AccountName: AccountId}."""
-        if not self._has_credentials():
-            return {}
         return get_active_account_id_map(self.session_mgr)
 
     def _get_management_account_id(self) -> str:
         """Resolve current management account ID."""
-        if not self._has_credentials():
-            return ""
         try:
             return str(self.session_mgr.get_caller_identity().get("Account", ""))
         except AWS_ERRORS:

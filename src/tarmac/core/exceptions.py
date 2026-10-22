@@ -33,10 +33,6 @@ class OUManagementError(GovernanceError):
     """Raised when Organizational Unit synchronization or discovery fails."""
 
 
-class BaselineExecutionError(GovernanceError):
-    """Raised when applying security baselines (VPC cleanup, budgets) fails."""
-
-
 class IdentityCenterError(GovernanceError):
     """Raised when IAM Identity Center operations fail."""
 

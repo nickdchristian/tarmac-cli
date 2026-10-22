@@ -433,7 +433,7 @@ def test_teardown_identity_uses_discovered_sso_region_and_reports_failed_ps_dele
 
         reports = svc.teardown_identity(mock_bundle, "eu-west-1", dry_run=False)
 
-    assert del_stack.call_count == 2
+    assert del_stack.call_count == 1
     assert all(call.args[0] is cfn_east1 for call in del_stack.call_args_list)
     ps_reports = [r for r in reports if r.resource_type == "Permission Set"]
     assert len(ps_reports) == 1
