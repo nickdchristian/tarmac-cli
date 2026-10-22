@@ -27,10 +27,10 @@ def existing_kms_choice(cfn_client: Any, stack_name: str) -> str | None:
         raise DeploymentError(
             f"Could not read stack {stack_name} to decide on KMS encryption", details=str(e)
         ) from e
-    if not isinstance(stacks, list) or not stacks:
+    if not stacks:
         return None
-    for param in stacks[0].get("Parameters", []) or []:
-        if isinstance(param, dict) and param.get("ParameterKey") == PARAMETER:
+    for param in stacks[0].get("Parameters", []):
+        if param.get("ParameterKey") == PARAMETER:
             return str(param.get("ParameterValue"))
     return None
 

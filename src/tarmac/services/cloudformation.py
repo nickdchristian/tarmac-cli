@@ -98,12 +98,12 @@ def _stack_parameter(cfn_client: Any, stack_name: str, key: str) -> str | None:
     """A parameter of an existing stack, or None when the stack or parameter does not exist or cannot be read."""
     try:
         stacks = cfn_client.describe_stacks(StackName=stack_name).get("Stacks", [])
-    except (ClientError, AttributeError):
+    except ClientError:
         return None
-    if not isinstance(stacks, list) or not stacks:
+    if not stacks:
         return None
-    for param in stacks[0].get("Parameters", []) or []:
-        if isinstance(param, dict) and param.get("ParameterKey") == key:
+    for param in stacks[0].get("Parameters", []):
+        if param.get("ParameterKey") == key:
             return str(param.get("ParameterValue"))
     return None
 
@@ -274,9 +274,7 @@ class CloudFormationService:
     @staticmethod
     def _is_protected(cfn_client: Any, stack_name: str) -> bool:
         stacks = cfn_client.describe_stacks(StackName=stack_name).get("Stacks", [])
-        return bool(
-            isinstance(stacks, list) and stacks and stacks[0].get("EnableTerminationProtection") is True
-        )
+        return bool(stacks and stacks[0].get("EnableTerminationProtection") is True)
 
     def import_resources_and_deploy_stack(
         self,
