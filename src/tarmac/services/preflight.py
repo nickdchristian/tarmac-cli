@@ -79,7 +79,7 @@ class PreflightService:
                 live_value="Root user credentials",
                 action_required=(
                     "Root cannot call sts:AssumeRole, so tarmac cannot reach member accounts. "
-                    "Run 'tarmac access sso' to create an IAM Identity Center login (see README: Starting from a "
+                    "Run 'tarmac access bootstrap' to create an IAM Identity Center login (see README: Starting from a "
                     "brand-new AWS account)"
                 ),
             )

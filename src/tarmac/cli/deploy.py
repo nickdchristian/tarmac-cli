@@ -114,7 +114,7 @@ def _refuse_root_identity(session_mgr: AwsSessionManager) -> None:
                 "member accounts. To get non-root credentials, once:\n"
                 "  1. In the console, enable IAM Identity Center and turn on Settings → Authentication → "
                 "Send email OTP.\n"
-                "  2. [bold]tarmac access sso[/bold]\n"
+                "  2. [bold]tarmac access bootstrap[/bold]\n"
                 "  3. [bold]aws sso login --use-device-code --profile tarmac[/bold]\n"
                 "  4. [bold]export AWS_PROFILE=tarmac[/bold], then run this command again.",
                 title="[bold red]Root Credentials Not Supported[/bold red]",

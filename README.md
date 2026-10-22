@@ -80,8 +80,9 @@ Identity Center (SSO) login first. Only the steps AWS does not allow to be autom
    authentication**, turn on **Send email OTP**.
 3. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac
    (`pip install --user tarmac-cli`), run `tarmac init`, put your own email in `admin_user` in `identity.yaml`, and
-   run `tarmac access sso`. It creates that user, an `AdministratorAccess` permission set assigned to the management
-   account, and a `tarmac` profile in `~/.aws/config`.
+   run `tarmac access bootstrap`. It creates that user, an `AdministratorAccess` permission set assigned to the
+   management account, and a `tarmac` profile in `~/.aws/config` (and the tarmac role, see
+   [Bootstrap access](#bootstrap-access-why-tarmac-cannot-run-as-root)).
 4. `aws sso login --use-device-code --profile tarmac` (see [Using AWS CloudShell](#using-aws-cloudshell) for why the
    device-code flag is needed). The first sign-in emails you a code, then asks for a password and an MFA device.
 5. `export AWS_PROFILE=tarmac`, then confirm with `tarmac info --strict`.
@@ -159,19 +160,22 @@ Tarmac configures member accounts by assuming `OrganizationAccountAccessRole` in
 user is not allowed to call `sts:AssumeRole`. (Root access keys are also discouraged.) So a brand-new account
 needs one non-root principal first. `tarmac preflight` and `tarmac deploy` refuse to continue as root.
 
-1. Sign in to the management account console as root and open **AWS CloudShell** (it uses your console session, so no root
-   access keys are created). Install tarmac there (`pip install tarmac-cli`) and run:
+1. Sign in to the management account console as root, enable **IAM Identity Center** and turn on Send email OTP (see
+   [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account)). Choose the Identity Center Region
+   deliberately: an organization can have it in one Region only, and moving it later means deleting the instance and creating
+   another ([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)).
+2. Open **AWS CloudShell** (it uses your console session, so no root access keys are created), install tarmac there
+   (`pip install tarmac-cli`), run `tarmac init`, and run:
 
    ```bash
    tarmac access bootstrap
    ```
 
-   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a policy scoped to what tarmac does (see below; MFA enforced for IAM
-   users, IAM Identity Center sessions pass; 4-hour sessions).
-2. Enable **IAM Identity Center** and turn on Send email OTP, run `tarmac access sso`, and sign in with `aws sso login`
-   (see [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account)). Run tarmac as that identity. Choose the Identity Center Region
-   deliberately: an organization can have it in one Region only, and moving it later means deleting the instance and creating
-   another ([AWS docs](https://docs.aws.amazon.com/singlesignon/latest/userguide/enable-identity-center.html)).
+   This deploys the `tarmac-access` stack: `TarmacDeploymentRole` with a policy scoped to what tarmac does (see below; MFA
+   enforced for IAM users, IAM Identity Center sessions pass; 4-hour sessions). It also creates your Identity Center login
+   (`admin_user` from `identity.yaml`, with an `AdministratorAccess` permission set on the management account) and a
+   `tarmac` profile in `~/.aws/config`. Sign in with `aws sso login --use-device-code --profile tarmac` and run tarmac as
+   that identity. Without Identity Center enabled it deploys the role only and says what to do next.
 3. `tarmac info --strict` confirms the credentials are non-root and can read the organization; it exits 1 and says why
    when they cannot.
 
@@ -301,8 +305,8 @@ Everything that changes AWS goes through `tarmac deploy`, one phase at a time if
   * `tarmac inventory` — Show what tarmac has recorded as created by it.
   * `tarmac logs FILE` — Summarize runs recorded with `--log-file`.
 * **Access**:
-  * `tarmac access sso` — Create your IAM Identity Center login for the management account and its AWS CLI profile.
-  * `tarmac access bootstrap` / `tarmac access template` — Create, or print, the role tarmac runs as.
+  * `tarmac access bootstrap` — Create the role tarmac runs as and your IAM Identity Center login with its AWS CLI
+    profile. `tarmac access template` prints the role's template.
 
 </details>
 
@@ -671,8 +675,8 @@ fix the cause and re-run teardown or deploy: both now delete and recreate stacks
 
 | What you see | Why | What to do |
 |---|---|---|
-| `Root credentials cannot assume roles in member accounts` | The shell is using root credentials (for example CloudShell's own session). | Run `tarmac access sso` once if you have no SSO login yet, then `export AWS_PROFILE=tarmac` and re-run; see [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account). |
-| `aws sso login` says `No AWS accounts are available to you` | Your Identity Center user has no permission set on the management account. | Run `tarmac access sso` as root (or an admin) again. |
+| `Root credentials cannot assume roles in member accounts` | The shell is using root credentials (for example CloudShell's own session). | Run `tarmac access bootstrap` once if you have no SSO login yet, then `export AWS_PROFILE=tarmac` and re-run; see [Starting from a brand-new AWS account](#starting-from-a-brand-new-aws-account). |
+| `aws sso login` says `No AWS accounts are available to you` | Your Identity Center user has no permission set on the management account. | Run `tarmac access bootstrap` as root (or an admin) again. |
 | The SSO sign-in page redirects to `127.0.0.1` and fails | CloudShell has no browser to receive the callback. | Use `aws sso login --use-device-code`. |
 | `The config profile (...) could not be found` | `aws configure sso` stopped before writing the profile. | Fix the cause above, then run `aws configure sso` again. |
 | `tarmac info` shows Identity Center as not found | Identity Center lives in one Region, which may not be your shell's. | Set `AWS_REGION` to it, or pass `--region`. |

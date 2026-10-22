@@ -8,7 +8,7 @@ import typer
 from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
-from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code
+from ..core.exceptions import AWS_ERRORS, GovernanceError, IdentityCenterError, aws_error_code
 from ..core.stack_names import ACCESS_STACK
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
@@ -16,7 +16,7 @@ from ..services.identity import IdentityService
 from .common import ConfigDirOption, load_configs_or_exit
 from .ui import console, error_console, print_header, print_info, print_success
 
-app = typer.Typer(help="Bootstrap the non-root role tarmac runs as", no_args_is_help=True)
+app = typer.Typer(help="Set up the non-root access tarmac runs with", no_args_is_help=True)
 
 TEMPLATE_PATH = "cloudformation/tarmac-access.yaml"
 BOOTSTRAP_USER = "tarmac-bootstrap"
@@ -56,20 +56,20 @@ def access_bootstrap(
             help="Also create an assume-only IAM user (for use before IAM Identity Center exists)",
         ),
     ] = False,
-    profile: Annotated[
-        str, typer.Option("--profile-name", help="AWS CLI profile to write (with the bootstrap user)")
-    ] = "tarmac",
+    profile: Annotated[str, typer.Option("--profile-name", help="AWS CLI profile to write")] = "tarmac",
     aws_config: Annotated[
-        Path, typer.Option("--aws-config", help="AWS config file to add the role profile to")
+        Path, typer.Option("--aws-config", help="AWS config file to add the profile to")
     ] = Path("~/.aws/config"),
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Show whether the stack would be created or updated")
     ] = False,
+    config_dir: ConfigDirOption = None,
 ) -> None:
-    """Create the tarmac role (and optionally a bootstrap user) in the management account.
+    """Create the tarmac role and your IAM Identity Center login (or a bootstrap user) in the management account.
 
     Run this once from AWS CloudShell while signed in as the root user: CloudShell uses your console
-    session, so no root access keys are ever created.
+    session, so no root access keys are ever created. Once IAM Identity Center is enabled, it also creates the
+    admin_user from identity.yaml with AdministratorAccess on the management account, and its AWS CLI profile.
     """
     print_header("Tarmac Access Bootstrap")
     parameters = {
@@ -118,28 +118,19 @@ def access_bootstrap(
             f"create an access key and an MFA device for '{BOOTSTRAP_USER}', add them to a '{BOOTSTRAP_USER}' "
             f"profile, then run: AWS_PROFILE={profile} tarmac info --strict"
         )
-    else:
+        return
+
+    try:
+        instance_arn, store_id, sso_region = IdentityService.discover_instance(session_mgr)
+    except IdentityCenterError:
         print_info(
             "Next: enable IAM Identity Center (pick its Region deliberately: it can only be moved by deleting the "
-            "instance) and turn on 'Send email OTP', then run: tarmac access sso"
+            "instance) and turn on 'Send email OTP', then run this command again to create your login."
         )
-
-
-@app.command("sso")
-def access_sso(
-    config_dir: ConfigDirOption = None,
-    profile: Annotated[str, typer.Option("--profile-name", help="AWS CLI profile to write")] = "tarmac",
-) -> None:
-    """Create your IAM Identity Center login for the management account and write its AWS CLI profile.
-
-    Run this once as root (from AWS CloudShell) after enabling IAM Identity Center in the console. It creates the
-    admin_user from identity.yaml, an AdministratorAccess permission set, and assigns both to the management account.
-    """
-    admin = load_configs_or_exit(config_dir).identity.identity_center.admin_user
+        return
+    bundle = load_configs_or_exit(config_dir)
+    admin = bundle.identity.identity_center.admin_user
     try:
-        session_mgr = AwsSessionManager()
-        account_id = session_mgr.get_caller_identity()["Account"]
-        instance_arn, store_id, sso_region = IdentityService.discover_instance(session_mgr)
         identity = IdentityService(session_mgr, preferred_region=sso_region)
         user_id = identity.get_or_create_user(admin)
         sso = identity.sso_client
@@ -172,7 +163,7 @@ def access_sso(
         f"Identity Center user '{admin.username}' has {ADMIN_PERMISSION_SET} on account {account_id}."
     )
 
-    config_path = Path("~/.aws/config").expanduser()
+    config_path = aws_config.expanduser()
     _append_section(
         config_path,
         f"sso-session {profile}",
@@ -189,7 +180,7 @@ def access_sso(
             "sso_session": profile,
             "sso_account_id": account_id,
             "sso_role_name": ADMIN_PERMISSION_SET,
-            "region": session_mgr.default_region,
+            "region": bundle.org.organization.primary_region,
         },
     )
     print_success(f"{'Added' if added else 'Kept existing'} profile '{profile}' in {config_path}.")

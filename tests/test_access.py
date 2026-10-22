@@ -2,7 +2,7 @@
 
 import ast
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,7 +40,7 @@ def test_is_root_identity_detects_root_only() -> None:
 def test_preflight_fails_for_root_and_passes_for_role() -> None:
     root = PreflightService(_mgr(ROOT), MagicMock()).check_not_root_identity()
     assert root.status == PreflightCheckStatus.FAIL
-    assert "tarmac access sso" in (root.action_required or "")
+    assert "tarmac access bootstrap" in (root.action_required or "")
     role = PreflightService(_mgr(ROLE), MagicMock()).check_not_root_identity()
     assert role.status == PreflightCheckStatus.PASS
 
@@ -188,12 +188,17 @@ def test_bootstrap_deploys_and_writes_profile_for_user(tmp_path: Path) -> None:
     assert "role_arn = arn:aws:iam::111111111111:role/TarmacDeploymentRole" in cfg.read_text(encoding="utf-8")
 
 
-def test_bootstrap_without_user_writes_nothing(tmp_path: Path) -> None:
+def test_bootstrap_without_identity_center_deploys_the_role_only(tmp_path: Path) -> None:
+    from tarmac.core.exceptions import IdentityCenterError
+
     cfg = tmp_path / "config"
     report = MagicMock(action="CREATED", outputs={})
+    identity = MagicMock()
+    identity.discover_instance.side_effect = IdentityCenterError("No IAM Identity Center instance found.")
     with (
         patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
         patch("tarmac.cli.access.CloudFormationService") as svc,
+        patch("tarmac.cli.access.IdentityService", identity),
     ):
         svc.return_value.deploy_stack.return_value = report
         result = runner.invoke(app, ["access", "bootstrap", "--aws-config", str(cfg)])
@@ -230,18 +235,23 @@ def _sso_identity(existing_sets: dict[str, str]) -> MagicMock:
     return identity
 
 
-def test_sso_creates_the_login_and_writes_the_profile(
-    writable_config_dir: Path, tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    mgr = _bootstrap_mgr()
-    mgr.default_region = "eu-west-1"
-    identity = _sso_identity({})
+def _bootstrap_with_sso(identity: MagicMock, config_dir: Path, tmp_path: Path) -> Any:
     with (
-        patch("tarmac.cli.access.AwsSessionManager", return_value=mgr),
+        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
+        patch("tarmac.cli.access.CloudFormationService") as svc,
         patch("tarmac.cli.access.IdentityService", identity),
     ):
-        result = runner.invoke(app, ["access", "sso", "-c", str(writable_config_dir)])
+        svc.return_value.deploy_stack.return_value = MagicMock(outputs={})
+        return runner.invoke(
+            app, ["access", "bootstrap", "-c", str(config_dir), "--aws-config", str(tmp_path / "aws-config")]
+        )
+
+
+def test_bootstrap_creates_the_sso_login_and_writes_the_profile(
+    writable_config_dir: Path, tmp_path: Path
+) -> None:
+    identity = _sso_identity({})
+    result = _bootstrap_with_sso(identity, writable_config_dir, tmp_path)
     assert result.exit_code == 0, result.output
     sso = identity.return_value.sso_client
     assert sso.create_permission_set.call_args.kwargs["Name"] == "AdministratorAccess"
@@ -253,49 +263,25 @@ def test_sso_creates_the_login_and_writes_the_profile(
         "PrincipalType": "USER",
         "PrincipalId": "u-1",
     }
-    text = (tmp_path / ".aws" / "config").read_text(encoding="utf-8")
+    text = (tmp_path / "aws-config").read_text(encoding="utf-8")
     assert (
         "[sso-session tarmac]\nsso_start_url = https://d-123.awsapps.com/start\nsso_region = us-east-1\n"
         in text
     )
     assert "[profile tarmac]\nsso_session = tarmac\nsso_account_id = 111111111111\n" in text
-    assert "sso_role_name = AdministratorAccess\nregion = eu-west-1\n" in text
+    assert "sso_role_name = AdministratorAccess\nregion = us-east-2\n" in text  # primary_region
 
 
-def test_sso_rerun_reuses_the_permission_set_and_assignment(
-    writable_config_dir: Path, tmp_path: Path, monkeypatch
+def test_bootstrap_rerun_reuses_the_permission_set_and_assignment(
+    writable_config_dir: Path, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    mgr = _bootstrap_mgr()
-    mgr.default_region = "eu-west-1"
     identity = _sso_identity({"AdministratorAccess": "arn:ps-old"})
     identity.return_value.sso_client.create_account_assignment.side_effect = ClientError(
         {"Error": {"Code": "ConflictException", "Message": "exists"}}, "CreateAccountAssignment"
     )
-    with (
-        patch("tarmac.cli.access.AwsSessionManager", return_value=mgr),
-        patch("tarmac.cli.access.IdentityService", identity),
-    ):
-        result = runner.invoke(app, ["access", "sso", "-c", str(writable_config_dir)])
+    result = _bootstrap_with_sso(identity, writable_config_dir, tmp_path)
     assert result.exit_code == 0, result.output
     identity.return_value.sso_client.create_permission_set.assert_not_called()
-
-
-def test_sso_fails_cleanly_without_identity_center(
-    writable_config_dir: Path, tmp_path: Path, monkeypatch
-) -> None:
-    from tarmac.core.exceptions import IdentityCenterError
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    identity = _sso_identity({})
-    identity.discover_instance.side_effect = IdentityCenterError("No IAM Identity Center instance found.")
-    with (
-        patch("tarmac.cli.access.AwsSessionManager", return_value=_bootstrap_mgr()),
-        patch("tarmac.cli.access.IdentityService", identity),
-    ):
-        result = runner.invoke(app, ["access", "sso", "-c", str(writable_config_dir)])
-    assert result.exit_code == 1
-    assert not (tmp_path / ".aws").exists()
 
 
 # least-privilege policy
