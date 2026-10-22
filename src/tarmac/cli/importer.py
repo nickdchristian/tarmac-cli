@@ -36,7 +36,8 @@ def import_command(
     """Read the live organization (read-only) and write matching Tarmac configuration.
 
     Run it as a role with read access to AWS Organizations (and Identity Center, unless --no-identity).
-    Existing files are replaced; one whose contents change is kept as <name>.bak. Nothing in AWS is changed. Review the files, then run `tarmac validate` and `tarmac deploy --dry-run`.
+    Nothing in AWS is changed. A file whose contents change is kept as <name>.bak. Review the files, then run
+    `tarmac validate` and `tarmac deploy --dry-run`.
     """
     print_header("Import Existing Organization")
     try:

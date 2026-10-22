@@ -483,10 +483,7 @@ class ImportService:
         name: str | None = None,
         include_identity: bool = True,
     ) -> ImportReport:
-        """Inspect the organization and write organization/accounts/identity YAML into config_dir.
-
-        A file it replaces is first renamed to ``<name>.bak`` when its contents differ.
-        """
+        """Inspect the organization and write organization/accounts/identity YAML into config_dir."""
         config_dir.mkdir(parents=True, exist_ok=True)
         # Same convention as `tarmac init --with-templates`: policy files sit beside a "config" directory.
         self.project_root = config_dir.parent if config_dir.name == "config" else config_dir
