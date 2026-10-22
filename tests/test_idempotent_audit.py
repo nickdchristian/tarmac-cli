@@ -150,6 +150,7 @@ def test_missing_group_assignment_is_created(caplog):
 
 def test_benign_errors_are_recognised():
     assert is_benign_error({"Code": "AccountAlreadyRegisteredException", "Message": "x"})
+    assert is_benign_error({"Code": "AccountRegisteredException", "Message": "x"})
     assert is_benign_error({"Code": "ValidationError", "Message": "No updates are to be performed."})
     assert is_benign_error(
         {"Code": "ConflictException", "Message": "Member and Group relationship already exists"}
