@@ -412,9 +412,8 @@ def _eval_accounts_status(status: Any) -> tuple[str, str, str, str, str | None]:
     action = f"{diff} account(s) pending creation. Run: tarmac deploy --phase 4" if not synced else None
 
     live_label = f"{status.accounts_live} accounts live"
-    suspended_count = getattr(status, "accounts_suspended", 0)
-    if suspended_count > 0:
-        live_label += f" ({suspended_count} suspended)"
+    if status.accounts_suspended > 0:
+        live_label += f" ({status.accounts_suspended} suspended)"
 
     return (
         "Member Accounts",
