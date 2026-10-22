@@ -26,7 +26,7 @@ place to do this.
    over. This also creates the organization.
 3. In CloudShell:
    ```bash
-   pip install --user tarmac-cli
+   pip install tarmac-cli
    tarmac init          # writes config/organization.yaml, accounts.yaml, identity.yaml
    ```
    Edit the files. Put yourself in `admin_user` in `identity.yaml`, and give every account in `accounts.yaml` a
