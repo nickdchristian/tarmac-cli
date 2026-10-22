@@ -16,11 +16,11 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, get_default_config_dir
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
-from ..core.models import PreflightCheckStatus
+from ..core.models import PreflightCheckStatus, TeardownItemReport
 from ..services.organization import OrganizationService
 from ..services.plan import Planner
 from ..services.preflight import PreflightService
-from ..services.teardown import TeardownItemReport, TeardownService
+from ..services.teardown import TeardownService
 from .common import (
     AdoptExistingOption,
     ConfigDirOption,

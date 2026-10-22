@@ -14,13 +14,8 @@ from tarmac.cli.main import app
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.config_loader import load_all_configs
 from tarmac.core.exceptions import AWSAuthenticationError, GovernanceError
-from tarmac.services.teardown import (
-    TeardownItemReport,
-    TeardownReport,
-    TeardownService,
-    empty_s3_bucket,
-    normalize_bucket_name,
-)
+from tarmac.services.teardown import TeardownItemReport, TeardownReport, TeardownService
+from tarmac.services.teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
 runner = CliRunner()
 

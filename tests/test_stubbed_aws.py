@@ -16,7 +16,8 @@ from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.exceptions import GovernanceError
 from tarmac.services.identity import IdentityService
 from tarmac.services.scp import SCPService
-from tarmac.services.teardown import TeardownService, empty_s3_bucket
+from tarmac.services.teardown import TeardownService
+from tarmac.services.teardown_s3 import empty_s3_bucket
 
 OWNED = [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
 
