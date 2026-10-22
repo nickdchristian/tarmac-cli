@@ -141,6 +141,11 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
     )
     print_success(f"{'Added' if added else 'Kept existing'} profile '{PROFILE}' in {config_path}.")
     print_info(
-        f"Next: aws sso login --use-device-code --profile {PROFILE}, then export AWS_PROFILE={PROFILE} "
-        "and run: tarmac deploy"
+        "Next:\n"
+        f"  1. aws sso login --use-device-code --profile {PROFILE}, and approve the code signed in as "
+        f"'{admin.username}'. Use a private window if your browser is signed in to the access portal as someone else.\n"
+        f"  2. The first sign-in emails a code to {admin.email}, then asks you to set a password and an MFA device. "
+        "If it asks for a password instead, Send email OTP is off: as root, open IAM Identity Center → Users → "
+        f"{admin.username} → Reset password → Generate a one-time password.\n"
+        f"  3. export AWS_PROFILE={PROFILE}, then: tarmac deploy"
     )

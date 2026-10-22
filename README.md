@@ -83,7 +83,10 @@ Identity Center (SSO) login first. Only the steps AWS does not allow to be autom
    run `tarmac bootstrap`. It creates that user with tarmac's least-privilege permission set on the management
    account, and a `tarmac` profile in `~/.aws/config` (see [Bootstrap access](#bootstrap-access-why-tarmac-cannot-run-as-root)).
 4. `aws sso login --use-device-code --profile tarmac` (see [Using AWS CloudShell](#using-aws-cloudshell) for why the
-   device-code flag is needed). The first sign-in emails you a code, then asks for a password and an MFA device.
+   device-code flag is needed), and approve the code signed in as `admin_user` (use a private window if your browser
+   is signed in to the access portal as someone else). The first sign-in emails you a code, then asks for a password
+   and an MFA device. If it asks for a password instead, Send email OTP is off: as root, open IAM Identity Center →
+   Users → your user → **Reset password** → **Generate a one-time password**.
 5. `export AWS_PROFILE=tarmac`, then confirm with `tarmac info --strict`.
 6. `tarmac preflight`, then `tarmac deploy --dry-run`, then `tarmac deploy`. Phases are idempotent, so a
    failed run can simply be repeated.
