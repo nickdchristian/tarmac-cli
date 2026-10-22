@@ -6,7 +6,7 @@ from botocore.exceptions import ClientError
 
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
-from ..core.models import TAG_MANAGED_BY, TeardownItemReport
+from ..core.models import TeardownItemReport
 from ..core.stack_names import Stack
 from .identity import IdentityService
 from .scp import SCPService
@@ -50,28 +50,14 @@ class GovernanceTeardown(TeardownBase):
         try:
             scp_service = SCPService(self.session_mgr)
             existing = scp_service.list_existing_scps()
-            # Legacy default names are only removed when tagged as tarmac-owned; policies declared in
-            # the user's own config are removed because the user named them as tarmac-managed.
-            legacy_names: set[str] = {
-                "FoundationalGuardrails",
-                "DenyMemberRootActivity",
-                "DenyLeaveOrganization",
-            }
             declared_names: set[str] = set()
             if bundle.org.service_control_policies:
                 declared_names = {p.name for p in bundle.org.service_control_policies.policies}
-            policies_to_remove = legacy_names | declared_names
 
             org_client = self.session_mgr.get_client("organizations")
-            for p_name in sorted(policies_to_remove):
+            for p_name in sorted(declared_names):
                 if p_name in existing:
                     pol_id = str(existing[p_name]["Id"])
-                    if p_name not in declared_names and not scp_service.is_tarmac_managed(pol_id):
-                        message = f"Not declared in config and lacks {TAG_MANAGED_BY}=tarmac tag"
-                        results.append(
-                            TeardownItemReport(SCP, p_name, "Management", mgmt_id, "SKIPPED", message)
-                        )
-                        continue
                     targets = scp_service.list_targets_for_policy(pol_id)
                     if dry_run:
                         message = f"Would detach from {len(targets)} target(s) and delete"
@@ -127,37 +113,31 @@ class GovernanceTeardown(TeardownBase):
         """Tear down Permission Sets CloudFormation stacks and clean up retained permission sets."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
-        stack_names = [
-            Stack.PERMISSION_SETS.for_org(bundle.org.organization.name),
-            Stack.LEGACY_PERMISSION_SETS.for_org(bundle.org.organization.name),
-        ]
+        stack_name = Stack.PERMISSION_SETS.for_org(bundle.org.organization.name)
         identity_service, inst_arn, candidate_regions = self._resolve_identity_teardown_context(
             bundle, target_region
         )
 
-        for stack_name in stack_names:
-            for stack_region in candidate_regions:
-                try:
-                    cfn_client = self.session_mgr.get_client("cloudformation", region_name=stack_region)
-                    status = self.cfn_service._get_stack_status(cfn_client, stack_name)
-                    if item := self._remove_stack(
-                        cfn_client,
-                        stack_name,
-                        status,
-                        "Management",
-                        mgmt_id,
-                        dry_run,
-                        would="Would delete permission sets stack",
-                        deleted="Deleted permission sets CloudFormation stack",
-                        missing=None,
-                    ):
-                        results.append(item)
-                        break
-                except AWS_ERRORS as e:
-                    results.append(
-                        TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "FAILED", str(e))
-                    )
+        for stack_region in candidate_regions:
+            try:
+                cfn_client = self.session_mgr.get_client("cloudformation", region_name=stack_region)
+                status = self.cfn_service._get_stack_status(cfn_client, stack_name)
+                if item := self._remove_stack(
+                    cfn_client,
+                    stack_name,
+                    status,
+                    "Management",
+                    mgmt_id,
+                    dry_run,
+                    would="Would delete permission sets stack",
+                    deleted="Deleted permission sets CloudFormation stack",
+                    missing=None,
+                ):
+                    results.append(item)
                     break
+            except AWS_ERRORS as e:
+                results.append(TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "FAILED", str(e)))
+                break
 
         if not (identity_service and inst_arn):
             return results

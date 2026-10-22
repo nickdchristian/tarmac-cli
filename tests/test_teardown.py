@@ -209,8 +209,8 @@ def test_teardown_scps(test_bundle):
     mock_paginator_policies.paginate.return_value = [
         {
             "Policies": [
-                {"Id": "p-12345", "Name": "DenyMemberRootActivity"},
-                {"Id": "p-67890", "Name": "DenyLeaveOrganization"},
+                {"Id": "p-12345", "Name": "FoundationalGuardrails"},
+                {"Id": "p-67890", "Name": "NotDeclared"},
             ]
         }
     ]
@@ -233,12 +233,12 @@ def test_teardown_scps(test_bundle):
     reports = service.teardown_scps(test_bundle, dry_run=False)
 
     deleted = [r for r in reports if r.action == "DELETED"]
-    assert len(deleted) >= 3  # Stack + 2 SCPs
+    assert len(deleted) == 2  # Stack + the declared SCP
     mock_cfn.delete_stack.assert_called_once_with(
         StackName=f"{test_bundle.org.organization.name}-organization-scps"
     )
-    assert mock_org.detach_policy.call_count == 2
-    assert mock_org.delete_policy.call_count == 2
+    mock_org.detach_policy.assert_called_once_with(PolicyId="p-12345", TargetId="r-root")
+    mock_org.delete_policy.assert_called_once_with(PolicyId="p-12345")
 
 
 def test_teardown_all_orchestration(test_bundle):
@@ -379,7 +379,7 @@ def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path:
 
         reports = service.teardown_identity(mock_bundle, "us-east-1", dry_run=False)
 
-        assert mock_del_stack.call_count == 2
+        assert mock_del_stack.call_count == 1
         mock_id_inst.delete_permission_set.assert_called_once_with(
             "arn:aws:sso:::instance/ssoins-1",
             "arn:aws:sso:::permissionSet/ps-admin",
@@ -688,41 +688,6 @@ def test_teardown_cloudtrail_missing_trail_is_silent(test_bundle):
     reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
 
     assert not [r for r in reports if r.resource_type == "CloudTrail Trail"]
-
-
-def _scp_clients(tagged: bool) -> dict[str, MagicMock]:
-    org = MagicMock()
-    pols = MagicMock()
-    pols.paginate.return_value = [{"Policies": [{"Id": "p-legacy", "Name": "DenyLeaveOrganization"}]}]
-    tags = MagicMock()
-    tags.paginate.return_value = [
-        {"Tags": [{"Key": "tarmac:managed-by", "Value": "tarmac"}] if tagged else []}
-    ]
-    targets = MagicMock()
-    targets.paginate.return_value = [{"Targets": [{"TargetId": "r-root"}]}]
-    org.get_paginator.side_effect = lambda n: {
-        "list_policies": pols,
-        "list_tags_for_resource": tags,
-    }.get(n, targets)
-    return {"cloudformation": _no_stack_cfn(), "organizations": org}
-
-
-def test_teardown_scps_skips_untagged_legacy_policy(test_bundle):
-    test_bundle.org.service_control_policies.policies = []
-    clients = _scp_clients(tagged=False)
-    reports = _teardown_service(clients).teardown_scps(test_bundle, dry_run=False)
-
-    clients["organizations"].detach_policy.assert_not_called()
-    clients["organizations"].delete_policy.assert_not_called()
-    assert any(r.resource_name == "DenyLeaveOrganization" and r.action == "SKIPPED" for r in reports)
-
-
-def test_teardown_scps_removes_tagged_legacy_policy(test_bundle):
-    test_bundle.org.service_control_policies.policies = []
-    clients = _scp_clients(tagged=True)
-    _teardown_service(clients).teardown_scps(test_bundle, dry_run=False)
-
-    clients["organizations"].delete_policy.assert_called_once_with(PolicyId="p-legacy")
 
 
 def test_scp_template_carries_ownership_tag(tmp_path):
