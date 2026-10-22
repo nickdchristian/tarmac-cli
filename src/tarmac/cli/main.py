@@ -19,7 +19,7 @@ from ..core.placeholders import find_placeholder_values
 from ..core.stack_names import Stack
 from ..services.baseline import BaselineService
 from ..services.drift import DriftService
-from ..services.identity import SUPPORTED_SSO_REGIONS, _probe_region_for_instance
+from ..services.identity_base import SUPPORTED_SSO_REGIONS, _probe_region_for_instance
 from ..services.ou import OUService
 from ..services.scaffold import scaffold_project
 from ..services.status import StatusService
