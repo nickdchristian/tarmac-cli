@@ -853,7 +853,7 @@ class IdentityService:
         declared_sets = {ps.name for ps in id_cfg.permission_sets}
         report.permission_sets_synced = [name for name in ps_map if name in declared_sets]
 
-        users = [id_cfg.admin_user, id_cfg.breakglass_user, *id_cfg.additional_users]
+        users = [id_cfg.deployment_user, id_cfg.breakglass_user, *id_cfg.additional_users]
         user_map: dict[str, str] = {}
         for u in users:
             uid = self.get_or_create_user(u)

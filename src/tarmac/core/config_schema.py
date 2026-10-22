@@ -523,11 +523,18 @@ class GroupDef(BaseModel):
 
 class IdentityCenterConfig(BaseModel):
     region: str | None = None
-    admin_user: UserDef
+    deployment_user: UserDef
     breakglass_user: UserDef
     additional_users: list[UserDef] = Field(default_factory=list)
     permission_sets: list[PermissionSetDef] = Field(default_factory=list)
     groups: list[GroupDef] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def admin_user_was_renamed(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "admin_user" in data:
+            raise ValueError("identity_center.admin_user is now deployment_user: rename it")
+        return data
 
 
 class IdentityConfigFile(BaseModel):

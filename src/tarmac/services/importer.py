@@ -319,14 +319,12 @@ class ImportService:
         usernames = list(users.values())
         self.report.users = [u["username"] for u in usernames]
         self.report.groups = [g["name"] for g in groups]
-        admin = next((u for u in usernames if "admin" in u["username"].lower()), None)
+        deployment = next((u for u in usernames if "tarmac" in u["username"].lower()), None)
         breakglass = next((u for u in usernames if "break" in u["username"].lower()), None)
-        rest = [u for u in usernames if u is not admin and u is not breakglass]
-        if admin is None and rest:
-            admin = rest.pop(0)
+        rest = [u for u in usernames if u is not deployment and u is not breakglass]
         if breakglass is None and rest:
             breakglass = rest.pop(0)
-        for label, value in (("admin_user", admin), ("breakglass_user", breakglass)):
+        for label, value in (("deployment_user", deployment), ("breakglass_user", breakglass)):
             if value is None:
                 self.report.todos.append(
                     f"Identity Center has no user to use as identity_center.{label}: edit identity.yaml."
@@ -340,7 +338,7 @@ class ImportService:
         return {
             "identity_center": {
                 "region": service.region,
-                "admin_user": admin or placeholder,
+                "deployment_user": deployment or placeholder,
                 "breakglass_user": breakglass or placeholder,
                 "additional_users": rest,
                 "permission_sets": [p["definition"] for p in permission_sets.values()],
@@ -622,7 +620,7 @@ def _identity_placeholder() -> dict[str, Any]:
     }
     return {
         "identity_center": {
-            "admin_user": user,
+            "deployment_user": user,
             "breakglass_user": dict(user, username="REPLACE-ME-TOO"),
             "permission_sets": [],
             "groups": [],

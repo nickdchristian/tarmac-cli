@@ -169,11 +169,12 @@ accounts:
 DEFAULT_IDENTITY_YAML = """# IAM Identity Center (SSO) Configuration
 identity_center:
   # region: "us-east-1"  # Optional: specify if SSO instance is in a different region
-  admin_user:
-    username: "admin"
-    email: "admin@myorg.example.com"
-    first_name: "Admin"
-    last_name: "User"
+  # The login tarmac runs as: 'tarmac bootstrap' gives it only the TarmacDeployment permission set.
+  deployment_user:
+    username: "tarmac"
+    email: "tarmac@myorg.example.com"
+    first_name: "Tarmac"
+    last_name: "Deployment"
 
   breakglass_user:
     username: "breakglass"
@@ -181,7 +182,11 @@ identity_center:
     first_name: "Break"
     last_name: "Glass"
 
-  additional_users: []
+  additional_users:
+    - username: "admin"
+      email: "admin@myorg.example.com"
+      first_name: "Admin"
+      last_name: "User"
 
   permission_sets:
     - name: "AdministratorAccess"

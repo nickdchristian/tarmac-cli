@@ -7,6 +7,7 @@ from tarmac.core.config_loader import load_all_configs
 from tarmac.core.config_schema import (
     AccountsCatalog,
     Contact,
+    IdentityCenterConfig,
     OrgDetails,
 )
 
@@ -354,3 +355,9 @@ def test_normalize_account_name_whitespace_and_hyphen_collapsing():
     assert normalize_account_name("  Log-Archive  ") == "log-archive"
     assert normalize_account_name("log---archive") == "log-archive"
     assert normalize_account_name("  Security _ Audit  ") == "security-audit"
+
+
+def test_admin_user_is_rejected_with_its_new_name():
+    user = {"username": "tarmac", "email": "tarmac@example.com"}
+    with pytest.raises(ValidationError, match="admin_user is now deployment_user"):
+        IdentityCenterConfig.model_validate({"admin_user": user, "breakglass_user": user})
