@@ -112,11 +112,8 @@ def test_teardown_cloudtrail(test_bundle):
         "ResourceTagList": [{"TagsList": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}]
     }
 
-    mock_session_mgr.get_member_client.return_value = mock_cfn
-
     service = TeardownService(mock_session_mgr)
-    with patch.object(service, "_get_active_accounts", return_value={"audit": "444455556666"}):
-        reports = service.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
+    reports = service.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
 
     deleted_reports = [r for r in reports if r.action == "DELETED"]
     assert len(deleted_reports) >= 1
@@ -318,7 +315,6 @@ def test_cli_destroy_alias(monkeypatch, teardown_config_dir: Path):
 
 
 def test_cli_teardown_handles_bracketed_markup_messages(monkeypatch, teardown_config_dir: Path):
-    from unittest.mock import patch
 
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with patch("tarmac.services.teardown.TeardownService.teardown_all") as mock_td:
@@ -345,7 +341,7 @@ def test_cli_teardown_handles_bracketed_markup_messages(monkeypatch, teardown_co
 def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path: Path):
     """Verify teardown_identity deletes permission sets stack and retained SSO permission sets."""
     from typing import Any
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     from tarmac.core.config_schema import PermissionSetDef
     from tarmac.services.teardown import TeardownService
@@ -641,7 +637,6 @@ def test_teardown_terraform_backend_handles_bucket_arn_outputs(test_bundle):
 def _teardown_service(clients: dict[str, MagicMock]) -> TeardownService:
     mgr = MagicMock(spec=AwsSessionManager)
     mgr.default_region = "us-east-1"
-    clients.setdefault("organizations", MagicMock())
     mgr.get_client.side_effect = lambda svc, **kw: clients[svc]
     mgr.get_caller_identity.return_value = {"Account": "111122223333"}
     return TeardownService(mgr)
@@ -692,26 +687,6 @@ def test_teardown_cloudtrail_missing_trail_is_silent(test_bundle):
     reports = svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
 
     assert not [r for r in reports if r.resource_type == "CloudTrail Trail"]
-
-
-def test_teardown_cloudtrail_deletes_the_stack_in_the_audit_account(test_bundle):
-    trail = MagicMock()
-    trail.get_trail.side_effect = ClientError(
-        {"Error": {"Code": "TrailNotFoundException", "Message": "nope"}}, "GetTrail"
-    )
-    svc = _teardown_service({"cloudformation": _no_stack_cfn(), "cloudtrail": trail})
-    audit_cfn = MagicMock()
-    audit_cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
-    mgr = cast(MagicMock, svc.session_mgr)
-    mgr.get_member_client.return_value = audit_cfn
-    audit_name = test_bundle.get_audit_account_name()
-
-    with patch.object(svc, "_get_active_accounts", return_value={audit_name: "444455556666"}):
-        svc.teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
-
-    audit_cfn.delete_stack.assert_called_once_with(
-        StackName=f"{test_bundle.org.organization.name}-organization-cloudtrail"
-    )
 
 
 def _scp_clients(tagged: bool) -> dict[str, MagicMock]:

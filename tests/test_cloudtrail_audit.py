@@ -1,4 +1,4 @@
-"""The audit account runs the organization trail as CloudTrail's delegated administrator."""
+"""Phase 3 makes the audit account CloudTrail's delegated administrator."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -34,12 +34,11 @@ def _run_phase_3(bundle, tmp_path: Path, accounts: dict[str, str]) -> tuple[Magi
     return mgr, cfn, org
 
 
-def test_phase_3_delegates_cloudtrail_to_audit_and_deploys_the_trail_there(bundle, tmp_path):
+def test_phase_3_delegates_cloudtrail_to_audit_and_deploys_the_trail_in_management(bundle, tmp_path):
     mgr, cfn, org = _run_phase_3(bundle, tmp_path, {"log-archive": LOG_ARCHIVE, "audit": AUDIT})
 
     org.return_value.register_cloudtrail_delegated_administrator.assert_called_once_with(AUDIT)
-    mgr.get_member_client.assert_called_with(AUDIT, "cloudformation", region_name="us-east-1")
-    assert cfn.return_value.deploy_stack.call_args.args[0] is mgr.get_member_client.return_value
+    assert cfn.return_value.deploy_stack.call_args.args[0] is mgr.get_client.return_value
 
 
 def test_phase_3_needs_an_audit_account(bundle, tmp_path):

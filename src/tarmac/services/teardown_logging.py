@@ -30,39 +30,23 @@ class LoggingTeardown(TeardownBase):
         stack_name = Stack.CLOUDTRAIL.for_org(bundle.org.organization.name)
         trail_name = bundle.org.cloudtrail.trail_name
 
-        audit_name = bundle.get_audit_account_name() or "audit"
-        audit_id = bundle.resolve_account_id(audit_name, self._get_active_accounts()) or ""
-        if not audit_id:
-            results.append(
-                TeardownItemReport(
-                    STACK,
-                    stack_name,
-                    audit_name,
-                    "",
-                    "SKIPPED",
-                    "Audit account not resolved in active accounts",
-                )
-            )
-        else:
-            try:
-                cfn_client = self.session_mgr.get_member_client(
-                    audit_id, "cloudformation", region_name=target_region
-                )
-                status = self.cfn_service._get_stack_status(cfn_client, stack_name)
-                if item := self._remove_stack(
-                    cfn_client,
-                    stack_name,
-                    status,
-                    audit_name,
-                    audit_id,
-                    dry_run,
-                    would="Would delete CloudTrail stack",
-                    deleted="Deleted CloudTrail CloudFormation stack",
-                    release_protection=True,
-                ):
-                    results.append(item)
-            except AWS_ERRORS as e:
-                results.append(TeardownItemReport(STACK, stack_name, audit_name, audit_id, "FAILED", str(e)))
+        try:
+            cfn_client = self.session_mgr.get_client("cloudformation", region_name=target_region)
+            status = self.cfn_service._get_stack_status(cfn_client, stack_name)
+            if item := self._remove_stack(
+                cfn_client,
+                stack_name,
+                status,
+                "Management",
+                mgmt_id,
+                dry_run,
+                would="Would delete CloudTrail stack",
+                deleted="Deleted CloudTrail CloudFormation stack",
+                release_protection=True,
+            ):
+                results.append(item)
+        except AWS_ERRORS as e:
+            results.append(TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "FAILED", str(e)))
 
         try:
             trail_client = self.session_mgr.get_client("cloudtrail", region_name=target_region)

@@ -30,7 +30,6 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
                 {"Id": "111111111111", "Name": "Deployment", "Status": "ACTIVE"},
                 {"Id": "222222222222", "Name": "Production", "Status": "ACTIVE"},
                 {"Id": "333333333333", "Name": "ClosedOld", "Status": "SUSPENDED"},
-                {"Id": "444444444444", "Name": "audit", "Status": "ACTIVE"},
             ]
         }
     ]
@@ -46,9 +45,8 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
 
     mock_org.get_paginator.side_effect = org_paginator_side_effect
 
-    # CFN Stacks: CloudTrail on audit, Backend on deployment
-    mock_cfn_audit = MagicMock()
-    mock_cfn_audit.describe_stacks.return_value = {
+    # CFN Stacks: CloudTrail on mgmt, Backend on deployment
+    mock_cfn_mgmt.describe_stacks.return_value = {
         "Stacks": [{"StackName": "myorg-organization-cloudtrail", "StackStatus": "CREATE_COMPLETE"}]
     }
     mock_cfn_dep.describe_stacks.return_value = {
@@ -69,16 +67,14 @@ def test_status_service_inspect_end_to_end(sample_config_dir: Path):
         return MagicMock()
 
     mock_session_mgr.get_client.side_effect = client_side_effect
-    mock_session_mgr.get_member_client.side_effect = lambda account_id, *a, **k: (
-        mock_cfn_audit if account_id == "444444444444" else mock_cfn_dep
-    )
+    mock_session_mgr.get_member_client.return_value = mock_cfn_dep
 
     status_service = StatusService(mock_session_mgr)
     status = status_service.inspect(bundle, target_region="eu-west-1")
 
     assert status.org_id == "o-live123"
     assert status.feature_set == "ALL"
-    assert status.accounts_live == 3  # 3 active
+    assert status.accounts_live == 2  # 2 active
     assert status.accounts_suspended == 1  # 1 suspended
     assert status.cloudtrail_status == "CREATE_COMPLETE"
     assert status.backend_status == "CREATE_COMPLETE"
@@ -216,8 +212,7 @@ def test_drift_service_handles_import_complete_sso_region_and_remediation_comman
             p.paginate.return_value = [
                 {
                     "Accounts": [
-                        {"Id": "111111111111", "Name": bundle.accounts.accounts[0].name, "Status": "ACTIVE"},
-                        {"Id": "444444444444", "Name": "audit", "Status": "ACTIVE"},
+                        {"Id": "111111111111", "Name": bundle.accounts.accounts[0].name, "Status": "ACTIVE"}
                     ]
                 }
             ]

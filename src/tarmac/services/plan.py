@@ -419,9 +419,9 @@ class Planner:
             return
         self._stack(
             phase,
-            self._member_cfn(audit_id),
+            self.session_mgr.get_client("cloudformation", region_name=self.region),
             trail_stack,
-            audit_name,
+            "management",
             cloudtrail_parameters(
                 self.bundle,
                 account_id,

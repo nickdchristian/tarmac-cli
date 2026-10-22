@@ -337,6 +337,10 @@ class DriftService:
         prefix = bundle.org.organization.name
         mgmt_cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
 
+        ct_stack = Stack.CLOUDTRAIL.for_org(prefix)
+        ct_status = stack_status(mgmt_cfn, ct_stack)
+        self._record_stack_drift("CloudTrail", ct_status, report)
+
         sso_region = (
             bundle.identity.identity_center.region
             if (
@@ -361,7 +365,6 @@ class DriftService:
                 Stack.LOG_ARCHIVE,
             ),
             ("AuditHardening", bundle.get_audit_account_name() or "audit", Stack.AUDIT_ACCOUNT),
-            ("CloudTrail", bundle.get_audit_account_name() or "audit", Stack.CLOUDTRAIL),
         ]
         for friendly_name, acct_name, stack in stacks_to_check:
             self._audit_member_stack(

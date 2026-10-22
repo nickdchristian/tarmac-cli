@@ -278,7 +278,7 @@ def _run_phase_3_cloudtrail(
         "cloudformation/organization-cloudtrail.yaml", project_root=project_root
     )
     report = cfn_service.deploy_stack(
-        session_mgr.get_member_client(audit_id, "cloudformation", region_name=target_region),
+        session_mgr.get_client("cloudformation", region_name=target_region),
         Stack.CLOUDTRAIL.for_org(bundle.org.organization.name),
         template_file,
         cloudtrail_parameters(

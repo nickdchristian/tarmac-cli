@@ -1,5 +1,5 @@
-# The audit (security tooling) account deploys this stack as CloudTrail's delegated administrator. The
-# organization-wide trail it creates still belongs to the management account and logs every account.
+# CloudTrail is deployed to the Management account and acts as an organization-
+# wide trail across all accounts.
 #
 # Real-time event activity streams to the Security Tooling account to scan and
 # notify on anomalies, while the actual log files are delivered directly to an
