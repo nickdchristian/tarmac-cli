@@ -84,7 +84,12 @@ def test_cli_deploy_run_with_custom_tags(sample_config_dir, monkeypatch):
     mock_org = MagicMock()
     mock_org.describe_organization.return_value = {"Organization": {"Id": "o-test12345"}}
     mock_org.get_paginator.return_value.paginate.return_value = [
-        {"Accounts": [{"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"}]}
+        {
+            "Accounts": [
+                {"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"},
+                {"Id": "999999999999", "Name": "audit", "Status": "ACTIVE"},
+            ]
+        }
     ]
     mock_session_mgr.get_client.return_value = mock_org
     mock_session_mgr.get_member_client.return_value = MagicMock()
@@ -130,7 +135,12 @@ def test_cli_deploy_phase_3_deploys_log_archive_hardening_before_trail(sample_co
     mock_org = MagicMock()
     mock_org.describe_organization.return_value = {"Organization": {"Id": "o-test12345"}}
     mock_org.get_paginator.return_value.paginate.return_value = [
-        {"Accounts": [{"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"}]}
+        {
+            "Accounts": [
+                {"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"},
+                {"Id": "999999999999", "Name": "audit", "Status": "ACTIVE"},
+            ]
+        }
     ]
     mock_session_mgr.get_client.return_value = mock_org
     mock_session_mgr.get_member_client.return_value = MagicMock()

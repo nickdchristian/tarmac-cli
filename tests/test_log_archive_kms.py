@@ -67,7 +67,12 @@ def test_deploy_passes_the_setting_to_the_log_archive_stack(
     org = MagicMock()
     org.describe_organization.return_value = {"Organization": {"Id": "o-test12345"}}
     org.get_paginator.return_value.paginate.return_value = [
-        {"Accounts": [{"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"}]}
+        {
+            "Accounts": [
+                {"Id": "888888888888", "Name": "Log-Archive", "Status": "ACTIVE"},
+                {"Id": "999999999999", "Name": "audit", "Status": "ACTIVE"},
+            ]
+        }
     ]
     session_mgr.get_client.return_value = org
     session_mgr.get_member_client.return_value = MagicMock()
