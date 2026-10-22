@@ -142,9 +142,8 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
     print_info(
         f"Next, to sign in as '{admin.username}' for the first time:\n"
         f"  1. As root, in IAM Identity Center → Users → {admin.username}, register an MFA device.\n"
-        f"  2. Open https://{store_id}.awsapps.com/start in a private window.\n"
+        f"  2. aws sso login --use-device-code --profile {PROFILE}, and open the URL it prints in a private window.\n"
         f"  3. In the console, Users → {admin.username} → Reset password → Generate a one-time password. Sign in with "
-        "it in that window and set your own password.\n"
-        f"  4. aws sso login --use-device-code --profile {PROFILE}, and enter the code in that window.\n"
-        f"  5. export AWS_PROFILE={PROFILE}, then: tarmac deploy"
+        "it in that window, set your own password, then enter the code.\n"
+        f"  4. export AWS_PROFILE={PROFILE}, then: tarmac deploy"
     )
