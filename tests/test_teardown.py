@@ -387,8 +387,8 @@ def test_teardown_identity_deletes_stacks_and_retained_permission_sets(tmp_path:
         assert len(reports) == 2  # 1 stack deleted + 1 permission set deleted
         assert reports[0].resource_type == "CloudFormation Stack"
         assert reports[0].action == "DELETED"
-        assert reports[2].resource_type == "Permission Set"
-        assert reports[2].action == "DELETED"
+        assert reports[1].resource_type == "Permission Set"
+        assert reports[1].action == "DELETED"
 
 
 def test_teardown_service_callbacks(test_bundle):
