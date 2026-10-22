@@ -461,7 +461,6 @@ def test_teardown_lists_only_what_was_found(monkeypatch):
     bundle = MagicMock()
     bundle.org.organization.name = "acme"
     bundle.org.organization.additional_regions = []
-    svc._has_credentials = MagicMock(return_value=True)  # type: ignore[method-assign]
     monkeypatch.setattr(
         "tarmac.services.teardown_config.ConfigRecorderService.remove",
         MagicMock(

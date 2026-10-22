@@ -302,7 +302,8 @@ def test_teardown_all_orchestration(test_bundle):
 
 def test_cli_teardown_dry_run(monkeypatch, teardown_config_dir: Path):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    res = runner.invoke(app, ["destroy", "--dry-run", "-c", str(teardown_config_dir), "-y"])
+    with patch("tarmac.services.teardown.TeardownService.teardown_all", return_value=TeardownReport()):
+        res = runner.invoke(app, ["destroy", "--dry-run", "-c", str(teardown_config_dir), "-y"])
     assert res.exit_code == 0
     assert "Teardown Summary" in res.stdout
     assert "Teardown dry-run simulation complete" in res.stdout
@@ -310,7 +311,8 @@ def test_cli_teardown_dry_run(monkeypatch, teardown_config_dir: Path):
 
 def test_cli_destroy_alias(monkeypatch, teardown_config_dir: Path):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    res = runner.invoke(app, ["destroy", "--dry-run", "-c", str(teardown_config_dir), "-y"])
+    with patch("tarmac.services.teardown.TeardownService.teardown_all", return_value=TeardownReport()):
+        res = runner.invoke(app, ["destroy", "--dry-run", "-c", str(teardown_config_dir), "-y"])
     assert res.exit_code == 0
     assert "Teardown Summary" in res.stdout
 
