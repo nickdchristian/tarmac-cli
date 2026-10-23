@@ -136,9 +136,21 @@ def test_delete_retained_bucket_issues_valid_delete_bucket_call():
     with Stubber(s3) as stub:
         stub.add_response("delete_bucket", {}, {"Bucket": "b"})
         assert svc._delete_retained_bucket(s3, "b", "log-archive", "111122223333") == []
+        # Access logs delivered after the bucket was emptied: empty it again, then delete.
         stub.add_client_error("delete_bucket", "BucketNotEmpty", "not empty", expected_params={"Bucket": "b"})
-        items = svc._delete_retained_bucket(s3, "b", "log-archive", "111122223333")
-    assert [i.action for i in items] == ["FAILED"]
+        stub.add_response("head_bucket", {}, {"Bucket": "b"})
+        stub.add_response(
+            "list_object_versions", {"Versions": [{"Key": "log", "VersionId": "v1"}]}, {"Bucket": "b"}
+        )
+        stub.add_response(
+            "delete_objects",
+            {},
+            {"Bucket": "b", "Delete": {"Objects": [{"Key": "log", "VersionId": "v1"}], "Quiet": True}},
+        )
+        stub.add_response("list_objects_v2", {"KeyCount": 0}, {"Bucket": "b"})
+        stub.add_response("delete_bucket", {}, {"Bucket": "b"})
+        assert svc._delete_retained_bucket(s3, "b", "log-archive", "111122223333") == []
+        stub.assert_no_pending_responses()
 
 
 @pytest.mark.parametrize(
