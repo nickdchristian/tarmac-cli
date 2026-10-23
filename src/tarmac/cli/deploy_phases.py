@@ -366,7 +366,10 @@ def _run_phase_4_accounts(
                 custom_tags=custom_tags,
             )
             baseline_problems.extend(_baseline_failures(baseline_report))
-            org_service.set_account_contacts(bundle.org.contacts, result.account_id)
+            try:
+                org_service.set_account_contacts(bundle.org.contacts, result.account_id)
+            except GovernanceError as e:
+                baseline_problems.append(f"{result.name} ({result.account_id}) {e.message}: {e.details}")
 
     failed_results = [r for r in results if r.status == "FAILED"]
     if failed_results:
