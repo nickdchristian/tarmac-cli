@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.2...v0.5.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove leftovers and tidy wording for a cleaner release ([#108](https://github.com/nickdchristian/tarmac-cli/issues/108))
+
+### Bug Fixes
+
+* remove leftovers and tidy wording for a cleaner release ([#108](https://github.com/nickdchristian/tarmac-cli/issues/108)) ([8382b2a](https://github.com/nickdchristian/tarmac-cli/commit/8382b2a028c68c16738a8b16ec5002ac466372ee))
+
 ## [0.4.2](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.1...v0.4.2) (2026-10-23)
 
 
