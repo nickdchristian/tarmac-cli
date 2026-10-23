@@ -114,41 +114,67 @@ class StackSetService:
     def sync_instances(self, cf: Any, name: str, regions: list[str], targets: dict[str, Any]) -> list[str]:
         """Add instances for Regions that have none, drop Regions no longer configured, report what is not
         current. Template and parameter changes reach existing instances through the StackSet update."""
+        self._sync_regions(cf, name, regions, targets)
+        return self._instance_failures(cf, name)
+
+    def sync_targets(self, cf: Any, name: str, ou_ids: list[str], regions: list[str]) -> list[str]:
+        """Like sync_instances for a StackSet targeting OUs, which also deploys to newly targeted OUs and removes
+        the instances of OUs no longer targeted."""
+        existing = self.describe(cf, name) or {}
+        present = set(existing.get("OrganizationalUnitIds", []))
+        removed = sorted(present - set(ou_ids))
+        if removed:
+            present_regions = sorted({str(i["Region"]) for i in self.list_instances(cf, name)})
+            self._delete_instances(cf, name, {"OrganizationalUnitIds": removed}, present_regions or regions)
+        kept = [o for o in ou_ids if o in present]
+        if kept:
+            self._sync_regions(cf, name, regions, {"OrganizationalUnitIds": kept})
+        added = [o for o in ou_ids if o not in present]
+        if added:
+            self._create_instances(cf, name, {"OrganizationalUnitIds": added}, regions)
+        return self._instance_failures(cf, name)
+
+    def _sync_regions(self, cf: Any, name: str, regions: list[str], targets: dict[str, Any]) -> None:
         present = {str(i["Region"]) for i in self.list_instances(cf, name)}
         missing = [r for r in regions if r not in present]
         surplus = sorted(present - set(regions))
         if missing:
-            response = cf.create_stack_instances(
-                StackSetName=name,
-                DeploymentTargets=targets,
-                Regions=missing,
-                OperationPreferences=OPERATION_PREFERENCES,
-            )
-            self.wait(cf, name, response["OperationId"])
-            audit(
-                "create",
-                f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
-                f"Deployed StackSet '{name}' to Region(s) {', '.join(missing)}",
-                regions=missing,
-            )
+            self._create_instances(cf, name, targets, missing)
         if surplus:
-            response = cf.delete_stack_instances(
-                StackSetName=name,
-                DeploymentTargets=targets,
-                Regions=surplus,
-                RetainStacks=False,
-                OperationPreferences=OPERATION_PREFERENCES,
-            )
-            self.wait(cf, name, response["OperationId"])
-            audit(
-                "delete",
-                f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
-                f"Removed StackSet '{name}' from Region(s) {', '.join(surplus)}",
-                regions=surplus,
-            )
-        return self._instance_failures(cf, name)
+            self._delete_instances(cf, name, targets, surplus)
+
+    def _create_instances(self, cf: Any, name: str, targets: dict[str, Any], regions: list[str]) -> None:
+        response = cf.create_stack_instances(
+            StackSetName=name,
+            DeploymentTargets=targets,
+            Regions=regions,
+            OperationPreferences=OPERATION_PREFERENCES,
+        )
+        self.wait(cf, name, response["OperationId"])
+        audit(
+            "create",
+            f"stackset-instances:{name}",
+            Outcome.SUCCEEDED,
+            f"Deployed StackSet '{name}' to Region(s) {', '.join(regions)}",
+            regions=regions,
+        )
+
+    def _delete_instances(self, cf: Any, name: str, targets: dict[str, Any], regions: list[str]) -> None:
+        response = cf.delete_stack_instances(
+            StackSetName=name,
+            DeploymentTargets=targets,
+            Regions=regions,
+            RetainStacks=False,
+            OperationPreferences=OPERATION_PREFERENCES,
+        )
+        self.wait(cf, name, response["OperationId"])
+        audit(
+            "delete",
+            f"stackset-instances:{name}",
+            Outcome.SUCCEEDED,
+            f"Removed StackSet '{name}' from Region(s) {', '.join(regions)}",
+            regions=regions,
+        )
 
     def _instance_failures(self, cf: Any, name: str) -> list[str]:
         failures = []

@@ -123,6 +123,7 @@ class ConfigBundle:
         errors.extend(self._check_inline_policies())
         errors.extend(self._check_scp_policies())
         errors.extend(self._check_scp_targets())
+        errors.extend(self._check_baseline_stacks())
         return errors
 
     def _check_ou_uniqueness(self) -> list[str]:
@@ -269,6 +270,27 @@ class ConfigBundle:
                     f"SCP '{scp.name}' targets undefined OU '{target}'. "
                     f"Use 'root' or one of: {sorted(valid_ous)}"
                 )
+        return errors
+
+    def _check_baseline_stacks(self) -> list[str]:
+        """Validate baseline stack names are unique, templates exist and targets are 'root' or declared OUs."""
+        errors: list[str] = []
+        valid_ous = self._collect_ou_names(self.org.ou_structure)
+        seen: set[str] = set()
+        for stack in self.org.baseline_stacks:
+            if stack.name.lower() in seen:
+                errors.append(f"Baseline stack name '{stack.name}' is used more than once.")
+            seen.add(stack.name.lower())
+            try:
+                resolve_resource_path(stack.template_file, project_root=self.config_dir.parent)
+            except ConfigurationError:
+                errors.append(f"Baseline stack '{stack.name}' template file not found: {stack.template_file}")
+            for target in stack.target_ous:
+                if target.lower() != "root" and target not in valid_ous:
+                    errors.append(
+                        f"Baseline stack '{stack.name}' targets undefined OU '{target}'. "
+                        f"Use 'root' or one of: {sorted(valid_ous)}"
+                    )
         return errors
 
     def get_backend_account_name(self) -> str | None:
