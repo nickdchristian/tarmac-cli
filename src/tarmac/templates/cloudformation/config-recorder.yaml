@@ -122,8 +122,6 @@ Resources:
 
   DeliveryChannel:
     Type: AWS::Config::DeliveryChannel
-    # PutDeliveryChannel needs a recorder to exist (NoAvailableConfigurationRecorderException otherwise).
-    DependsOn: ConfigRecorder
     Properties:
       Name: tarmac-delivery
       S3BucketName: !Ref DeliveryBucketName

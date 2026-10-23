@@ -632,8 +632,9 @@ def test_recorder_template_records_everything_and_global_types_in_one_region_onl
         ["IncludeGlobalResources", "true"],
         ["AWS::Region", "GlobalResourcesRegion"],
     ]
-    # the delivery channel needs a recorder to exist first
-    assert doc["Resources"]["DeliveryChannel"]["DependsOn"] == "ConfigRecorder"
+    # CloudFormation starts the recorder once the channel exists, so ordering the two never finishes
+    assert "DependsOn" not in doc["Resources"]["DeliveryChannel"]
+    assert "DependsOn" not in doc["Resources"]["ConfigRecorder"]
     assert doc["Resources"]["DeliveryChannel"]["Properties"]["S3BucketName"] == "DeliveryBucketName"
 
 
