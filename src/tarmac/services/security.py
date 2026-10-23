@@ -1,6 +1,7 @@
 """Delegated Administration Service for AWS GuardDuty and AWS Security Hub."""
 
 import logging
+import time
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -223,6 +224,22 @@ class SecurityServicesService:
             self._ensure_management_detector(region, wanted)
             self._add_existing_guardduty_members(gd_audit, detector_id, audit_id, region)
 
+    @staticmethod
+    def _create_guardduty_members(
+        gd_audit: Any, detector_id: str, accounts: list[dict[str, str]]
+    ) -> list[str]:
+        """Add members; returns the refusals. GuardDuty takes a few minutes to see a new management detector."""
+        waited = 0.0
+        while True:
+            response = gd_audit.create_members(DetectorId=detector_id, AccountDetails=accounts)
+            unprocessed = response.get("UnprocessedAccounts", [])
+            waiting = {u["AccountId"] for u in unprocessed if "must first enable GuardDuty" in u["Result"]}
+            if not waiting or waited >= 300:
+                return [f"{u['AccountId']}: {u['Result']}" for u in unprocessed]
+            accounts = [a for a in accounts if a["AccountId"] in waiting]
+            time.sleep(15)
+            waited += 15
+
     def _ensure_management_detector(self, region: str, wanted: list[dict[str, str]]) -> None:
         """GuardDuty only adds the management account as a member once it has a detector of its own."""
         gd_mgmt = self.session_mgr.get_client("guardduty", region_name=region)
@@ -259,10 +276,7 @@ class SecurityServicesService:
         ]
         refused: list[str] = []
         for start in range(0, len(missing), 50):
-            response = gd_audit.create_members(
-                DetectorId=detector_id, AccountDetails=missing[start : start + 50]
-            )
-            refused += [f"{u['AccountId']}: {u['Result']}" for u in response.get("UnprocessedAccounts", [])]
+            refused += self._create_guardduty_members(gd_audit, detector_id, missing[start : start + 50])
         if len(missing) > len(refused):
             audit(
                 "configure",

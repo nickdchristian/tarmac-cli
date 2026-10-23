@@ -667,3 +667,22 @@ def test_guardduty_is_turned_on_in_the_management_account_so_it_can_be_added():
         service._ensure_management_detector("us-east-1", wanted)
         service._ensure_management_detector("us-east-1", wanted)  # a second run changes nothing
         stub.assert_no_pending_responses()
+
+
+def test_adding_the_management_account_waits_until_guardduty_sees_its_new_detector(monkeypatch):
+    gd = _client("guardduty")
+    detector, mgmt = "12abc34d567e8fa901bc2d34e56789f0", "316941624511"
+    details = [{"AccountId": mgmt, "Email": f"{mgmt}@example.com"}]
+    waiting = "Operation failed because your organization master must first enable GuardDuty to be added as a member"
+    monkeypatch.setattr("tarmac.services.security.time.sleep", lambda _s: None)
+    with Stubber(gd) as stub:
+        stub.add_response(
+            "create_members",
+            {"UnprocessedAccounts": [{"AccountId": mgmt, "Result": waiting}]},
+            {"DetectorId": detector, "AccountDetails": details},
+        )
+        stub.add_response(
+            "create_members", {"UnprocessedAccounts": []}, {"DetectorId": detector, "AccountDetails": details}
+        )
+        assert SecurityServicesService._create_guardduty_members(gd, detector, details) == []
+        stub.assert_no_pending_responses()
