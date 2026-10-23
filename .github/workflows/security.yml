@@ -44,4 +44,4 @@ jobs:
         run: uv export --locked --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/requirements.txt"
 
       - name: Audit for known vulnerabilities
-        run: uvx pip-audit==2.10.1 --requirement "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --strict
+        run: uvx --exclude-newer "7 days" pip-audit --requirement "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --strict
