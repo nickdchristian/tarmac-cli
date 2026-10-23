@@ -27,6 +27,7 @@ from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .baseline import BUDGET_TEMPLATE, budget_parameters, budget_stack_name
+from .baseline_stacks import BaselineStacksService, stack_set_name
 from .cloudformation import CloudFormationService, lock_table_wanted
 from .config_recorder import service_linked_role_arn
 from .identity import IdentityService
@@ -444,6 +445,31 @@ class Planner:
 
     # Phase 4
 
+    def _baseline_stacks(self, phase: PhasePlan) -> None:
+        stacks = self.bundle.org.baseline_stacks
+        for stack in stacks:
+            name = stack_set_name(self.org_name, stack.name)
+            self._check(
+                phase,
+                "stack set",
+                name,
+                lambda name=name, stack=stack: self._stack_set(name, stack.template_file, stack.parameters),
+                ", ".join(stack.target_ous),
+            )
+        if not self.org_id:
+            return
+        try:
+            undeclared = BaselineStacksService(self.session_mgr, self.region).undeclared(
+                self.org_name, stacks
+            )
+        except AWS_ERRORS as e:
+            phase.items.append(
+                PlanItem("stack sets", "baseline stacks", UNKNOWN, f"could not read the current state: {e}")
+            )
+            return
+        for name in undeclared:
+            phase.items.append(PlanItem("stack set", name, "DELETE", "no longer in baseline_stacks"))
+
     def _phase_4(self, phase: PhasePlan) -> None:
         declared = [
             a
@@ -496,6 +522,7 @@ class Planner:
             for item in items:
                 if item.action == "SUSPEND":
                     phase.items.append(PlanItem("account", item.name, "SUSPEND", item.reason, item.name))
+            self._baseline_stacks(phase)
         phase.notes.append("Account IDs are written to outputs/accounts.json and outputs/accounts.env.")
 
     # Phase 5
@@ -603,7 +630,11 @@ class Planner:
             self.bundle, self.region, bucket, outputs.get("KmsKeyArn", "")
         )
         self._check(
-            phase, "stack set", name, lambda: self._stack_set(name, parameters), "all member accounts"
+            phase,
+            "stack set",
+            name,
+            lambda: self._stack_set(name, "cloudformation/config-recorder.yaml", parameters),
+            "all member accounts",
         )
         management_parameters = {
             **parameters,
@@ -627,7 +658,7 @@ class Planner:
                 "management",
             )
 
-    def _stack_set(self, name: str, parameters: dict[str, str]) -> tuple[str, str]:
+    def _stack_set(self, name: str, template: str, parameters: dict[str, str]) -> tuple[str, str]:
         stack_sets = StackSetService()
         existing = stack_sets.describe(
             self.session_mgr.get_client("cloudformation", region_name=self.region), name
@@ -636,9 +667,7 @@ class Planner:
             return "CREATE", ""
         if not stack_sets.owned(existing):
             return "BLOCKED", f"exists without the {TAG_MANAGED_BY}=tarmac tag; tarmac will not update it"
-        body = resolve_resource_path(
-            "cloudformation/config-recorder.yaml", project_root=self.project_root
-        ).read_text(encoding="utf-8")
+        body = resolve_resource_path(template, project_root=self.project_root).read_text(encoding="utf-8")
         cfn_parameters = [{"ParameterKey": k, "ParameterValue": v} for k, v in parameters.items()]
         tags = merge_tags(self.org_tags, self.custom_tags, {TAG_MANAGED_BY: "tarmac"})
         if stack_sets.unchanged(existing, body, cfn_parameters, tags):

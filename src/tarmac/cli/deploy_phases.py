@@ -8,12 +8,14 @@ from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
-from ..core.models import BaselineReport, StackDeployReport
+from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
+from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
+from ..services.baseline_stacks import BaselineStacksService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
@@ -342,7 +344,10 @@ def _run_phase_4_accounts(
 
     wanted = {normalize_account_name(name) for name in only or []}
     declared = [a for a in bundle.accounts.accounts if not wanted or normalize_account_name(a.name) in wanted]
-    ou_map = _existing_ou_map(session_mgr, {a.ou for a in declared})
+    baseline_ous = set() if wanted else {t for s in bundle.org.baseline_stacks for t in s.target_ous}
+    ou_map = _existing_ou_map(
+        session_mgr, {a.ou for a in declared} | {t for t in baseline_ous if t.lower() != "root"}
+    )
     results = account_service.provision_accounts(
         declared, ou_map=ou_map, org_tags=bundle.get_organization_tags()
     )
@@ -384,6 +389,17 @@ def _run_phase_4_accounts(
             print_warning(
                 f"Account '{item.name}' ({item.account_id}) removed from YAML -> Quarantined in Suspended OU and tagged."
             )
+
+    if not wanted:
+        baseline_problems.extend(
+            BaselineStacksService(session_mgr, bundle.org.organization.primary_region).deploy(
+                bundle.org.organization.name,
+                bundle.org.baseline_stacks,
+                project_root,
+                {**ou_map, "root": OUService(session_mgr).get_root_id()},
+                merge_tags(bundle.get_organization_tags(), custom_tags, {TAG_MANAGED_BY: "tarmac"}),
+            )
+        )
 
     account_service.export_inventory(bundle.accounts, ou_map, project_root / "outputs")
     _ensure_delegated_admin(session_mgr, bundle)
