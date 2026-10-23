@@ -75,6 +75,21 @@ def test_deploy_refuses_root_but_allows_roles() -> None:
     _refuse_root_identity(_mgr(ROLE))
 
 
+@pytest.mark.parametrize(
+    ("command", "patched"), [("status", "tarmac.cli.main"), ("destroy", "tarmac.cli.deploy")]
+)
+def test_commands_that_reach_member_accounts_refuse_root(
+    command: str, patched: str, writable_config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(f"{patched}._refuse_root_identity", _refuse_root_identity)
+    with patch(f"{patched}.AwsSessionManager", return_value=_mgr(ROOT)):
+        result = runner.invoke(
+            app, [command, "-c", str(writable_config_dir), "--detail" if command == "status" else "--dry-run"]
+        )
+    assert result.exit_code == 1
+    assert "Root Credentials Not Supported" in result.output
+
+
 def test_info_strict_reports_root_and_role() -> None:
     """`tarmac info --strict` exits 1 unless the credentials are non-root and can read the organization."""
 
