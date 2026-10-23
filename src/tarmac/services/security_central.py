@@ -136,7 +136,14 @@ class SecurityHubCentralConfiguration:
     def _desired_policy(self) -> dict[str, Any]:
         available = self.sh.describe_standards().get("Standards", [])
         arns = sorted({resolve_standard_arn(available, s) for s in self.standards})
-        return {"SecurityHub": {"ServiceEnabled": True, "EnabledStandardIdentifiers": arns}}
+        # Disabling no controls enables all of them in the chosen standards, including ones AWS releases later.
+        return {
+            "SecurityHub": {
+                "ServiceEnabled": True,
+                "EnabledStandardIdentifiers": arns,
+                "SecurityControlsConfiguration": {"DisabledSecurityControlIdentifiers": []},
+            }
+        }
 
     def _find_policy_id(self) -> str | None:
         paginator = self.sh.get_paginator("list_configuration_policies")

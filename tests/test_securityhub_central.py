@@ -18,7 +18,14 @@ STD = "arn:aws:securityhub:us-east-1::standards/aws-foundational-security-best-p
 CIS = "arn:aws:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.2.0"
 STANDARDS = {"Standards": [{"StandardsArn": STD, "Name": "AWS Foundational Security Best Practices v1.0.0"}]}
 ROOT = "r-abcd"
-POLICY = {"SecurityHub": {"ServiceEnabled": True, "EnabledStandardIdentifiers": [STD]}}
+CONTROLS = {"DisabledSecurityControlIdentifiers": []}
+POLICY = {
+    "SecurityHub": {
+        "ServiceEnabled": True,
+        "EnabledStandardIdentifiers": [STD],
+        "SecurityControlsConfiguration": CONTROLS,
+    }
+}
 
 
 def _sh() -> Any:
@@ -108,7 +115,13 @@ def test_second_run_changes_nothing():
 
 def test_changed_standards_update_the_existing_policy():
     sh = _sh()
-    other = {"SecurityHub": {"ServiceEnabled": True, "EnabledStandardIdentifiers": [CIS]}}
+    other = {
+        "SecurityHub": {
+            "ServiceEnabled": True,
+            "EnabledStandardIdentifiers": [CIS],
+            "SecurityControlsConfiguration": CONTROLS,
+        }
+    }
     with Stubber(sh) as stub:
         stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
         stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
