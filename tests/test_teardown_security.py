@@ -383,7 +383,12 @@ def test_security_teardown_retries_policy_deletion_while_disassociating():
     sh = MagicMock()
     sh.delete_configuration_policy.side_effect = [
         ClientError(
-            {"Error": {"Code": "ConflictException", "Message": "Disassociation in progress"}},
+            {
+                "Error": {
+                    "Code": "ResourceConflictException",
+                    "Message": "Policy pol-1 is associated with one or more accounts or organizational units.",
+                }
+            },
             "DeleteConfigurationPolicy",
         ),
         {},

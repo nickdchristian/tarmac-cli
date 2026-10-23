@@ -238,9 +238,13 @@ class SecurityServicesTeardown:
         roots = mgr.get_client("organizations").list_roots().get("Roots", []) if policy_ids else []
         for policy_id in policy_ids:
             if roots:
-                sh.start_configuration_policy_disassociation(
-                    ConfigurationPolicyIdentifier=policy_id, Target={"RootId": roots[0]["Id"]}
-                )
+                try:
+                    sh.start_configuration_policy_disassociation(
+                        ConfigurationPolicyIdentifier=policy_id, Target={"RootId": roots[0]["Id"]}
+                    )
+                except ClientError as e:
+                    if _code(e) != "ResourceNotFoundException":  # already detached by an earlier run
+                        raise
             self._delete_configuration_policy_with_retry(sh, policy_id)
         sh.update_organization_configuration(
             AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "LOCAL"}
@@ -249,7 +253,7 @@ class SecurityServicesTeardown:
 
     @staticmethod
     def _delete_configuration_policy_with_retry(
-        sh: Any, policy_id: str, max_attempts: int = 15, poll_interval: float = 1.0
+        sh: Any, policy_id: str, max_attempts: int = 60, poll_interval: float = 5.0
     ) -> None:
         """Delete a Security Hub configuration policy, retrying while async disassociation finishes."""
         for attempt in range(max_attempts):
@@ -257,7 +261,7 @@ class SecurityServicesTeardown:
                 sh.delete_configuration_policy(Identifier=policy_id)
                 return
             except ClientError as e:
-                if _code(e) in ("InvalidInputException", "ConflictException") and attempt < max_attempts - 1:
+                if _code(e) == "ResourceConflictException" and attempt < max_attempts - 1:
                     time.sleep(poll_interval)
                     continue
                 raise
