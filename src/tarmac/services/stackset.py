@@ -114,27 +114,6 @@ class StackSetService:
     def sync_instances(self, cf: Any, name: str, regions: list[str], targets: dict[str, Any]) -> list[str]:
         """Add instances for Regions that have none, drop Regions no longer configured, report what is not
         current. Template and parameter changes reach existing instances through the StackSet update."""
-        self._sync_regions(cf, name, regions, targets)
-        return self._instance_failures(cf, name)
-
-    def sync_targets(self, cf: Any, name: str, ou_ids: list[str], regions: list[str]) -> list[str]:
-        """Like sync_instances for a StackSet targeting OUs, which also deploys to newly targeted OUs and removes
-        the instances of OUs no longer targeted."""
-        existing = self.describe(cf, name) or {}
-        present = set(existing.get("OrganizationalUnitIds", []))
-        removed = sorted(present - set(ou_ids))
-        if removed:
-            present_regions = sorted({str(i["Region"]) for i in self.list_instances(cf, name)})
-            self._delete_instances(cf, name, {"OrganizationalUnitIds": removed}, present_regions or regions)
-        kept = [o for o in ou_ids if o in present]
-        if kept:
-            self._sync_regions(cf, name, regions, {"OrganizationalUnitIds": kept})
-        added = [o for o in ou_ids if o not in present]
-        if added:
-            self._create_instances(cf, name, {"OrganizationalUnitIds": added}, regions)
-        return self._instance_failures(cf, name)
-
-    def _sync_regions(self, cf: Any, name: str, regions: list[str], targets: dict[str, Any]) -> None:
         present = {str(i["Region"]) for i in self.list_instances(cf, name)}
         missing = [r for r in regions if r not in present]
         surplus = sorted(present - set(regions))
@@ -142,6 +121,26 @@ class StackSetService:
             self._create_instances(cf, name, targets, missing)
         if surplus:
             self._delete_instances(cf, name, targets, surplus)
+        return self._instance_failures(cf, name)
+
+    def sync_targets(self, cf: Any, name: str, ou_ids: list[str], regions: list[str]) -> list[str]:
+        """For a StackSet targeting OUs: give each OU instances in exactly ``regions``, remove the instances of
+        OUs no longer targeted, and report what is not current. Each instance records the OU it was deployed
+        for, so an OU without accounts has none and is targeted again on every run, which changes nothing."""
+        present: dict[str, set[str]] = {}
+        for instance in self.list_instances(cf, name):
+            present.setdefault(str(instance["OrganizationalUnitId"]), set()).add(str(instance["Region"]))
+        for ou in sorted(set(present) - set(ou_ids)):
+            self._delete_instances(cf, name, {"OrganizationalUnitIds": [ou]}, sorted(present[ou]))
+        for ou in ou_ids:
+            have = present.get(ou, set())
+            missing = [r for r in regions if r not in have]
+            surplus = sorted(have - set(regions))
+            if missing:
+                self._create_instances(cf, name, {"OrganizationalUnitIds": [ou]}, missing)
+            if surplus:
+                self._delete_instances(cf, name, {"OrganizationalUnitIds": [ou]}, surplus)
+        return self._instance_failures(cf, name)
 
     def _create_instances(self, cf: Any, name: str, targets: dict[str, Any], regions: list[str]) -> None:
         response = cf.create_stack_instances(
