@@ -88,6 +88,8 @@ the workflow; they run `tarmac validate`, and the dry run is printed in the depl
 Copy [`examples/github/tarmac.yml`](examples/github/tarmac.yml) to `.github/workflows/` and fill in the role ARN
 and Region.
 
+Running `tarmac bootstrap` after an upgrade also updates the role's policy.
+
 `destroy --everything` doesn't remove the role or the OIDC provider. Delete them in the IAM console when you stop
 deploying from GitHub.
 

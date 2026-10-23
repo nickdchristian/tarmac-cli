@@ -17,7 +17,7 @@ import pytest
 from botocore.response import StreamingBody
 from botocore.stub import ANY, Stubber
 
-from tarmac.cli.bootstrap import _github_role, _grant
+from tarmac.cli.bootstrap import _github_role, _grant, _update_github_role_policy
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.exceptions import GovernanceError, IdentityCenterError
 from tarmac.core.inventory import Inventory
@@ -360,6 +360,16 @@ def test_github_role_rerun_updates_the_existing_role():
         stub.add_response("get_role", _ROLE, {"RoleName": "TarmacGitHubDeployment"})
         stub.add_response("put_role_policy", {}, None)
         _github_role(_github_mgr(iam), "acme/landing-zone", "trunk")
+        stub.assert_no_pending_responses()
+
+
+def test_bootstrap_refreshes_the_github_role_policy_only_when_the_role_exists():
+    iam = _client("iam")
+    with Stubber(iam) as stub:
+        stub.add_response("put_role_policy", {}, None)
+        stub.add_client_error("put_role_policy", "NoSuchEntity")
+        assert _update_github_role_policy(iam) is True
+        assert _update_github_role_policy(iam) is False
         stub.assert_no_pending_responses()
 
 
