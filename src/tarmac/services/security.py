@@ -372,6 +372,11 @@ class SecurityServicesService:
                 self._require_home_region_not_opt_in(home_region)
                 sh = self.session_mgr.get_member_client(audit_id, "securityhub", region_name=home_region)
                 self._ensure_hub_enabled(sh, audit_id, home_region)
+                # A policy cannot be applied to the management account until it has Security Hub itself.
+                mgmt_id = str(self.session_mgr.get_caller_identity()["Account"])
+                for region in all_regions:
+                    mgmt_sh = self.session_mgr.get_client("securityhub", region_name=region)
+                    self._ensure_hub_enabled(mgmt_sh, mgmt_id, region)
                 # Central policies take effect in every linked Region, so link only the declared ones.
                 self._ensure_finding_aggregator(sh, [r for r in all_regions if r != home_region])
                 SecurityHubCentralConfiguration(
