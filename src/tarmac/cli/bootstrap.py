@@ -159,10 +159,19 @@ def _github_role(session_mgr: AwsSessionManager, repo: str, branch: str) -> str:
     except iam.exceptions.EntityAlreadyExistsException:
         iam.update_assume_role_policy(RoleName=GITHUB_ROLE, PolicyDocument=trust)
         arn = iam.get_role(RoleName=GITHUB_ROLE)["Role"]["Arn"]
-    iam.put_role_policy(
-        RoleName=GITHUB_ROLE, PolicyName=DEPLOYMENT_PERMISSION_SET, PolicyDocument=deployment_policy()
-    )
+    _update_github_role_policy(iam)
     return str(arn)
+
+
+def _update_github_role_policy(iam: Any) -> bool:
+    """Give the GitHub role the current deployment policy; False when there is no GitHub role."""
+    try:
+        iam.put_role_policy(
+            RoleName=GITHUB_ROLE, PolicyName=DEPLOYMENT_PERMISSION_SET, PolicyDocument=deployment_policy()
+        )
+    except iam.exceptions.NoSuchEntityException:
+        return False
+    return True
 
 
 def bootstrap_command(
@@ -186,6 +195,7 @@ def bootstrap_command(
     TarmacGitHubDeployment role with the same policy.
     """
     bundle = load_configs_or_exit(config_dir)
+    github_message = None
     if github_repo is not None and not re.fullmatch(r"[\w.-]+/[\w.-]+", github_repo):
         error_console.print(f"[red]--github-repo must look like OWNER/REPO, not '{github_repo}'.[/red]")
         raise typer.Exit(code=1)
@@ -209,7 +219,11 @@ def bootstrap_command(
         user_id = identity.get_or_create_user(admin)
         _grant(identity, instance_arn, account_id, user_id, DEPLOYMENT_PERMISSION_SET, deployment_policy())
         _grant(identity, instance_arn, account_id, user_id, MANAGEMENT_ADMIN_PERMISSION_SET, None)
-        role_arn = _github_role(session_mgr, github_repo, github_branch) if github_repo else None
+        if github_repo:
+            role_arn = _github_role(session_mgr, github_repo, github_branch)
+            github_message = f"GitHub Actions runs on {github_repo}@{github_branch} can deploy as {role_arn}."
+        elif _update_github_role_policy(session_mgr.get_client("iam")):
+            github_message = f"Updated the policy of {GITHUB_ROLE}, the role GitHub Actions deploys with."
     except AWS_ERRORS as e:
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")
         raise typer.Exit(code=1)
@@ -217,8 +231,8 @@ def bootstrap_command(
         f"'{admin.username}' can sign in to account {account_id} as {DEPLOYMENT_PERMISSION_SET} (tarmac) "
         f"and {MANAGEMENT_ADMIN_PERMISSION_SET} (the console)."
     )
-    if role_arn:
-        print_success(f"GitHub Actions runs on {github_repo}@{github_branch} can deploy as {role_arn}.")
+    if github_message:
+        print_success(github_message)
 
     config_path = Path("~/.aws/config").expanduser()
     _append_section(
