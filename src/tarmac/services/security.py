@@ -12,6 +12,7 @@ from ..core.config_schema import GuardDutyConfig, SecurityHubConfig, SecuritySer
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
 from ..core.models import SecurityServiceReport
+from ..core.org_accounts import is_active, iter_accounts
 from .security_central import POLICY_NAME, SecurityHubCentralConfiguration, resolve_standard_arn
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,34 @@ class SecurityServicesService:
                 f"guardduty:{audit_id}:{region}",
                 Outcome.SUCCEEDED,
                 f"Turned on GuardDuty auto-enable for organization members in {region}",
+                region=region,
+            )
+            self._add_existing_guardduty_members(gd_audit, detector_id, audit_id, region)
+
+    def _add_existing_guardduty_members(
+        self, gd_audit: Any, detector_id: str, audit_id: str, region: str
+    ) -> None:
+        """Add the organization's existing accounts as members: auto-enable only covers accounts that join later."""
+        members = {
+            m["AccountId"]
+            for page in gd_audit.get_paginator("list_members").paginate(
+                DetectorId=detector_id, OnlyAssociated="false"
+            )
+            for m in page.get("Members", [])
+        }
+        missing = [
+            {"AccountId": a["Id"], "Email": a["Email"]}
+            for a in iter_accounts(self.session_mgr.get_client("organizations"))
+            if is_active(a) and a["Id"] != audit_id and a["Id"] not in members
+        ]
+        for start in range(0, len(missing), 50):
+            gd_audit.create_members(DetectorId=detector_id, AccountDetails=missing[start : start + 50])
+        if missing:
+            audit(
+                "configure",
+                f"guardduty-members:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Added {len(missing)} existing account(s) to GuardDuty in {region}",
                 region=region,
             )
 

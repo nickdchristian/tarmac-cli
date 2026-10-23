@@ -24,6 +24,7 @@ from tarmac.core.inventory import Inventory
 from tarmac.services.cloudformation import CloudFormationService
 from tarmac.services.identity import IdentityService, deployment_policy
 from tarmac.services.scp import SCPService
+from tarmac.services.security import SecurityServicesService
 from tarmac.services.teardown import TeardownService
 from tarmac.services.teardown_s3 import empty_s3_bucket
 
@@ -586,3 +587,53 @@ def test_full_teardown_keeps_the_inventory_bucket_while_it_records_leftovers():
     assert [(i.action, i.message) for i in items] == [
         ("SKIPPED", "Kept: it still records 1 item(s) that were not removed")
     ]
+
+
+def test_existing_accounts_are_added_to_guardduty_since_auto_enable_only_covers_new_ones():
+    gd, org = _client("guardduty"), _client("organizations")
+    detector = "12abc34d567e8fa901bc2d34e56789f0"
+    audit_id, member, present, closed = "343910392615", "932055561000", "247338423699", "111111111111"
+    with Stubber(gd) as gd_stub, Stubber(org) as org_stub:
+        gd_stub.add_response(
+            "list_members",
+            {
+                "Members": [
+                    {
+                        "AccountId": present,
+                        "MasterId": audit_id,
+                        "Email": "n@example.com",
+                        "RelationshipStatus": "Enabled",
+                        "UpdatedAt": "2026-10-23T00:00:00Z",
+                    }
+                ]
+            },
+            {"DetectorId": detector, "OnlyAssociated": "false"},
+        )
+        org_stub.add_response(
+            "list_accounts",
+            {
+                "Accounts": [
+                    {"Id": acct, "Email": f"{acct}@example.com", "Status": status, "State": status}
+                    for acct, status in (
+                        (audit_id, "ACTIVE"),
+                        (member, "ACTIVE"),
+                        (present, "ACTIVE"),
+                        (closed, "SUSPENDED"),
+                    )
+                ]
+            },
+            {},
+        )
+        gd_stub.add_response(
+            "create_members",
+            {"UnprocessedAccounts": []},
+            {
+                "DetectorId": detector,
+                "AccountDetails": [{"AccountId": member, "Email": f"{member}@example.com"}],
+            },
+        )
+        SecurityServicesService(_mgr(organizations=org))._add_existing_guardduty_members(
+            gd, detector, audit_id, "us-east-1"
+        )
+        gd_stub.assert_no_pending_responses()
+        org_stub.assert_no_pending_responses()
