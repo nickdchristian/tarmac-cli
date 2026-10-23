@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.1...v0.4.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* issues found deploying and tearing down against a real AWS organization ([#102](https://github.com/nickdchristian/tarmac-cli/issues/102)) ([60400ea](https://github.com/nickdchristian/tarmac-cli/commit/60400eabecf81d71a9c9dba2e68abe08f4d6d71a))
+
 ## [0.4.1](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.0...v0.4.1) (2026-10-22)
 
 
