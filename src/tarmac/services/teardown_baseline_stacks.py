@@ -3,7 +3,7 @@
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
-from .baseline_stacks import BaselineStacksService
+from .baseline_stacks import BaselineStacksService, stack_set_name
 from .teardown_base import TeardownBase
 
 
@@ -14,11 +14,12 @@ class BaselineStacksTeardown(TeardownBase):
         """Remove every baseline StackSet of the organization, declared or not, with its stack instances."""
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
+        org_name = bundle.org.organization.name
         service = BaselineStacksService(self.session_mgr, target_region)
         try:
-            rows = service.remove(service.undeclared(bundle.org.organization.name, []), dry_run=dry_run)
+            rows = service.remove(service.undeclared(org_name, []), dry_run=dry_run)
         except AWS_ERRORS as e:
-            rows = [("StackSets baseline", "FAILED", f"Could not list the baseline StackSets: {e}")]
+            rows = [(f"StackSet {stack_set_name(org_name, '*')}", "FAILED", f"Could not list them: {e}")]
         for resource, action, message in rows:
             results.append(
                 TeardownItemReport(

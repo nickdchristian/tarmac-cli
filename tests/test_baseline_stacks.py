@@ -38,10 +38,6 @@ def _session(cf: Any) -> MagicMock:
     return mgr
 
 
-def _stack_sets() -> StackSetService:
-    return StackSetService(sleep=lambda _s: None, poll_seconds=0, timeout_seconds=5)
-
-
 def _instances(*pairs: tuple[str, str]) -> dict[str, Any]:
     return {
         "Summaries": [
@@ -82,12 +78,34 @@ def test_baseline_stack_definitions_are_validated(change):
         BaselineStackDef.model_validate({**valid, **change})
 
 
-def test_cross_references_catch_unknown_ous_missing_templates_and_duplicates(sample_config_dir):
+def test_targets_may_not_include_an_ou_another_target_already_covers(writable_config_dir):
     from tarmac.core.config_loader import load_all_configs
 
-    bundle, errors = load_all_configs(sample_config_dir)
+    bundle, errors = load_all_configs(writable_config_dir)
     assert bundle is not None, errors
-    (sample_config_dir.parent / "baseline.yaml").write_text("Resources: {}\n")
+    (writable_config_dir.parent / "baseline.yaml").write_text("Resources: {}\n")
+    parent = next(ou for ou in bundle.org.ou_structure if ou.children)
+    child = parent.children[0].name
+
+    def problems(targets: list[str]) -> list[str]:
+        bundle.org.baseline_stacks = [
+            BaselineStackDef(
+                name="a", template_file="baseline.yaml", target_ous=targets, regions=["us-east-1"]
+            )
+        ]
+        return bundle._check_baseline_stacks()
+
+    assert problems([parent.name]) == []
+    assert len(problems([parent.name, child])) == 1
+    assert len(problems(["root", parent.name])) == 1
+
+
+def test_cross_references_catch_unknown_ous_missing_templates_and_duplicates(writable_config_dir):
+    from tarmac.core.config_loader import load_all_configs
+
+    bundle, errors = load_all_configs(writable_config_dir)
+    assert bundle is not None, errors
+    (writable_config_dir.parent / "baseline.yaml").write_text("Resources: {}\n")
     bundle.org.baseline_stacks = [
         BaselineStackDef(name="a", template_file="baseline.yaml", target_ous=["root"], regions=["us-east-1"]),
         BaselineStackDef(name="A", template_file="missing.yaml", target_ous=["Nope"], regions=["us-east-1"]),
@@ -132,7 +150,7 @@ def test_sync_targets_drops_removed_ous_and_deploys_to_added_ones():
         s.add_response("describe_stack_set_operation", DONE, {"StackSetName": NAME, "OperationId": "op-2"})
         s.add_response("list_stack_instances", _instances(("us-east-1", "ou-a")), {"StackSetName": NAME})
 
-        failures = _stack_sets().sync_targets(cf, NAME, ["ou-a", "ou-c"], ["us-east-1"])
+        failures = StackSetService().sync_targets(cf, NAME, ["ou-a", "ou-c"], ["us-east-1"])
         s.assert_no_pending_responses()
 
     assert failures == []
@@ -177,7 +195,7 @@ def test_deploy_creates_declared_stack_sets_and_deletes_undeclared_ones(tmp_path
         s.add_response("list_stack_instances", {"Summaries": []}, None)
         s.add_response("delete_stack_set", {}, {"StackSetName": old})
 
-        failures = BaselineStacksService(_session(cf), "eu-west-1", _stack_sets()).deploy(
+        failures = BaselineStacksService(_session(cf), "eu-west-1").deploy(
             "acme", [stack], tmp_path, {"root": "r-ab12"}, {TAG_MANAGED_BY: "tarmac"}
         )
         s.assert_no_pending_responses()
