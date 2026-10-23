@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tarmac-cli"
 version = "0.4.2"
-description = "Enterprise AWS Governance & Multi-Account Landing Zone CLI"
+description = "Set up and maintain a multi-account AWS Organization from YAML"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
@@ -14,7 +14,7 @@ authors = [
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Intended Audience :: Information Technology",
@@ -55,7 +55,6 @@ Issues = "https://github.com/nickdchristian/tarmac-cli/issues"
 
 [project.scripts]
 tarmac = "tarmac.cli.main:app"
-aws-gov = "tarmac.cli.main:app"
 
 [dependency-groups]
 dev = [

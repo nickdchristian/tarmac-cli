@@ -174,7 +174,7 @@ def test_budget_notification_emails_validation():
             alert_threshold_percent=80.0,
             notification_emails=too_many_emails,  # pyright: ignore[reportArgumentType]
         )
-    assert "maximum of 10 notification subscribers" in str(excinfo.value)
+    assert "at most 10 email recipients" in str(excinfo.value)
 
 
 def test_budget_incident_response_webhook_url_validation():

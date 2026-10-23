@@ -1,33 +1,18 @@
-# Security Policy
+# Security policy
 
-## Supported Versions
+## Supported versions
 
-Only the latest released version of `tarmac-cli` on PyPI is actively supported with security updates.
+Only the latest release on PyPI gets security fixes.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| < 0.1.0 | :x:                |
+## Reporting a vulnerability
 
-## Reporting a Vulnerability
+Please don't report security problems in public issues, discussions or pull requests. Report them privately
+through [GitHub Security Advisories](https://github.com/nickdchristian/tarmac-cli/security/advisories/new).
 
-We take the security of `tarmac-cli` seriously, especially given its role in provisioning and governing enterprise AWS Organizations and IAM Identity Center environments.
+Include:
 
-**Please do not report security vulnerabilities through public GitHub issues, discussions, or pull requests.**
+- What the problem is and what it could do to an AWS organization or CI/CD environment.
+- How to reproduce it, ideally with a minimal config.
+- The tarmac version and the commands involved.
 
-### Preferred Reporting Method: GitHub Private Vulnerability Reporting
-
-Please report suspected security vulnerabilities privately via **[GitHub Security Advisories](https://github.com/nickdchristian/tarmac-cli/security/advisories/new)**.
-
-### What to Include
-
-To help us triage and resolve the issue quickly, please include:
-- A description of the vulnerability and its potential impact on AWS accounts or CI/CD environments.
-- Step-by-step instructions or a minimal reproduction configuration to reproduce the issue.
-- Affected versions and CLI subcommands.
-
-### Response Timeline
-
-- **Initial Acknowledgment:** Within 48 hours of submission.
-- **Triage & Assessment:** Within 5 business days.
-- **Remediation & Disclosure:** Coordinated disclosure once a patched release is published to PyPI.
+You'll get a reply as soon as possible. Fixes are disclosed once a patched release is on PyPI.

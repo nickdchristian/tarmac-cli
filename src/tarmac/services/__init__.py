@@ -1,1 +1,1 @@
-"""Domain Services for AWS Governance."""
+"""Services that read and change AWS."""

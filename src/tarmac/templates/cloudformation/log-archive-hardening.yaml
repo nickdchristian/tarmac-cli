@@ -1,5 +1,5 @@
 # =============================================================================
-# AWS Governance: Log Archive Account Hardening Reference Template
+# Log archive account hardening
 # =============================================================================
 # Architecture & Security Design Note:
 # -----------------------------------------------------------------------------
@@ -27,7 +27,7 @@
 #      who accesses the audit buckets while preventing recursive logging loops.
 # =============================================================================
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Log Archive account hardening — KMS key, centralized CloudTrail bucket, access logging, and lifecycle policies
+Description: Log archive account hardening - KMS key, CloudTrail bucket, access logging and lifecycle rules
 
 Parameters:
   OrganizationId:
