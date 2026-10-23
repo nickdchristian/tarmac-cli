@@ -122,13 +122,18 @@ class ConfigRecorderService:
         """Create AWSServiceRoleForConfig if the management account does not have it yet; return its ARN."""
         iam = self.session_mgr.get_client("iam")
         try:
+            return str(iam.get_role(RoleName="AWSServiceRoleForConfig")["Role"]["Arn"])
+        except ClientError as e:
+            if aws_error_code(e) != "NoSuchEntity":
+                raise GovernanceError(
+                    "Could not look up the AWS Config service-linked role", details=aws_error_message(e)
+                ) from e
+        try:
             return str(iam.create_service_linked_role(AWSServiceName="config.amazonaws.com")["Role"]["Arn"])
         except ClientError as e:
-            if aws_error_code(e) not in ("InvalidInput", "EntityAlreadyExists"):
-                raise GovernanceError(
-                    "Could not create the AWS Config service-linked role", details=aws_error_message(e)
-                ) from e  # InvalidInput is IAM's answer when the service-linked role already exists
-        return service_linked_role_arn(self.session_mgr, management_account_id)
+            raise GovernanceError(
+                "Could not create the AWS Config service-linked role", details=aws_error_message(e)
+            ) from e
 
     def _root_id(self) -> str:
         roots = self.session_mgr.get_client("organizations").list_roots().get("Roots", [])

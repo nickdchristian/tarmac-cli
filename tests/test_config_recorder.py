@@ -29,6 +29,16 @@ from tarmac.services.teardown import TeardownService
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / "src/tarmac/templates/cloudformation" / "config-recorder.yaml"
 MGMT = "111111111111"
+SLR = {
+    "Role": {
+        "Path": "/aws-service-role/config.amazonaws.com/",
+        "RoleName": "AWSServiceRoleForConfig",
+        "RoleId": "AROAEXAMPLE1234567890",
+        "Arn": f"arn:aws:iam::{MGMT}:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig",
+        "CreateDate": "2026-10-20T00:00:00Z",
+    }
+}
+_GET_SLR = {"RoleName": "AWSServiceRoleForConfig"}
 NAME = Stack.CONFIG_RECORDER.for_org("acme")
 PARAMS = {
     "DeliveryBucketName": "acme-org-cloudtrail-logs-222222222222",
@@ -212,6 +222,7 @@ def test_first_run_creates_the_stack_set_its_instances_and_the_management_stacks
             {"StackSetName": NAME, "OperationId": "op-1"},
         )
         cfs.add_response("list_stack_instances", _instances("eu-west-1", "us-east-1"), {"StackSetName": NAME})
+        iams.add_client_error("get_role", "NoSuchEntity", "not found", expected_params=_GET_SLR)
         iams.add_response(
             "create_service_linked_role",
             {
@@ -250,9 +261,7 @@ def test_unchanged_stack_set_with_all_regions_current_changes_nothing():
         # tags merge to the defaults plus the ownership tag
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
-        iams.add_client_error(
-            "create_service_linked_role", "InvalidInput", "Service role name ... has been taken"
-        )
+        iams.add_response("get_role", SLR, _GET_SLR)
 
         report = _deploy(_service(mgr), ["eu-west-1"])
 
@@ -289,7 +298,7 @@ def test_changed_template_updates_the_stack_set_and_waits_for_the_operation():
         )
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
-        iams.add_client_error("create_service_linked_role", "InvalidInput", "has been taken")
+        iams.add_response("get_role", SLR, _GET_SLR)
 
         report = _deploy(_service(mgr), ["eu-west-1"])
 
@@ -340,7 +349,7 @@ def test_regions_no_longer_configured_are_removed_and_failed_instances_are_repor
             _instances("eu-west-1", status="OUTDATED", reason="AWS Config recorder limit reached"),
             {"StackSetName": NAME},
         )
-        iams.add_client_error("create_service_linked_role", "InvalidInput", "has been taken")
+        iams.add_response("get_role", SLR, _GET_SLR)
 
         report = _deploy(_service(mgr), ["eu-west-1"])
 
@@ -365,12 +374,13 @@ def test_an_operation_that_never_finishes_times_out_with_guidance():
             service._wait(cf, NAME, "op-9")
 
 
-def test_service_linked_role_arn_is_built_when_it_already_exists():
+def test_an_existing_service_linked_role_is_used_without_trying_to_create_it():
     iam = _client("iam")
     mgr = _session(iam=iam)
     with Stubber(iam) as iams:
-        iams.add_client_error("create_service_linked_role", "InvalidInput", "has been taken")
+        iams.add_response("get_role", SLR, _GET_SLR)
         arn = _service(mgr)._ensure_service_linked_role(MGMT)
+        iams.assert_no_pending_responses()
     assert arn == f"arn:aws:iam::{MGMT}:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig"
 
 
@@ -378,6 +388,7 @@ def test_other_service_linked_role_errors_are_not_swallowed():
     iam = _client("iam")
     mgr = _session(iam=iam)
     with Stubber(iam) as iams:
+        iams.add_client_error("get_role", "NoSuchEntity", "not found", expected_params=_GET_SLR)
         iams.add_client_error("create_service_linked_role", "AccessDenied", "no")
         with pytest.raises(GovernanceError, match="service-linked role"):
             _service(mgr)._ensure_service_linked_role(MGMT)
