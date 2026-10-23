@@ -225,27 +225,43 @@ class SecurityServicesService:
     def _add_existing_guardduty_members(
         self, gd_audit: Any, detector_id: str, audit_id: str, region: str
     ) -> None:
-        """Add the organization's existing accounts as members: auto-enable only covers accounts that join later."""
-        members = {
+        """Add the organization's existing accounts as members: auto-enable only covers accounts that join later.
+
+        An account whose membership is not Enabled (for example Removed by an earlier teardown) is added again.
+        """
+        enabled = {
             m["AccountId"]
             for page in gd_audit.get_paginator("list_members").paginate(
                 DetectorId=detector_id, OnlyAssociated="false"
             )
             for m in page.get("Members", [])
+            if m.get("RelationshipStatus") == "Enabled"
         }
         missing = [
             {"AccountId": a["Id"], "Email": a["Email"]}
             for a in iter_accounts(self.session_mgr.get_client("organizations"))
-            if is_active(a) and a["Id"] != audit_id and a["Id"] not in members
+            if is_active(a) and a["Id"] != audit_id and a["Id"] not in enabled
         ]
+        refused: list[str] = []
         for start in range(0, len(missing), 50):
-            gd_audit.create_members(DetectorId=detector_id, AccountDetails=missing[start : start + 50])
-        if missing:
+            response = gd_audit.create_members(
+                DetectorId=detector_id, AccountDetails=missing[start : start + 50]
+            )
+            refused += [f"{u['AccountId']}: {u['Result']}" for u in response.get("UnprocessedAccounts", [])]
+        if len(missing) > len(refused):
             audit(
                 "configure",
                 f"guardduty-members:{audit_id}:{region}",
                 Outcome.SUCCEEDED,
-                f"Added {len(missing)} existing account(s) to GuardDuty in {region}",
+                f"Added {len(missing) - len(refused)} existing account(s) to GuardDuty in {region}",
+                region=region,
+            )
+        if refused:
+            audit(
+                "configure",
+                f"guardduty-members:{audit_id}:{region}",
+                Outcome.FAILED,
+                f"GuardDuty did not add {len(refused)} account(s) in {region}: {'; '.join(refused)}",
                 region=region,
             )
 

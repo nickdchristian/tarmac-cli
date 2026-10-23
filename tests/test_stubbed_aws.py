@@ -589,24 +589,31 @@ def test_full_teardown_keeps_the_inventory_bucket_while_it_records_leftovers():
     ]
 
 
-def test_existing_accounts_are_added_to_guardduty_since_auto_enable_only_covers_new_ones():
+def test_existing_and_removed_accounts_are_added_to_guardduty_and_refusals_reported(caplog):
     gd, org = _client("guardduty"), _client("organizations")
     detector = "12abc34d567e8fa901bc2d34e56789f0"
-    audit_id, member, present, closed = "343910392615", "932055561000", "247338423699", "111111111111"
+    audit_id, member, present, removed, closed = (
+        "343910392615",
+        "932055561000",
+        "247338423699",
+        "532490357434",
+        "111111111111",
+    )
+
+    def listed(acct: str, status: str) -> dict[str, str]:
+        return {
+            "AccountId": acct,
+            "MasterId": audit_id,
+            "Email": "n@example.com",
+            "RelationshipStatus": status,
+            "UpdatedAt": "2026-10-23T00:00:00Z",
+        }
+
+    caplog.set_level("INFO", logger="tarmac.audit")
     with Stubber(gd) as gd_stub, Stubber(org) as org_stub:
         gd_stub.add_response(
             "list_members",
-            {
-                "Members": [
-                    {
-                        "AccountId": present,
-                        "MasterId": audit_id,
-                        "Email": "n@example.com",
-                        "RelationshipStatus": "Enabled",
-                        "UpdatedAt": "2026-10-23T00:00:00Z",
-                    }
-                ]
-            },
+            {"Members": [listed(present, "Enabled"), listed(removed, "Removed")]},
             {"DetectorId": detector, "OnlyAssociated": "false"},
         )
         org_stub.add_response(
@@ -618,6 +625,7 @@ def test_existing_accounts_are_added_to_guardduty_since_auto_enable_only_covers_
                         (audit_id, "ACTIVE"),
                         (member, "ACTIVE"),
                         (present, "ACTIVE"),
+                        (removed, "ACTIVE"),
                         (closed, "SUSPENDED"),
                     )
                 ]
@@ -626,10 +634,13 @@ def test_existing_accounts_are_added_to_guardduty_since_auto_enable_only_covers_
         )
         gd_stub.add_response(
             "create_members",
-            {"UnprocessedAccounts": []},
+            {"UnprocessedAccounts": [{"AccountId": removed, "Result": "Account is not eligible"}]},
             {
                 "DetectorId": detector,
-                "AccountDetails": [{"AccountId": member, "Email": f"{member}@example.com"}],
+                "AccountDetails": [
+                    {"AccountId": member, "Email": f"{member}@example.com"},
+                    {"AccountId": removed, "Email": f"{removed}@example.com"},
+                ],
             },
         )
         SecurityServicesService(_mgr(organizations=org))._add_existing_guardduty_members(
@@ -637,3 +648,5 @@ def test_existing_accounts_are_added_to_guardduty_since_auto_enable_only_covers_
         )
         gd_stub.assert_no_pending_responses()
         org_stub.assert_no_pending_responses()
+    assert "Added 1 existing account(s)" in caplog.text
+    assert f"did not add 1 account(s) in us-east-1: {removed}: Account is not eligible" in caplog.text
