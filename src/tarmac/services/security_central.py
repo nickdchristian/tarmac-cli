@@ -146,12 +146,20 @@ class SecurityHubCentralConfiguration:
         }
 
     def _find_policy_id(self) -> str | None:
-        paginator = self.sh.get_paginator("list_configuration_policies")
-        for page in paginator.paginate():
-            for summary in page.get("ConfigurationPolicySummaries", []):
-                if summary.get("Name") == self.policy_name:
-                    return str(summary["Id"])
-        return None
+        """Right after the switch to central configuration, Security Hub may still refuse policy calls for a while."""
+        waited = 0.0
+        while True:
+            try:
+                for page in self.sh.get_paginator("list_configuration_policies").paginate():
+                    for summary in page.get("ConfigurationPolicySummaries", []):
+                        if summary.get("Name") == self.policy_name:
+                            return str(summary["Id"])
+                return None
+            except ClientError as e:
+                if "Central Configuration enabled" not in str(e) or waited >= self._timeout:
+                    raise
+            self._sleep(10.0)
+            waited += 10.0
 
     @staticmethod
     def _comparable(policy: dict[str, Any]) -> tuple[bool, list[str], Any]:

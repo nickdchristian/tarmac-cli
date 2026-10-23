@@ -532,3 +532,16 @@ def test_switching_waits_while_security_hub_syncs_a_new_organization():
         stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
         _central(sh)._enable_central_mode()
         stub.assert_no_pending_responses()
+
+
+def test_policy_calls_wait_until_central_configuration_takes_effect():
+    sh = _sh()
+    with Stubber(sh) as stub:
+        stub.add_client_error(
+            "list_configuration_policies",
+            "AccessDeniedException",
+            "Must be a Security Hub delegated administrator with Central Configuration enabled",
+        )
+        stub.add_response("list_configuration_policies", {"ConfigurationPolicySummaries": []})
+        assert _central(sh)._find_policy_id() is None
+        stub.assert_no_pending_responses()
