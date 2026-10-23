@@ -392,6 +392,9 @@ def _run_phase_4_accounts(
                 f"Account '{item.name}' ({item.account_id}) removed from YAML -> Quarantined in Suspended OU and tagged."
             )
 
+    account_service.export_inventory(bundle.accounts, ou_map, project_root / "outputs")
+    _ensure_delegated_admin(session_mgr, bundle)
+
     if not wanted:
         baseline_problems.extend(
             BaselineStacksService(session_mgr, session_mgr.default_region).deploy(
@@ -402,9 +405,6 @@ def _run_phase_4_accounts(
                 merge_tags(bundle.get_organization_tags(), custom_tags, {TAG_MANAGED_BY: "tarmac"}),
             )
         )
-
-    account_service.export_inventory(bundle.accounts, ou_map, project_root / "outputs")
-    _ensure_delegated_admin(session_mgr, bundle)
 
     if baseline_problems:
         # Do not record the "accounts" milestone: the accounts exist, but their baseline is incomplete.

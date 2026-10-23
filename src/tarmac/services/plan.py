@@ -671,7 +671,7 @@ class Planner:
         cfn_parameters = [{"ParameterKey": k, "ParameterValue": v} for k, v in parameters.items()]
         tags = merge_tags(self.org_tags, self.custom_tags, {TAG_MANAGED_BY: "tarmac"})
         if stack_sets.unchanged(existing, body, cfn_parameters, tags):
-            return NO_CHANGE, "Region instances are reconciled on apply"
+            return NO_CHANGE, "stack instances are reconciled on apply"
         return "UPDATE", ""
 
     def _root_alert(self, phase: PhasePlan) -> None:
