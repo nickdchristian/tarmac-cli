@@ -247,7 +247,7 @@ def test_bootstrap_without_identity_center_says_what_to_enable(
 _PREFIX_TO_SERVICE = {"sso": "sso-admin", "servicequotas": "service-quotas"}
 _PREFIX_TO_SERVICE_INVERSE = {v: k for k, v in _PREFIX_TO_SERVICE.items()}
 _NON_OPERATION_ACTIONS = {"s3:ListBucket", "sso-directory:DescribeDirectory", "sso-directory:SearchUsers"}
-_NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups"}
+_NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups", "iam:PassRole"}
 
 
 def _policy_statements() -> list[dict[str, object]]:
@@ -276,7 +276,13 @@ def test_policy_has_no_admin_grants() -> None:
     assert not any(
         a.endswith(":*") and a.split(":")[0] in {"iam", "sts", "kms", "s3", "ec2"} for a in actions
     )
-    assert "iam:PassRole" not in actions
+    assert actions.count("iam:PassRole") == 1
+    passable = [
+        s["Resource"]
+        for s in _policy_statements()
+        if s["Effect"] == "Allow" and s["Action"] == "iam:PassRole"
+    ]
+    assert passable == ["arn:aws:iam::*:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig"]
     assert "iam:CreateRole" not in actions
     assert "iam:AttachRolePolicy" not in actions
     assume = [s for s in _policy_statements() if s["Effect"] == "Allow" and s["Action"] == "sts:AssumeRole"]
