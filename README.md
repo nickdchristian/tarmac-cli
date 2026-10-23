@@ -83,7 +83,7 @@ account.
 | 1 | Organization settings, contacts, trusted services, root access management, cost tags, the inventory bucket |
 | 2 | OUs and service control policies |
 | 3 | Log archive buckets and the organization CloudTrail |
-| 4 | Member accounts, their tags, budgets and default VPC cleanup |
+| 4 | Member accounts, their tags, alternate contacts, budgets and default VPC cleanup |
 | 5 | Terraform state backend, audit account, AWS Config, GuardDuty, Security Hub, root user alert |
 | 6 | Identity Center permission sets, users, groups and assignments |
 
