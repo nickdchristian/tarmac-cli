@@ -50,16 +50,12 @@ jobs:
       - name: Run Pytest Suite
         run: uv run pytest -v
 
-  build-and-publish:
-    name: Build and Publish to PyPI
+  build:
+    name: Build Distributions
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment:
-      name: ${{ github.event.inputs.target || 'pypi' }}
-      url: ${{ github.event.inputs.target == 'testpypi' && 'https://test.pypi.org/p/tarmac-cli' || 'https://pypi.org/p/tarmac-cli' }}
     permissions:
-      id-token: write  # Mandatory for PyPI Trusted Publishing (OIDC)
       contents: read
 
     steps:
@@ -87,6 +83,31 @@ jobs:
 
       - name: Smoke test the built wheel in a clean environment
         run: scripts/smoke-test-wheel.sh dist/*.whl
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: ${{ github.event.inputs.target || 'pypi' }}
+      url: ${{ github.event.inputs.target == 'testpypi' && 'https://test.pypi.org/p/tarmac-cli' || 'https://pypi.org/p/tarmac-cli' }}
+    permissions:
+      id-token: write  # Mandatory for PyPI Trusted Publishing (OIDC)
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish to TestPyPI
         if: github.event.inputs.target == 'testpypi'
