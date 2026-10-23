@@ -218,7 +218,9 @@ class ConfigRecorderService:
 
         return (
             existing.get("TemplateBody") == template_body
-            and params(existing.get("Parameters", [])) == params(parameters)
+            # AWS also lists parameters left at their template default (RecorderRoleArn), so compare only ours.
+            and {k: v for k, v in params(existing.get("Parameters", [])).items() if k in params(parameters)}
+            == params(parameters)
             and tag_map(existing.get("Tags", [])) == tags
             and existing.get("Status") == "ACTIVE"
         )

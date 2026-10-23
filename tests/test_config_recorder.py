@@ -149,7 +149,10 @@ def _existing(template: str, tags: list[dict[str, str]] | None = None) -> dict[s
         "StackSet": {
             "StackSetName": NAME,
             "TemplateBody": template,
-            "Parameters": [{"ParameterKey": k, "ParameterValue": v} for k, v in PARAMS.items()],
+            # As AWS returns it: every template parameter, including RecorderRoleArn left at its default.
+            "Parameters": [
+                {"ParameterKey": k, "ParameterValue": v} for k, v in {**PARAMS, "RecorderRoleArn": ""}.items()
+            ],
             "Tags": OWNED_TAGS if tags is None else tags,
             "Status": "ACTIVE",
         }
