@@ -650,3 +650,20 @@ def test_existing_and_removed_accounts_are_added_to_guardduty_and_refusals_repor
         org_stub.assert_no_pending_responses()
     assert "Added 1 existing account(s)" in caplog.text
     assert f"did not add 1 account(s) in us-east-1: {removed}: Account is not eligible" in caplog.text
+
+
+def test_guardduty_is_turned_on_in_the_management_account_so_it_can_be_added():
+    gd = _client("guardduty")
+    wanted = [{"Name": "S3_DATA_EVENTS", "Status": "ENABLED"}]
+    with Stubber(gd) as stub:
+        stub.add_response("list_detectors", {"DetectorIds": []}, {})
+        stub.add_response(
+            "create_detector",
+            {"DetectorId": "12abc34d567e8fa901bc2d34e56789f0"},
+            {"Enable": True, "FindingPublishingFrequency": "FIFTEEN_MINUTES", "Features": wanted},
+        )
+        stub.add_response("list_detectors", {"DetectorIds": ["12abc34d567e8fa901bc2d34e56789f0"]}, {})
+        service = SecurityServicesService(_mgr(guardduty=gd))
+        service._ensure_management_detector("us-east-1", wanted)
+        service._ensure_management_detector("us-east-1", wanted)  # a second run changes nothing
+        stub.assert_no_pending_responses()

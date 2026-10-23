@@ -220,7 +220,22 @@ class SecurityServicesService:
                 f"Turned on GuardDuty auto-enable for organization members in {region}",
                 region=region,
             )
+            self._ensure_management_detector(region, wanted)
             self._add_existing_guardduty_members(gd_audit, detector_id, audit_id, region)
+
+    def _ensure_management_detector(self, region: str, wanted: list[dict[str, str]]) -> None:
+        """GuardDuty only adds the management account as a member once it has a detector of its own."""
+        gd_mgmt = self.session_mgr.get_client("guardduty", region_name=region)
+        if gd_mgmt.list_detectors().get("DetectorIds"):
+            return
+        gd_mgmt.create_detector(Enable=True, FindingPublishingFrequency="FIFTEEN_MINUTES", Features=wanted)
+        audit(
+            "create",
+            f"guardduty-detector:management:{region}",
+            Outcome.SUCCEEDED,
+            f"Turned on GuardDuty in the management account in {region}",
+            region=region,
+        )
 
     def _add_existing_guardduty_members(
         self, gd_audit: Any, detector_id: str, audit_id: str, region: str
