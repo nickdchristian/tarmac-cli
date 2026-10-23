@@ -273,9 +273,18 @@ class ConfigBundle:
         return errors
 
     def _check_baseline_stacks(self) -> list[str]:
-        """Validate baseline stack names are unique, templates exist and targets are 'root' or declared OUs."""
+        """Validate baseline stack names are unique, templates exist and targets are 'root' or declared OUs, none
+        of them inside another (a StackSet targeting an OU includes its child OUs)."""
         errors: list[str] = []
         valid_ous = self._collect_ou_names(self.org.ou_structure)
+        descendants: dict[str, set[str]] = {}
+
+        def _walk(ous: list[OUDef]) -> None:
+            for ou in ous:
+                descendants[ou.name] = self._collect_ou_names(ou.children)
+                _walk(ou.children)
+
+        _walk(self.org.ou_structure)
         seen: set[str] = set()
         for stack in self.org.baseline_stacks:
             if stack.name.lower() in seen:
@@ -291,6 +300,17 @@ class ConfigBundle:
                         f"Baseline stack '{stack.name}' targets undefined OU '{target}'. "
                         f"Use 'root' or one of: {sorted(valid_ous)}"
                     )
+            targets = set(stack.target_ous)
+            covered = (
+                valid_ous
+                if any(t.lower() == "root" for t in targets)
+                else set().union(*(descendants.get(t, set()) for t in targets))
+            )
+            for target in sorted(targets & covered):
+                errors.append(
+                    f"Baseline stack '{stack.name}' targets '{target}', which another entry in target_ous "
+                    "already includes."
+                )
         return errors
 
     def get_backend_account_name(self) -> str | None:

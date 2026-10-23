@@ -21,11 +21,9 @@ def stack_set_name(org_name: str, name: str) -> str:
 
 
 class BaselineStacksService:
-    def __init__(
-        self, session_mgr: AwsSessionManager, region: str, stack_sets: StackSetService | None = None
-    ):
+    def __init__(self, session_mgr: AwsSessionManager, region: str):
         self.cf: Any = session_mgr.get_client("cloudformation", region_name=region)
-        self.stack_sets = stack_sets or StackSetService()
+        self.stack_sets = StackSetService()
 
     def undeclared(self, org_name: str, stacks: list[BaselineStackDef]) -> list[str]:
         """Baseline StackSets of this organization that are no longer declared."""

@@ -344,10 +344,12 @@ def _run_phase_4_accounts(
 
     wanted = {normalize_account_name(name) for name in only or []}
     declared = [a for a in bundle.accounts.accounts if not wanted or normalize_account_name(a.name) in wanted]
-    baseline_ous = set() if wanted else {t for s in bundle.org.baseline_stacks for t in s.target_ous}
-    ou_map = _existing_ou_map(
-        session_mgr, {a.ou for a in declared} | {t for t in baseline_ous if t.lower() != "root"}
+    baseline_ous = (
+        set()
+        if wanted
+        else {t for s in bundle.org.baseline_stacks for t in s.target_ous if t.lower() != "root"}
     )
+    ou_map = _existing_ou_map(session_mgr, {a.ou for a in declared} | baseline_ous)
     results = account_service.provision_accounts(
         declared, ou_map=ou_map, org_tags=bundle.get_organization_tags()
     )
@@ -392,7 +394,7 @@ def _run_phase_4_accounts(
 
     if not wanted:
         baseline_problems.extend(
-            BaselineStacksService(session_mgr, bundle.org.organization.primary_region).deploy(
+            BaselineStacksService(session_mgr, session_mgr.default_region).deploy(
                 bundle.org.organization.name,
                 bundle.org.baseline_stacks,
                 project_root,

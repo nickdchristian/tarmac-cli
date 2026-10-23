@@ -163,7 +163,7 @@ security_services:
 set `terraform_backend.enable_dynamodb: true` if you need a DynamoDB lock table.
 
 **Baseline stacks.** Your own CloudFormation templates, deployed in phase 4 to every active account in the listed
-OUs (`root` for all of them) through a StackSet, including accounts added later. StackSets can't deploy to the
+OUs and their child OUs (`root` for all of them) through a StackSet, including accounts added later. StackSets can't deploy to the
 management account. Removing an entry deletes its StackSet and stacks. Templates can't use macros or transforms.
 
 ```yaml
