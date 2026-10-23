@@ -50,7 +50,7 @@ from .ui import (
 
 app = typer.Typer(
     name="tarmac",
-    help="Tarmac: Enterprise AWS Governance & Multi-Account Landing Zone CLI.",
+    help="Tarmac: set up and maintain a multi-account AWS Organization from YAML.",
     no_args_is_help=True,
 )
 
@@ -62,7 +62,7 @@ app.command("inventory")(inventory_command)
 
 app.command(
     "preflight",
-    help="Audit management account manual prerequisites and operational readiness.",
+    help="Check the management account is ready for tarmac.",
 )(run_preflight_checks)
 
 
@@ -122,15 +122,9 @@ app.command("import")(import_command)
 
 @app.command("init")
 def init_project(
-    directory: Annotated[
-        Path | None,
-        typer.Argument(
-            help="Directory to scaffold configuration files [default: config]", show_default=False
-        ),
-    ] = None,
     config_dir: Annotated[
-        Path | None, typer.Option("--config-dir", "-c", help="Directory to scaffold configuration files")
-    ] = None,
+        Path, typer.Option("--config-dir", "-c", help="Directory to write the configuration files to")
+    ] = Path("config"),
     force: Annotated[
         bool, typer.Option("--force", "-f", help="Overwrite existing configuration files")
     ] = False,
@@ -142,11 +136,10 @@ def init_project(
         ),
     ] = False,
 ) -> None:
-    """Scaffold starter YAML configuration files for a new Tarmac project."""
+    """Write starter configuration files."""
 
-    target_dir = directory or config_dir or Path("config")
     print_header("Initialize Tarmac Configuration")
-    created, skipped = scaffold_project(target_dir, force=force, with_templates=with_templates)
+    created, skipped = scaffold_project(config_dir, force=force, with_templates=with_templates)
 
     for path in created:
         print_success(f"Created {path}")
@@ -154,10 +147,11 @@ def init_project(
         print_info(f"Skipped existing {path} (use --force to overwrite)")
 
     if created:
-        console.print("\n[bold cyan]Next Steps:[/bold cyan]")
-        console.print(f"  1. Customize configuration files in [bold]{target_dir}/[/bold]")
-        console.print("  2. Validate configuration with [bold]tarmac validate[/bold]")
-        console.print("  3. Preview deployment with [bold]tarmac deploy --dry-run[/bold]\n")
+        console.print("\n[bold cyan]Next steps:[/bold cyan]")
+        console.print(f"  1. Edit the files in [bold]{config_dir}/[/bold]")
+        console.print("  2. Check them with [bold]tarmac validate[/bold]")
+        console.print("  3. On a new account, run [bold]tarmac bootstrap[/bold] once, as root, and sign in")
+        console.print("  4. Run [bold]tarmac preflight[/bold], then [bold]tarmac deploy --dry-run[/bold]\n")
 
 
 def _build_validation_summary(bundle: Any) -> dict[str, Any]:

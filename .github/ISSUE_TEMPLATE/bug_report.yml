@@ -1,0 +1,33 @@
+name: Bug report
+description: Something tarmac did wrong, or failed to do
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Tarmac version
+      description: Output of `tarmac --version`
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The command you ran, with its options
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Re-run with `tarmac -v --log-file run.jsonl ...` and paste `tarmac logs run.jsonl --run latest`.
+        Remove account IDs and emails you don't want public.
+      render: text

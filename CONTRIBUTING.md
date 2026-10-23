@@ -1,15 +1,6 @@
-# Contributing to Tarmac CLI
+# Contributing
 
-Thank you for your interest in contributing to **Tarmac CLI** (`tarmac-cli`)!
-
-## Prerequisites
-
-- **Python:** `>=3.11` (local development defaults to `3.13`)
-- **[uv](https://docs.astral.sh/uv/):** Used for dependency management, lockfile resolution, and isolated command execution.
-
-## Local Development Setup
-
-Clone the repository and sync dependencies from `uv.lock`:
+You need Python 3.11 or later and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/nickdchristian/tarmac-cli.git
@@ -17,31 +8,13 @@ cd tarmac-cli
 uv sync --locked
 ```
 
-## Running Quality Gates
+Before opening a pull request, run the checks in the README's [Development](README.md#development) section.
+CI runs the same ones.
 
-Run the same quality gates locally that execute in GitHub Actions CI:
-
-```bash
-# 1. Lint & Format (Ruff)
-uv run ruff check .
-uv run ruff format --check .
-
-# 2. Static Type Checking (Basedpyright)
-uv run basedpyright
-
-# 3. CloudFormation Template Linting (cfn-lint)
-uv run cfn-lint src/tarmac/templates/cloudformation/*.yaml
-
-# 4. Validate Example Governance Manifests
-uv run tarmac validate --config-dir examples/config
-
-# 5. Run Pytest Suite
-uv run pytest
-```
-
-## Pull Request & Commit Guidelines
-
-- **Conventional Commits:** All Pull Request titles are validated in CI using [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`, `ci:`, `refactor:`, `test:`, `perf:`, `build:`, `style:`, `revert:`).
-- **Release Automation:** Versioning and `CHANGELOG.md` generation are managed automatically by **Release Please** on merge to `main` (`feat:` bumps minor/patch, `fix:` bumps patch). Do not manually bump versions in `pyproject.toml` or `CHANGELOG.md`.
-- **Templates:** CloudFormation templates and SCP policies live only under `src/tarmac/templates/` (they ship in the package; `tarmac init --with-templates` exports copies for local overrides).
-- **No Live AWS Calls in Unit Tests:** All tests under `tests/` are isolated from host AWS credentials and must mock `AwsSessionManager` or boto3 clients.
+- **Pull request titles** must follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`,
+  `fix:`, `docs:`, `refactor:`, `test:`, `ci:`, `chore:` and so on). Pull requests are squash-merged, and
+  release-please builds the version and changelog from those titles, so don't edit the version or
+  `CHANGELOG.md` by hand. Mark breaking changes with `!` (for example `feat!:`).
+- **Templates and SCPs** live only in `src/tarmac/templates/`. They ship in the package, and
+  `tarmac init --with-templates` copies them out for local changes.
+- **Tests never call AWS.** They don't see your credentials, so mock `AwsSessionManager` or the boto3 clients.

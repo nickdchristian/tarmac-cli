@@ -301,7 +301,7 @@ def test_shipped_scps_deny_leaving_the_organization_and_closing_accounts(policy_
 def test_example_config_is_not_rewritten_by_tests(project_root: Path):
     """Tests that edit configuration must work on a copy (see the writable_config_dir fixture)."""
     text = (project_root / "examples" / "config" / "organization.yaml").read_text(encoding="utf-8")
-    assert text.startswith("# ====")
+    assert text.startswith("# Organization settings, OUs, SCPs")
     assert "# Organization-wide CloudTrail configuration" in text
 
 
