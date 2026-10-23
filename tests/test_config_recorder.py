@@ -374,7 +374,7 @@ def test_an_operation_that_never_finishes_times_out_with_guidance():
             {"StackSetName": NAME, "OperationId": "op-9"},
         )
         with pytest.raises(GovernanceError, match="keeps running in AWS"):
-            service._wait(cf, NAME, "op-9")
+            service.stack_sets.wait(cf, NAME, "op-9")
 
 
 def test_an_existing_service_linked_role_is_used_without_trying_to_create_it():
