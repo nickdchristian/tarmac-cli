@@ -343,15 +343,15 @@ class DriftService:
         ct_status = stack_status(mgmt_cfn, ct_stack)
         self._record_stack_drift("CloudTrail", ct_status, report)
 
-        sso_region = bundle.identity.identity_center.region or target_region
-        sso_cfn = (
-            mgmt_cfn
-            if sso_region == target_region
-            else self.session_mgr.get_client("cloudformation", region_name=sso_region)
-        )
-        sso_stack = Stack.PERMISSION_SETS.for_org(prefix)
-        sso_status = stack_status(sso_cfn, sso_stack)
-        self._record_stack_drift("SSOPermissionSets", sso_status, report)
+        if bundle.identity.identity_center.permission_sets:
+            sso_region = bundle.identity.identity_center.region or target_region
+            sso_cfn = (
+                mgmt_cfn
+                if sso_region == target_region
+                else self.session_mgr.get_client("cloudformation", region_name=sso_region)
+            )
+            sso_status = stack_status(sso_cfn, Stack.PERMISSION_SETS.for_org(prefix))
+            self._record_stack_drift("SSOPermissionSets", sso_status, report)
 
         stacks_to_check = [
             ("TerraformBackend", bundle.get_backend_account_name() or "deployment", Stack.TERRAFORM_BACKEND),

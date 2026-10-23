@@ -624,5 +624,6 @@ class CloudFormationService:
             for out in desc["Stacks"][0].get("Outputs", []):
                 outputs[out["OutputKey"]] = out["OutputValue"]
         except ClientError as e:
-            logger.warning("Could not retrieve outputs for stack %s: %s", stack_name, e)
+            if "does not exist" not in aws_error_message(e):
+                logger.warning("Could not retrieve outputs for stack %s: %s", stack_name, e)
         return outputs

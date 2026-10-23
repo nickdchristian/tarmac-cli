@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tarmac.cli.common import require_credentials_or_exit
+from tarmac.cli.deploy import _refuse_root_identity
 from tarmac.cli.main import app
 from tarmac.core.exceptions import AWSAuthenticationError
 from tarmac.services.scaffold import scaffold_project
@@ -18,6 +19,8 @@ runner = CliRunner()
 def real_credential_check(monkeypatch: pytest.MonkeyPatch) -> None:
     for module in ("deploy", "importer", "preflight"):
         monkeypatch.setattr(f"tarmac.cli.{module}.require_credentials_or_exit", require_credentials_or_exit)
+    for module in ("deploy", "main"):
+        monkeypatch.setattr(f"tarmac.cli.{module}._refuse_root_identity", _refuse_root_identity)
 
 
 def _expired() -> MagicMock:

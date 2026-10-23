@@ -65,9 +65,11 @@ def writable_config_dir(sample_config_dir: Path, tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def no_credential_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CLI tests run without AWS credentials; the up-front check has its own tests (test_credentials_fail_fast)."""
+    """CLI tests run without AWS credentials; the up-front checks have their own tests (test_credentials_fail_fast, test_access)."""
     for module in ("deploy", "importer", "preflight"):
         monkeypatch.setattr(f"tarmac.cli.{module}.require_credentials_or_exit", lambda _mgr: None)
+    for module in ("deploy", "main"):
+        monkeypatch.setattr(f"tarmac.cli.{module}._refuse_root_identity", lambda _mgr: None)
 
 
 @pytest.fixture(autouse=True)

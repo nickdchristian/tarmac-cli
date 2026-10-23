@@ -24,6 +24,7 @@ from tarmac.core.inventory import Inventory
 from tarmac.services.cloudformation import CloudFormationService
 from tarmac.services.identity import IdentityService, deployment_policy
 from tarmac.services.scp import SCPService
+from tarmac.services.security import SecurityServicesService
 from tarmac.services.teardown import TeardownService
 from tarmac.services.teardown_s3 import empty_s3_bucket
 
@@ -135,9 +136,21 @@ def test_delete_retained_bucket_issues_valid_delete_bucket_call():
     with Stubber(s3) as stub:
         stub.add_response("delete_bucket", {}, {"Bucket": "b"})
         assert svc._delete_retained_bucket(s3, "b", "log-archive", "111122223333") == []
+        # Access logs delivered after the bucket was emptied: empty it again, then delete.
         stub.add_client_error("delete_bucket", "BucketNotEmpty", "not empty", expected_params={"Bucket": "b"})
-        items = svc._delete_retained_bucket(s3, "b", "log-archive", "111122223333")
-    assert [i.action for i in items] == ["FAILED"]
+        stub.add_response("head_bucket", {}, {"Bucket": "b"})
+        stub.add_response(
+            "list_object_versions", {"Versions": [{"Key": "log", "VersionId": "v1"}]}, {"Bucket": "b"}
+        )
+        stub.add_response(
+            "delete_objects",
+            {},
+            {"Bucket": "b", "Delete": {"Objects": [{"Key": "log", "VersionId": "v1"}], "Quiet": True}},
+        )
+        stub.add_response("list_objects_v2", {"KeyCount": 0}, {"Bucket": "b"})
+        stub.add_response("delete_bucket", {}, {"Bucket": "b"})
+        assert svc._delete_retained_bucket(s3, "b", "log-archive", "111122223333") == []
+        stub.assert_no_pending_responses()
 
 
 @pytest.mark.parametrize(
@@ -372,6 +385,16 @@ _CREATE = {
 }
 
 
+def test_outputs_of_a_stack_not_created_yet_are_empty_without_a_warning(caplog):
+    cfn = _client("cloudformation")
+    with Stubber(cfn) as stub:
+        stub.add_client_error(
+            "describe_stacks", "ValidationError", "Stack with id s does not exist", expected_params=_STACK
+        )
+        assert CloudFormationService(MagicMock())._fetch_stack_outputs(cfn, "s") == {}
+    assert "Could not retrieve outputs" not in caplog.text
+
+
 def test_deploy_creates_a_new_stack_and_returns_its_outputs():
     cfn = _client("cloudformation")
     with Stubber(cfn) as stub:
@@ -576,3 +599,102 @@ def test_full_teardown_keeps_the_inventory_bucket_while_it_records_leftovers():
     assert [(i.action, i.message) for i in items] == [
         ("SKIPPED", "Kept: it still records 1 item(s) that were not removed")
     ]
+
+
+def test_existing_and_removed_accounts_are_added_to_guardduty_and_refusals_reported(caplog):
+    gd, org = _client("guardduty"), _client("organizations")
+    detector = "12abc34d567e8fa901bc2d34e56789f0"
+    audit_id, member, present, removed, closed = (
+        "343910392615",
+        "932055561000",
+        "247338423699",
+        "532490357434",
+        "111111111111",
+    )
+
+    def listed(acct: str, status: str) -> dict[str, str]:
+        return {
+            "AccountId": acct,
+            "MasterId": audit_id,
+            "Email": "n@example.com",
+            "RelationshipStatus": status,
+            "UpdatedAt": "2026-10-23T00:00:00Z",
+        }
+
+    caplog.set_level("INFO", logger="tarmac.audit")
+    with Stubber(gd) as gd_stub, Stubber(org) as org_stub:
+        gd_stub.add_response(
+            "list_members",
+            {"Members": [listed(present, "Enabled"), listed(removed, "Removed")]},
+            {"DetectorId": detector, "OnlyAssociated": "false"},
+        )
+        org_stub.add_response(
+            "list_accounts",
+            {
+                "Accounts": [
+                    {"Id": acct, "Email": f"{acct}@example.com", "Status": status, "State": status}
+                    for acct, status in (
+                        (audit_id, "ACTIVE"),
+                        (member, "ACTIVE"),
+                        (present, "ACTIVE"),
+                        (removed, "ACTIVE"),
+                        (closed, "SUSPENDED"),
+                    )
+                ]
+            },
+            {},
+        )
+        gd_stub.add_response(
+            "create_members",
+            {"UnprocessedAccounts": [{"AccountId": removed, "Result": "Account is not eligible"}]},
+            {
+                "DetectorId": detector,
+                "AccountDetails": [
+                    {"AccountId": member, "Email": f"{member}@example.com"},
+                    {"AccountId": removed, "Email": f"{removed}@example.com"},
+                ],
+            },
+        )
+        SecurityServicesService(_mgr(organizations=org))._add_existing_guardduty_members(
+            gd, detector, audit_id, "us-east-1"
+        )
+        gd_stub.assert_no_pending_responses()
+        org_stub.assert_no_pending_responses()
+    assert "Added 1 existing account(s)" in caplog.text
+    assert f"did not add 1 account(s) in us-east-1: {removed}: Account is not eligible" in caplog.text
+
+
+def test_guardduty_is_turned_on_in_the_management_account_so_it_can_be_added():
+    gd = _client("guardduty")
+    wanted = [{"Name": "S3_DATA_EVENTS", "Status": "ENABLED"}]
+    with Stubber(gd) as stub:
+        stub.add_response("list_detectors", {"DetectorIds": []}, {})
+        stub.add_response(
+            "create_detector",
+            {"DetectorId": "12abc34d567e8fa901bc2d34e56789f0"},
+            {"Enable": True, "FindingPublishingFrequency": "FIFTEEN_MINUTES", "Features": wanted},
+        )
+        stub.add_response("list_detectors", {"DetectorIds": ["12abc34d567e8fa901bc2d34e56789f0"]}, {})
+        service = SecurityServicesService(_mgr(guardduty=gd))
+        service._ensure_management_detector("us-east-1", wanted)
+        service._ensure_management_detector("us-east-1", wanted)  # a second run changes nothing
+        stub.assert_no_pending_responses()
+
+
+def test_adding_the_management_account_waits_until_guardduty_sees_its_new_detector(monkeypatch):
+    gd = _client("guardduty")
+    detector, mgmt = "12abc34d567e8fa901bc2d34e56789f0", "316941624511"
+    details = [{"AccountId": mgmt, "Email": f"{mgmt}@example.com"}]
+    waiting = "Operation failed because your organization master must first enable GuardDuty to be added as a member"
+    monkeypatch.setattr("tarmac.services.security.time.sleep", lambda _s: None)
+    with Stubber(gd) as stub:
+        stub.add_response(
+            "create_members",
+            {"UnprocessedAccounts": [{"AccountId": mgmt, "Result": waiting}]},
+            {"DetectorId": detector, "AccountDetails": details},
+        )
+        stub.add_response(
+            "create_members", {"UnprocessedAccounts": []}, {"DetectorId": detector, "AccountDetails": details}
+        )
+        assert SecurityServicesService._create_guardduty_members(gd, detector, details) == []
+        stub.assert_no_pending_responses()

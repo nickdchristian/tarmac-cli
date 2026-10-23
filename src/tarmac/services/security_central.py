@@ -86,9 +86,7 @@ class SecurityHubCentralConfiguration:
     def _enable_central_mode(self) -> None:
         if self._configuration().get("ConfigurationType") != "CENTRAL":
             self._require_no_local_members()
-            self.sh.update_organization_configuration(
-                AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
-            )
+            self._switch_to_central()
             audit(
                 "configure",
                 "securityhub:central-configuration",
@@ -96,6 +94,21 @@ class SecurityHubCentralConfiguration:
                 "Switched Security Hub to central configuration (policies managed from the home Region)",
             )
         self._wait_until_enabled()
+
+    def _switch_to_central(self) -> None:
+        """Security Hub refuses while it syncs the organization, for a few minutes after a new delegated admin."""
+        waited = 0.0
+        while True:
+            try:
+                self.sh.update_organization_configuration(
+                    AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
+                )
+                return
+            except ClientError as e:
+                if "still syncing" not in str(e) or waited >= self._timeout:
+                    raise
+            self._sleep(15.0)
+            waited += 15.0
 
     def _configuration(self) -> dict[str, Any]:
         return self.sh.describe_organization_configuration()["OrganizationConfiguration"]
@@ -123,15 +136,30 @@ class SecurityHubCentralConfiguration:
     def _desired_policy(self) -> dict[str, Any]:
         available = self.sh.describe_standards().get("Standards", [])
         arns = sorted({resolve_standard_arn(available, s) for s in self.standards})
-        return {"SecurityHub": {"ServiceEnabled": True, "EnabledStandardIdentifiers": arns}}
+        # Disabling no controls enables all of them in the chosen standards, including ones AWS releases later.
+        return {
+            "SecurityHub": {
+                "ServiceEnabled": True,
+                "EnabledStandardIdentifiers": arns,
+                "SecurityControlsConfiguration": {"DisabledSecurityControlIdentifiers": []},
+            }
+        }
 
     def _find_policy_id(self) -> str | None:
-        paginator = self.sh.get_paginator("list_configuration_policies")
-        for page in paginator.paginate():
-            for summary in page.get("ConfigurationPolicySummaries", []):
-                if summary.get("Name") == self.policy_name:
-                    return str(summary["Id"])
-        return None
+        """Right after the switch to central configuration, Security Hub may still refuse policy calls for a while."""
+        waited = 0.0
+        while True:
+            try:
+                for page in self.sh.get_paginator("list_configuration_policies").paginate():
+                    for summary in page.get("ConfigurationPolicySummaries", []):
+                        if summary.get("Name") == self.policy_name:
+                            return str(summary["Id"])
+                return None
+            except ClientError as e:
+                if "Central Configuration enabled" not in str(e) or waited >= self._timeout:
+                    raise
+            self._sleep(10.0)
+            waited += 10.0
 
     @staticmethod
     def _comparable(policy: dict[str, Any]) -> tuple[bool, list[str], Any]:

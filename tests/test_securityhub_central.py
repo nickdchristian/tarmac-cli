@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from tarmac.core import adoption
@@ -18,7 +19,14 @@ STD = "arn:aws:securityhub:us-east-1::standards/aws-foundational-security-best-p
 CIS = "arn:aws:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.2.0"
 STANDARDS = {"Standards": [{"StandardsArn": STD, "Name": "AWS Foundational Security Best Practices v1.0.0"}]}
 ROOT = "r-abcd"
-POLICY = {"SecurityHub": {"ServiceEnabled": True, "EnabledStandardIdentifiers": [STD]}}
+CONTROLS = {"DisabledSecurityControlIdentifiers": []}
+POLICY = {
+    "SecurityHub": {
+        "ServiceEnabled": True,
+        "EnabledStandardIdentifiers": [STD],
+        "SecurityControlsConfiguration": CONTROLS,
+    }
+}
 
 
 def _sh() -> Any:
@@ -108,7 +116,13 @@ def test_second_run_changes_nothing():
 
 def test_changed_standards_update_the_existing_policy():
     sh = _sh()
-    other = {"SecurityHub": {"ServiceEnabled": True, "EnabledStandardIdentifiers": [CIS]}}
+    other = {
+        "SecurityHub": {
+            "ServiceEnabled": True,
+            "EnabledStandardIdentifiers": [CIS],
+            "SecurityControlsConfiguration": CONTROLS,
+        }
+    }
     with Stubber(sh) as stub:
         stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
         stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
@@ -292,10 +306,35 @@ def test_central_configuration_designates_the_administrator_in_the_home_region_o
         "111122223333", "us-east-1", ["us-east-1", "eu-west-1"], SecurityHubConfig(enabled=True)
     )
 
-    assert set(mgmt_by_region) == {"us-east-1"}
     mgmt_by_region["us-east-1"].enable_organization_admin_account.assert_called_once_with(
         AdminAccountId="111122223333"
     )
+    mgmt_by_region["eu-west-1"].enable_organization_admin_account.assert_not_called()
+
+
+def test_central_configuration_turns_on_security_hub_in_the_management_account():
+    """A policy cannot be applied to the management account until it has Security Hub itself."""
+    sh = MagicMock()
+    sh.describe_organization_configuration.return_value = _org_config("CENTRAL")
+    sh.describe_standards.return_value = STANDARDS
+    sh.get_paginator.return_value.paginate.return_value = [{"ConfigurationPolicySummaries": []}]
+    sh.create_configuration_policy.return_value = {"Id": "pol-1"}
+    sh.get_configuration_policy_association.return_value = {}
+    sh.start_configuration_policy_association.return_value = {"AssociationStatus": "PENDING"}
+    sh.list_finding_aggregators.return_value = {"FindingAggregators": [{"FindingAggregatorArn": AGG_ARN}]}
+    sh.get_finding_aggregator.return_value = {"RegionLinkingMode": "NO_REGIONS", "Regions": []}
+    service = _service(sh)
+    mgmt = service.session_mgr.get_client("securityhub")
+    mgmt.describe_hub.side_effect = ClientError(
+        {"Error": {"Code": "InvalidAccessException", "Message": "not subscribed"}}, "DescribeHub"
+    )
+
+    report = service.configure_securityhub(
+        "111122223333", "us-east-1", ["us-east-1"], SecurityHubConfig(enabled=True)
+    )
+
+    assert report.status == "ENABLED"
+    mgmt.enable_security_hub.assert_called_once_with(EnableDefaultStandards=False)
 
 
 def _regions_service(sh: Any, status: str | None) -> SecurityServicesService:
@@ -475,3 +514,34 @@ def test_a_root_without_a_policy_is_taken_over_without_adoption():
     stub.activate()
     _central(sh).apply()
     stub.assert_no_pending_responses()
+
+
+def test_switching_waits_while_security_hub_syncs_a_new_organization():
+    sh = _sh()
+    switch = {"AutoEnable": False, "OrganizationConfiguration": {"ConfigurationType": "CENTRAL"}}
+    with Stubber(sh) as stub:
+        stub.add_response("describe_organization_configuration", _org_config("LOCAL"))
+        stub.add_response("list_members", {"Members": []}, {"OnlyAssociated": True, "MaxResults": 1})
+        stub.add_client_error(
+            "update_organization_configuration",
+            "ResourceNotFoundException",
+            "Central configuration couldn't be enabled because data from organization o-1 is still syncing.",
+            expected_params=switch,
+        )
+        stub.add_response("update_organization_configuration", {}, switch)
+        stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
+        _central(sh)._enable_central_mode()
+        stub.assert_no_pending_responses()
+
+
+def test_policy_calls_wait_until_central_configuration_takes_effect():
+    sh = _sh()
+    with Stubber(sh) as stub:
+        stub.add_client_error(
+            "list_configuration_policies",
+            "AccessDeniedException",
+            "Must be a Security Hub delegated administrator with Central Configuration enabled",
+        )
+        stub.add_response("list_configuration_policies", {"ConfigurationPolicySummaries": []})
+        assert _central(sh)._find_policy_id() is None
+        stub.assert_no_pending_responses()

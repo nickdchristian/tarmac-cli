@@ -100,7 +100,8 @@
         "cloudformation:UpdateStackSet",
         "cloudformation:DeleteStackSet",
         "cloudformation:CreateStackInstances",
-        "cloudformation:DeleteStackInstances"
+        "cloudformation:DeleteStackInstances",
+        "cloudformation:TagResource"
       ],
       "Resource": "*"
     },
@@ -249,6 +250,24 @@
           ]
         }
       }
+    },
+    {
+      "Sid": "ServiceLinkedRoleLookup",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/*"
+    },
+    {
+      "Sid": "StackSetsOrgAdminRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/stacksets.cloudformation.amazonaws.com/AWSServiceRoleForCloudFormationStackSetsOrgAdmin"
+    },
+    {
+      "Sid": "PassConfigServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig"
     }
   ]
 }

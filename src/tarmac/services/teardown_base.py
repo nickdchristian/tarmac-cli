@@ -13,6 +13,7 @@ from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from .cloudformation import CloudFormationService
+from .teardown_s3 import empty_s3_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,15 @@ class TeardownBase:
     ) -> list[TeardownItemReport]:
         """Delete a bucket CloudFormation retained. Returns report items only for failures."""
         try:
-            s3_client.delete_bucket(Bucket=bucket)
+            for attempt in range(3):
+                try:
+                    s3_client.delete_bucket(Bucket=bucket)
+                    break
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") != "BucketNotEmpty" or attempt == 2:
+                        raise
+                    # S3 keeps delivering access logs into a log bucket for a while after it was emptied.
+                    empty_s3_bucket(s3_client, bucket)
             audit(
                 "delete",
                 f"S3 Bucket:{bucket}",

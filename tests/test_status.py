@@ -275,3 +275,15 @@ def test_drift_service_handles_import_complete_sso_region_and_remediation_comman
     missing_scps = [i for i in report.items if i.category == "SCP" and i.status == "MISSING"]
     assert missing_scps
     assert all(i.remediation == "tarmac deploy --phase 2" for i in missing_scps)
+
+
+def test_no_permission_sets_declared_means_no_permission_set_stack_expected(sample_config_dir: Path):
+    from tarmac.core.config_loader import load_all_configs
+    from tarmac.services.drift import DriftReport, DriftService
+
+    bundle, _ = load_all_configs(sample_config_dir)
+    assert bundle is not None
+    bundle.identity.identity_center.permission_sets = []
+    report = DriftReport()
+    DriftService(MagicMock())._audit_stacks(bundle, {}, "us-east-1", report)
+    assert "SSOPermissionSets" not in {i.name for i in report.items}
