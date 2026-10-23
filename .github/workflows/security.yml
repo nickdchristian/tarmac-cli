@@ -12,7 +12,7 @@ on:
       - pyproject.toml
       - uv.lock
   schedule:
-    - cron: "17 5 * * 1"
+    - cron: "17 5 * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   pip-audit:
-    name: Audit locked runtime dependencies
+    name: Audit locked dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -40,8 +40,8 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Export locked runtime requirements
-        run: uv export --locked --no-dev --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/requirements.txt"
+      - name: Export locked requirements
+        run: uv export --locked --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/requirements.txt"
 
       - name: Audit for known vulnerabilities
-        run: uvx pip-audit --requirement "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --strict
+        run: uvx --exclude-newer "7 days" pip-audit --requirement "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --strict
