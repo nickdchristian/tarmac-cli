@@ -339,6 +339,7 @@ def _run_phase_4_accounts(
 
     account_service = AccountService(session_mgr)
     baseliner = BaselineService(session_mgr)
+    org_service = OrganizationService(session_mgr)
 
     wanted = {normalize_account_name(name) for name in only or []}
     declared = [a for a in bundle.accounts.accounts if not wanted or normalize_account_name(a.name) in wanted]
@@ -365,6 +366,7 @@ def _run_phase_4_accounts(
                 custom_tags=custom_tags,
             )
             baseline_problems.extend(_baseline_failures(baseline_report))
+            org_service.set_account_contacts(bundle.org.contacts, result.account_id)
 
     failed_results = [r for r in results if r.status == "FAILED"]
     if failed_results:
