@@ -475,3 +475,21 @@ def test_a_root_without_a_policy_is_taken_over_without_adoption():
     stub.activate()
     _central(sh).apply()
     stub.assert_no_pending_responses()
+
+
+def test_switching_waits_while_security_hub_syncs_a_new_organization():
+    sh = _sh()
+    switch = {"AutoEnable": False, "OrganizationConfiguration": {"ConfigurationType": "CENTRAL"}}
+    with Stubber(sh) as stub:
+        stub.add_response("describe_organization_configuration", _org_config("LOCAL"))
+        stub.add_response("list_members", {"Members": []}, {"OnlyAssociated": True, "MaxResults": 1})
+        stub.add_client_error(
+            "update_organization_configuration",
+            "ResourceNotFoundException",
+            "Central configuration couldn't be enabled because data from organization o-1 is still syncing.",
+            expected_params=switch,
+        )
+        stub.add_response("update_organization_configuration", {}, switch)
+        stub.add_response("describe_organization_configuration", _org_config("CENTRAL"))
+        _central(sh)._enable_central_mode()
+        stub.assert_no_pending_responses()

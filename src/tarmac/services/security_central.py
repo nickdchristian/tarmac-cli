@@ -86,9 +86,7 @@ class SecurityHubCentralConfiguration:
     def _enable_central_mode(self) -> None:
         if self._configuration().get("ConfigurationType") != "CENTRAL":
             self._require_no_local_members()
-            self.sh.update_organization_configuration(
-                AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
-            )
+            self._switch_to_central()
             audit(
                 "configure",
                 "securityhub:central-configuration",
@@ -96,6 +94,21 @@ class SecurityHubCentralConfiguration:
                 "Switched Security Hub to central configuration (policies managed from the home Region)",
             )
         self._wait_until_enabled()
+
+    def _switch_to_central(self) -> None:
+        """Security Hub refuses while it syncs the organization, for a few minutes after a new delegated admin."""
+        waited = 0.0
+        while True:
+            try:
+                self.sh.update_organization_configuration(
+                    AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
+                )
+                return
+            except ClientError as e:
+                if "still syncing" not in str(e) or waited >= self._timeout:
+                    raise
+            self._sleep(15.0)
+            waited += 15.0
 
     def _configuration(self) -> dict[str, Any]:
         return self.sh.describe_organization_configuration()["OrganizationConfiguration"]
