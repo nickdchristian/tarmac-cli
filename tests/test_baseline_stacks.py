@@ -41,8 +41,14 @@ def _session(cf: Any) -> MagicMock:
 def _instances(*pairs: tuple[str, str]) -> dict[str, Any]:
     return {
         "Summaries": [
-            {"StackSetId": "id", "Region": region, "Account": "333333333333", "Status": "CURRENT"}
-            for region, _ou in pairs
+            {
+                "StackSetId": "id",
+                "Region": region,
+                "Account": "333333333333",
+                "Status": "CURRENT",
+                "OrganizationalUnitId": ou,
+            }
+            for region, ou in pairs
         ]
     }
 
@@ -119,35 +125,27 @@ def test_cross_references_catch_unknown_ous_missing_templates_and_duplicates(wri
     assert "Nope" in problems[2]
 
 
-def test_sync_targets_drops_removed_ous_and_deploys_to_added_ones():
+def _operation(s: Stubber, call: str, op: str, ou: str, regions: list[str]) -> None:
+    params: dict[str, Any] = {
+        "StackSetName": NAME,
+        "DeploymentTargets": {"OrganizationalUnitIds": [ou]},
+        "Regions": regions,
+        "OperationPreferences": PREFS,
+    }
+    if call == "delete_stack_instances":
+        params["RetainStacks"] = False
+    s.add_response(call, {"OperationId": op}, params)
+    s.add_response("describe_stack_set_operation", DONE, {"StackSetName": NAME, "OperationId": op})
+
+
+def test_sync_targets_gives_each_ou_exactly_the_regions_and_drops_ous_no_longer_targeted():
     cf = _cf()
+    current = _instances(("us-east-1", "ou-a"), ("eu-west-1", "ou-a"), ("us-east-1", "ou-b"))
     with Stubber(cf) as s:
-        s.add_response("describe_stack_set", _described(["ou-a", "ou-b"]), {"StackSetName": NAME})
-        s.add_response("list_stack_instances", _instances(("us-east-1", "ou-a")), {"StackSetName": NAME})
-        s.add_response(
-            "delete_stack_instances",
-            {"OperationId": "op-1"},
-            {
-                "StackSetName": NAME,
-                "DeploymentTargets": {"OrganizationalUnitIds": ["ou-b"]},
-                "Regions": ["us-east-1"],
-                "RetainStacks": False,
-                "OperationPreferences": PREFS,
-            },
-        )
-        s.add_response("describe_stack_set_operation", DONE, {"StackSetName": NAME, "OperationId": "op-1"})
-        s.add_response("list_stack_instances", _instances(("us-east-1", "ou-a")), {"StackSetName": NAME})
-        s.add_response(
-            "create_stack_instances",
-            {"OperationId": "op-2"},
-            {
-                "StackSetName": NAME,
-                "DeploymentTargets": {"OrganizationalUnitIds": ["ou-c"]},
-                "Regions": ["us-east-1"],
-                "OperationPreferences": PREFS,
-            },
-        )
-        s.add_response("describe_stack_set_operation", DONE, {"StackSetName": NAME, "OperationId": "op-2"})
+        s.add_response("list_stack_instances", current, {"StackSetName": NAME})
+        _operation(s, "delete_stack_instances", "op-1", "ou-b", ["us-east-1"])
+        _operation(s, "delete_stack_instances", "op-2", "ou-a", ["eu-west-1"])
+        _operation(s, "create_stack_instances", "op-3", "ou-c", ["us-east-1"])
         s.add_response("list_stack_instances", _instances(("us-east-1", "ou-a")), {"StackSetName": NAME})
 
         failures = StackSetService().sync_targets(cf, NAME, ["ou-a", "ou-c"], ["us-east-1"])
@@ -186,9 +184,8 @@ def test_deploy_creates_declared_stack_sets_and_deletes_undeclared_ones(tmp_path
                 "AutoDeployment": {"Enabled": True, "RetainStacksOnAccountRemoval": False},
             },
         )
-        s.add_response("describe_stack_set", _described([]), {"StackSetName": NAME})
-        s.add_response("create_stack_instances", {"OperationId": "op-1"}, None)
-        s.add_response("describe_stack_set_operation", DONE, None)
+        s.add_response("list_stack_instances", {"Summaries": []}, {"StackSetName": NAME})
+        _operation(s, "create_stack_instances", "op-1", "r-ab12", ["us-east-1"])
         s.add_response("list_stack_instances", _instances(("us-east-1", "r-ab12")), {"StackSetName": NAME})
         s.add_response("list_stack_sets", _listed(NAME, old, "acme-config-recorder"), {"Status": "ACTIVE"})
         s.add_response("describe_stack_set", {"StackSet": {"StackSetName": old, "Tags": OWNED}}, None)
