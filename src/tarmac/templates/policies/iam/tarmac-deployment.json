@@ -100,7 +100,8 @@
         "cloudformation:UpdateStackSet",
         "cloudformation:DeleteStackSet",
         "cloudformation:CreateStackInstances",
-        "cloudformation:DeleteStackInstances"
+        "cloudformation:DeleteStackInstances",
+        "cloudformation:TagResource"
       ],
       "Resource": "*"
     },

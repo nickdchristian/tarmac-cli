@@ -247,7 +247,7 @@ def test_bootstrap_without_identity_center_says_what_to_enable(
 _PREFIX_TO_SERVICE = {"sso": "sso-admin", "servicequotas": "service-quotas"}
 _PREFIX_TO_SERVICE_INVERSE = {v: k for k, v in _PREFIX_TO_SERVICE.items()}
 _NON_OPERATION_ACTIONS = {"s3:ListBucket", "sso-directory:DescribeDirectory", "sso-directory:SearchUsers"}
-_NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups", "iam:PassRole"}
+_NON_OPERATION_ACTIONS |= {"sso-directory:SearchGroups", "iam:PassRole", "cloudformation:TagResource"}
 
 
 def _policy_statements() -> list[dict[str, object]]:
