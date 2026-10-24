@@ -1,28 +1,9 @@
-# =============================================================================
-# AWS Governance Configuration: Account Factory Catalog
-# =============================================================================
-# Declarative manifest for all AWS Member Accounts in the Organization.
-# The Account Factory ensures each account is created, placed in the correct OU,
-# and baselined according to the declared specification.
+# Member accounts. Tarmac creates each one, moves it to its OU and applies its baseline.
 #
-# FinOps Best Practice: Budget & Cost Anomaly Alerts
-# -----------------------------------------------------------------------------
-# - Dynamic Subscriber Lists: 'notification_emails' accepts a dynamic list of
-#   1 to 10 recipient emails (the AWS Budgets API maximum limit).
-# - Shared Team Mailboxes: In enterprise multi-account environments, always route
-#   budget alerts and anomaly notifications to shared team distribution lists
-#   (e.g. finops-alerts@company.com, cloudops@company.com) or SNS topics rather
-#   than individual personal employee inboxes. This ensures business continuity
-#   and avoids dropped alerts during on-call rotations or personnel turnover.
-#
-# Multi-Tier Tagging Hierarchy
-# -----------------------------------------------------------------------------
-# - Catalog-Level Tags: Top-level 'tags:' sets shared defaults across all accounts.
-# - Account-Level Tags: 'accounts[].tags' specifies or overrides tags for that account.
-# - Precedence: Default System Tags -> Org Tags -> Catalog Tags -> Account Tags -> Stack/CLI Tags.
-# - CloudFormation Merging: Tags automatically propagate down to all resources in stacks
-#   (CloudTrail, S3 Log Archive, Audit Hardening, Budgets, and Terraform Backend).
-# =============================================================================
+# - Budget and anomaly alerts accept 1 to 10 emails. Use shared team mailboxes, such as
+#   finops-alerts@company.com, so alerts still reach someone when people leave.
+# - Tags: top-level `tags:` apply to every account, and an account's own `tags:` add to or override them.
+#   They also go on the stacks tarmac deploys for the account.
 
 accounts:
   # ---------------------------------------------------------------------------

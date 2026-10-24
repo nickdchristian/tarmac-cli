@@ -1,5 +1,5 @@
 # =============================================================================
-# AWS Governance: Audit Account Hardening Reference Template
+# Audit account hardening
 # =============================================================================
 # Architecture & Security Design Note:
 # -----------------------------------------------------------------------------
@@ -35,7 +35,7 @@
 #      read the encrypted notification payload.
 # =============================================================================
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Audit account hardening — Config aggregator, SNS alerting, and KMS encryption
+Description: Audit account hardening - Config aggregator, SNS alerts and KMS encryption
 
 Parameters:
   OrgName:

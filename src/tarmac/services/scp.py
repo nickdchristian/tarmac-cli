@@ -229,7 +229,7 @@ class SCPService:
 
         return {
             "AWSTemplateFormatVersion": "2010-09-09",
-            "Description": "AWS Governance - Managed Service Control Policies",
+            "Description": "Service control policies managed by tarmac",
             "Resources": resources,
         }
 

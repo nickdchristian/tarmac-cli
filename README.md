@@ -1,5 +1,6 @@
 # Tarmac
 
+[![CI](https://github.com/nickdchristian/tarmac-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/nickdchristian/tarmac-cli/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/tarmac-cli)](https://pypi.org/project/tarmac-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/tarmac-cli)](https://pypi.org/project/tarmac-cli/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -110,7 +111,7 @@ account.
 | 1 | Organization settings, contacts, trusted services, root access management, cost tags, the inventory bucket |
 | 2 | OUs and service control policies |
 | 3 | Log archive buckets and the organization CloudTrail |
-| 4 | Member accounts, their tags, budgets and default VPC cleanup |
+| 4 | Member accounts, their tags, alternate contacts, budgets and default VPC cleanup |
 | 5 | Terraform state backend, audit account, AWS Config, GuardDuty, Security Hub, root user alert |
 | 6 | Identity Center permission sets, users, groups and assignments |
 
@@ -189,6 +190,20 @@ security_services:
 `<org>-terraform-backend` stack's `BucketName` output. Locking uses S3 (`use_lockfile = true`, Terraform 1.10+);
 set `terraform_backend.enable_dynamodb: true` if you need a DynamoDB lock table.
 
+**Baseline stacks.** Your own CloudFormation templates, deployed in phase 4 to every active account in the listed
+OUs and their child OUs (`root` for all of them) through a StackSet, including accounts added later. StackSets can't deploy to the
+management account. Removing an entry deletes its StackSet and stacks. Templates can't use macros or transforms.
+`--phase 4 --account NAME` leaves baseline stacks alone, because they cover whole OUs.
+
+```yaml
+baseline_stacks:
+  - name: iam-password-policy          # StackSet <org>-baseline-iam-password-policy
+    template_file: templates/password-policy.yaml   # relative to your project, like policy_file
+    target_ous: [Workloads, Sandbox]
+    regions: [us-east-1]
+    parameters: {MinimumLength: "14"}
+```
+
 **Example SCPs.** [`examples/policies/scp`](examples/policies/scp) has two optional policies, one restricting
 Regions and one stopping member accounts turning off GuardDuty or Security Hub. Keep their
 `OrganizationAccountAccessRole` exemption (tarmac works through that role), and test them on one OU before
@@ -222,6 +237,12 @@ tarmac logs run.jsonl --run latest            # what the last run did, and what 
 tarmac logs run.jsonl --outcome failed
 ```
 
+## Upgrading
+
+Tarmac is pre-1.0, so a minor release can change commands or config. Read the breaking changes in
+[CHANGELOG.md](CHANGELOG.md) before upgrading; an entry names the commands of its own release, which a later
+release may have renamed again.
+
 ## Development
 
 ```bash
@@ -231,6 +252,8 @@ uv run ruff check . && uv run ruff format --check . && uv run basedpyright
 uv run cfn-lint src/tarmac/templates/cloudformation/*.yaml
 uv run tarmac validate --config-dir examples/config
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 

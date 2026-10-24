@@ -1,6 +1,4 @@
-# =============================================================================
-# AWS Governance Configuration: IAM Identity Center (SSO)
-# =============================================================================
+# IAM Identity Center users, groups and permission sets.
 
 identity_center:
   region: "us-east-1"

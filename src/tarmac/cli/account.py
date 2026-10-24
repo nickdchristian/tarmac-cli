@@ -1,4 +1,4 @@
-"""CLI commands for the AWS Account Factory."""
+"""The `tarmac account` commands."""
 
 import json
 from typing import Annotated
@@ -28,14 +28,14 @@ app = typer.Typer(
 
 @app.command("suspend")
 def suspend_account_cmd(
-    account_name_or_id: Annotated[str, typer.Argument(help="Account Name or 12-digit Account ID to suspend")],
+    account_name_or_id: Annotated[str, typer.Argument(help="Account name or 12-digit account ID")],
     config_dir: ConfigDirOption = None,
     region: RegionOption = None,
     close: Annotated[
-        bool, typer.Option("--close", help="Also initiate permanent account closure via CloseAccount API")
+        bool, typer.Option("--close", help="Also close the account (permanent after 90 days)")
     ] = False,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Simulate suspension without making changes")
+        bool, typer.Option("--dry-run", help="Show what would change, without changing it")
     ] = False,
     yes: YesOption = False,
 ) -> None:
