@@ -310,10 +310,10 @@ class PermissionSetMixin(IdentityBase):
                 # Never delete permission sets we did not create: removing one also removes every
                 # account assignment on it, which can lock people out of AWS accounts.
                 raise IdentityCenterError(
-                    f"Could not adopt pre-existing permission set(s) {adopting} into stack '{stack_name}'.",
+                    f"Could not adopt existing permission sets into stack '{stack_name}': {adopting}.",
                     details=(
                         f"{e}\nNo permission sets were deleted. Resolve the CloudFormation import "
-                        "error, or rename the permission set(s) in identity.yaml so tarmac creates "
+                        "error, or rename the permission sets in identity.yaml so tarmac creates "
                         "new ones alongside the existing ones."
                     ),
                 ) from e

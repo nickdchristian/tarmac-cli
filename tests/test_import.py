@@ -411,8 +411,8 @@ def test_assignments_outside_accounts_yaml_are_reported_not_written(monkeypatch,
     assert ident["groups"][0]["assignments"] == [{"permission_set": "Admin", "accounts": ["Audit"]}]
     assert not any("undefined account" in e for e in report.validation_errors)
     text = "\n".join(report.todos)
-    assert "2 group assignment(s) on 2 account(s)" in text
-    assert "3 permission-set assignment(s) made directly to users" in text
+    assert "Left out 2 group assignments on accounts not in accounts.yaml" in text
+    assert "Left out 3 permission-set assignments made directly to users" in text
 
 
 def test_tarmacs_own_trail_is_not_flagged_as_a_conflict(tmp_path: Path):
@@ -434,7 +434,7 @@ def test_tarmacs_own_trail_is_not_flagged_as_a_conflict(tmp_path: Path):
 
     cfn.describe_stack_resources.assert_called_once_with(StackName="acme-organization-cloudtrail")
     assert org["cloudtrail"]["trail_name"] == "acme-trail"
-    trail_todos = [t for t in report.todos if "Organization trail(s) already exist" in t]
+    trail_todos = [t for t in report.todos if "existing organization trail" in t]
     assert len(trail_todos) == 1
     assert "old-org-trail" in trail_todos[0]
     assert "acme-trail" not in trail_todos[0]
@@ -463,4 +463,4 @@ def test_no_trail_warning_when_only_tarmacs_trail_exists(tmp_path: Path):
         tmp_path / "cfg", include_identity=False
     )
 
-    assert not any("Organization trail(s) already exist" in t for t in report.todos)
+    assert not any("existing organization trail" in t for t in report.todos)

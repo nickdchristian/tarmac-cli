@@ -62,8 +62,8 @@ def warn_if_example_newer(config_dir: Path | None = None) -> None:
             try:
                 if example_f.stat().st_mtime > yaml_f.stat().st_mtime:
                     error_console.print(
-                        f"[yellow]⚠️  Notice: {example_f.name} was modified more recently than {yaml_f.name}.\n"
-                        f"   Tarmac loads {yaml_f.name}. Edit {yaml_f.name} directly to apply your updates.[/yellow]\n"
+                        f"[yellow]Warning: {example_f.name} is newer than {yaml_f.name}, but tarmac only "
+                        f"reads {yaml_f.name}.\n   Copy any changes you want into {yaml_f.name}.[/yellow]\n"
                     )
             except OSError:
                 pass
@@ -81,7 +81,7 @@ def load_configs_or_exit(config_dir: Path | None = None) -> ConfigBundle:
             error_console.print("[red]•[/red] Failed to load configuration files.")
         raise typer.Exit(code=1)
     for message in bundle.deprecated_settings():
-        error_console.print(f"[yellow]⚠ {message}[/yellow]")
+        error_console.print(f"[yellow]Warning: {message}[/yellow]")
     inventory.activate()
     return bundle
 
@@ -92,7 +92,7 @@ def parse_tags_or_exit(tags: list[str] | None) -> dict[str, str]:
     try:
         return parse_cli_tags(tags)
     except ValueError as e:
-        error_console.print(f"[red]✗ Invalid tag option:[/red] {e}")
+        error_console.print(f"[red]Error: Invalid tag option:[/red] {e}")
         raise typer.Exit(code=1)
 
 
@@ -105,7 +105,7 @@ def require_credentials_or_exit(session_mgr: Any) -> None:
     try:
         session_mgr.get_caller_identity()
     except AWSAuthenticationError as exc:
-        error_console.print(f"[red]✗ AWS credentials are not usable:[/red] {exc.details or exc}")
+        error_console.print(f"[red]Error: AWS credentials are not usable:[/red] {exc.details or exc}")
         error_console.print(
             "  Check that they are set and not expired: [bold]aws sts get-caller-identity[/bold]. "
             "For IAM Identity Center profiles run [bold]aws sso login[/bold]; make sure AWS_PROFILE "
