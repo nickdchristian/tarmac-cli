@@ -21,6 +21,7 @@ from ..core.models import TAG_MANAGED_BY, StackDeployReport
 from ..core.org_accounts import is_active, iter_accounts
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags, to_cfn_tags
+from ..core.text import plural
 from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
@@ -249,7 +250,7 @@ class ConfigRecorderService:
                 "create",
                 f"stackset-instances:{name}",
                 Outcome.SUCCEEDED,
-                f"Deployed StackSet '{name}' to Region(s) {', '.join(missing)}",
+                f"Deployed StackSet '{name}' to {', '.join(missing)}",
                 regions=missing,
             )
         if surplus:
@@ -265,7 +266,7 @@ class ConfigRecorderService:
                 "delete",
                 f"stackset-instances:{name}",
                 Outcome.SUCCEEDED,
-                f"Removed StackSet '{name}' from Region(s) {', '.join(surplus)}",
+                f"Removed StackSet '{name}' from {', '.join(surplus)}",
                 regions=surplus,
             )
         return self._instance_failures(cf, name)
@@ -284,7 +285,7 @@ class ConfigRecorderService:
                 "create",
                 f"stackset-instances:{name}",
                 Outcome.FAILED,
-                f"{len(failures)} instance(s) of StackSet '{name}' are not current",
+                f"StackSet '{name}' has {plural(len(failures), 'out-of-date instance')}",
                 failures=failures,
             )
         return failures
@@ -375,10 +376,14 @@ class ConfigRecorderService:
                 self._wait(cf, name, response["OperationId"])
                 left = self._list_instances(cf, name)
                 if left:
-                    return [(resource, "FAILED", f"{len(left)} stack instance(s) could not be deleted")]
+                    return [
+                        (resource, "FAILED", f"{plural(len(left), 'stack instance')} could not be deleted")
+                    ]
             cf.delete_stack_set(StackSetName=name)
             audit("delete", f"stackset:{name}", Outcome.SUCCEEDED, f"Deleted StackSet '{name}'")
-            return [(resource, "DELETED", f"Deleted the StackSet and {len(instances)} stack instance(s)")]
+            return [
+                (resource, "DELETED", f"Deleted the StackSet and {plural(len(instances), 'stack instance')}")
+            ]
         except AWS_ERRORS as e:
             return [(resource, "FAILED", str(e))]
 

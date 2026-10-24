@@ -25,6 +25,7 @@ from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
+from ..core.text import plural
 from .accounts import AccountService
 from .baseline import BUDGET_TEMPLATE, budget_parameters, budget_stack_name
 from .cloudformation import CloudFormationService, lock_table_wanted
@@ -378,7 +379,7 @@ class Planner:
             service._logical_ids_for_policies(scps.policies),
         )
         if adopted:
-            action, detail = "IMPORT", "; ".join(filter(None, ["adopts existing SCP(s) " + adopted, detail]))
+            action, detail = "IMPORT", "; ".join(filter(None, ["adopts existing " + adopted, detail]))
         new_ous = sorted({t for p in scps.policies for t in p.targets} - set(self.ou_map) - {"Root", "root"})
         if new_ous:
             detail = "; ".join(filter(None, [detail, f"targets {', '.join(new_ous)} once created"]))
@@ -452,8 +453,8 @@ class Planner:
         missing_ous = sorted({a.ou for a in declared} - set(self.ou_map))
         if missing_ous:
             phase.notes.append(
-                f"OU(s) {', '.join(missing_ous)} do not exist yet; phase 2 creates them and phase 4 stops "
-                "until then."
+                f"{plural(len(missing_ous), 'OU')} not created yet ({', '.join(missing_ous)}). Phase 2 creates OUs, "
+                "and phase 4 stops until then."
             )
         service = AccountService(self.session_mgr)
         items = service.plan(self.bundle.accounts, self.ou_map) if self.org_id else []
@@ -761,7 +762,7 @@ class Planner:
             identity._logical_ids_for_permission_sets(sets),
         )
         if adopted:
-            return "IMPORT", "; ".join(filter(None, ["adopts existing permission set(s) " + adopted, detail]))
+            return "IMPORT", "; ".join(filter(None, ["adopts existing " + adopted, detail]))
         return action, detail or ", ".join(ps.name for ps in sets)
 
     def _assignment(
@@ -776,12 +777,12 @@ class Planner:
             targets, self.accounts, list(self.accounts.values())
         )
         if not group_id or not permission_set_arn:
-            return "CREATE", f"{len(account_ids)} account(s)"
+            return "CREATE", f"{plural(len(account_ids), 'account')}"
         missing = [
             account_id
             for account_id in account_ids
             if not identity._assignment_exists(instance_arn, account_id, permission_set_arn, group_id)
         ]
         if missing:
-            return "CREATE", f"{len(missing)} of {len(account_ids)} account(s)"
-        return NO_CHANGE, f"{len(account_ids)} account(s)"
+            return "CREATE", f"{len(missing)} of {plural(len(account_ids), 'account')}"
+        return NO_CHANGE, f"{plural(len(account_ids), 'account')}"

@@ -72,7 +72,7 @@ def suspend_account_cmd(
         )
         if not matched_acct:
             error_console.print(
-                f"[red]Error:[/red] account '{account_name_or_id}' not found in the AWS Organization."
+                f"[red]Error:[/red] Account '{account_name_or_id}' not found in the AWS Organization."
             )
             raise typer.Exit(code=1)
 

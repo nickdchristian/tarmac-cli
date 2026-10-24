@@ -9,6 +9,7 @@ import typer
 from rich.markup import escape
 from rich.panel import Panel
 
+from ..core.text import plural
 from ..services.logview import (
     Record,
     RunSummary,
@@ -56,7 +57,7 @@ def _list_runs(runs: list[RunSummary], skipped: int) -> None:
         if problems:
             results.append(f"[bold red]{problems} failed[/bold red]")
         if run.warnings:
-            results.append(f"[yellow]{run.warnings} warning(s)[/yellow]")
+            results.append(f"[yellow]{plural(run.warnings, 'warning')}[/yellow]")
         table.add_row(
             run.run_id,
             escape(run.command) + mode,
@@ -66,7 +67,7 @@ def _list_runs(runs: list[RunSummary], skipped: int) -> None:
         )
     console.print(table)
     if skipped:
-        print_info(f"{skipped} line(s) in the file were not valid log records and were skipped.")
+        print_info(f"Skipped {plural(skipped, 'line')} that could not be read as log records.")
     print_info("Use 'tarmac logs FILE --run latest' (or a run id) to see what a run did.")
 
 
@@ -85,10 +86,12 @@ def _run_header(run: RunSummary) -> None:
     )
     lines.append(f"Actions: {counts or 'none recorded'}")
     if run.warnings or run.errors:
-        lines.append(f"[yellow]{run.warnings} warning(s)[/yellow], [red]{run.errors} error(s)[/red]")
+        lines.append(
+            f"[yellow]{plural(run.warnings, 'warning')}[/yellow], [red]{plural(run.errors, 'error')}[/red]"
+        )
     if run.dry_run_violations:
         lines.append(
-            f"[bold red]{run.dry_run_violations} state-changing AWS call(s) were made during a dry run[/bold red]"
+            f"[bold red]Dry run made {plural(run.dry_run_violations, 'state-changing AWS call')}[/bold red]"
         )
     console.print(Panel("\n".join(lines), border_style="cyan", padding=(0, 2)))
 

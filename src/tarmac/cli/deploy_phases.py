@@ -12,6 +12,7 @@ from ..core.models import BaselineReport, StackDeployReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
+from ..core.text import plural
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
@@ -49,7 +50,7 @@ def _existing_ou_map(session_mgr: AwsSessionManager, needed: set[str]) -> dict[s
     missing = sorted(needed - set(ou_map))
     if missing:
         raise GovernanceError(
-            f"OU(s) {', '.join(missing)} do not exist yet.",
+            f"{plural(len(missing), 'OU')} not created yet: {', '.join(missing)}.",
             details="Run `tarmac deploy --phase 2` first: it creates the OUs and attaches their SCPs.",
         )
     return ou_map
@@ -88,7 +89,7 @@ def _cleanup_management_default_vpcs(session_mgr: AwsSessionManager) -> None:
         for failure in vpc_failures:
             print_warning(f"Management Account default VPC cleanup failed in {failure}")
         raise GovernanceError(
-            f"Phase 1 incomplete: default VPC cleanup failed in {len(vpc_failures)} region(s).",
+            f"Phase 1 incomplete: default VPC cleanup failed in {plural(len(vpc_failures), 'region')}.",
             details=(
                 "Fix the cause (the role needs ec2:DescribeVpcs/Subnets/InternetGateways/"
                 "NetworkInterfaces and the matching Detach/Delete actions), or set "
@@ -153,7 +154,9 @@ def _run_phase_1_org(
     if target_cost_tags:
         activated_tags = org_service.activate_cost_allocation_tags(target_cost_tags)
         if activated_tags:
-            print_success(f"Activated Cost Allocation Tag(s): {', '.join(activated_tags)}")
+            print_success(
+                f"Activated {plural(len(activated_tags), 'cost allocation tag')}: {', '.join(activated_tags)}"
+            )
 
     if bundle.org.organization.delete_default_vpc:
         _cleanup_management_default_vpcs(session_mgr)
@@ -370,7 +373,7 @@ def _run_phase_4_accounts(
     if failed_results:
         failed_names = ", ".join(r.name for r in failed_results)
         raise AccountProvisioningError(
-            f"Phase 4 failed: Account provisioning failed for {len(failed_results)} account(s): {failed_names}"
+            f"Phase 4 failed: Account provisioning failed for {plural(len(failed_results), 'account')}: {failed_names}"
         )
 
     suspended_ou_id = ou_map.get("Suspended")
@@ -391,7 +394,7 @@ def _run_phase_4_accounts(
     if baseline_problems:
         # Do not record the "accounts" milestone: the accounts exist, but their baseline is incomplete.
         raise AccountProvisioningError(
-            f"Phase 4 finished with {len(baseline_problems)} failed baseline step(s); "
+            f"Phase 4 finished with {plural(len(baseline_problems), 'failed baseline step')}; "
             "fix the cause and re-run `tarmac deploy --phase 4`.",
             details="\n".join(baseline_problems),
         )
@@ -602,7 +605,7 @@ def _run_phase_6_identity(
 
     _record_phase(session_mgr, "identity")
     print_success(
-        f"Phase 6 complete: Synced {len(report.permission_sets_synced)} permission set(s), "
-        f"{len(report.users_synced)} user(s), {report.assignments_created} assignment(s), "
-        f"and {report.memberships_added} membership(s)."
+        f"Phase 6 complete: Synced {plural(len(report.permission_sets_synced), 'permission set')}, "
+        f"{plural(len(report.users_synced), 'user')}, {plural(report.assignments_created, 'assignment')}, "
+        f"and {plural(report.memberships_added, 'membership')}."
     )

@@ -15,6 +15,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, DeploymentError, aws_error_message
 from ..core.models import StackDeployReport
 from ..core.tagging import merge_tags, to_cfn_tags
+from ..core.text import plural
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +335,7 @@ class CloudFormationService:
                 "import",
                 f"stack:{stack_name}",
                 Outcome.SUCCEEDED,
-                f"Imported {len(resources_to_import)} existing resource(s) into CloudFormation stack "
+                f"Imported {plural(len(resources_to_import), 'existing resource')} into CloudFormation stack "
                 f"'{stack_name}'",
                 resource_count=len(resources_to_import),
             )
