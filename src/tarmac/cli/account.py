@@ -71,7 +71,9 @@ def suspend_account_cmd(
             None,
         )
         if not matched_acct:
-            error_console.print(f"[red]✗[/red] Account '{account_name_or_id}' not found in AWS Organization.")
+            error_console.print(
+                f"[red]Error:[/red] account '{account_name_or_id}' not found in the AWS Organization."
+            )
             raise typer.Exit(code=1)
 
         ou_map = ou_service.list_all_ous(ou_service.get_root_id())
