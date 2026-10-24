@@ -142,6 +142,11 @@ Tarmac itself runs with the least-privilege policy in
 [`tarmac-deployment.json`](src/tarmac/templates/policies/iam/tarmac-deployment.json). After upgrading tarmac,
 run `tarmac bootstrap` again to update it; `tarmac preflight` warns when it's out of date.
 
+**The config is the source of truth.** Turning something off, or removing it, makes the next deploy remove what
+tarmac created for it, and the dry run lists each removal first: service control policies
+(`service_control_policies.enabled: false` or no policies), AWS Config recorders, the root activity alert, an
+account's budget, and its cost anomaly monitors. Log buckets and the history in them are kept.
+
 ## Commands
 
 | Command | What it does |

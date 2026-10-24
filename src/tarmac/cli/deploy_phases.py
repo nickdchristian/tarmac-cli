@@ -8,7 +8,7 @@ from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
-from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport
+from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport, TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
@@ -31,8 +31,10 @@ from ..services.stack_parameters import (
     log_archive_parameters,
     object_lock_advice,
 )
+from ..services.teardown import TeardownService
 from .deploy_config_recorder import deploy_config_recorder
 from .deploy_root_alert import deploy_management_root_alert
+from .removals import apply_removals
 from .ui import print_info, print_step, print_success, print_warning
 
 logger = logging.getLogger(__name__)
@@ -186,7 +188,8 @@ def _run_phase_2_ou(
         f"({len(report.created_ous)} created, {len(report.existing_ous)} already existed)."
     )
 
-    if bundle.org.service_control_policies and bundle.org.service_control_policies.enabled:
+    scps = bundle.org.service_control_policies
+    if scps and scps.enabled and scps.policies:
         results = SCPService(session_mgr).reconcile_via_cloudformation(
             bundle.org.service_control_policies,
             root_id,
@@ -204,6 +207,7 @@ def _run_phase_2_ou(
             )
         print_success(f"Phase 2 complete: Reconciled {len(results)} Service Control Policies.")
     else:
+        apply_removals("service control policies", TeardownService(session_mgr).teardown_scps(bundle))
         print_success("Phase 2 complete: OUs synchronized.")
 
     _record_phase(session_mgr, "ou")
@@ -360,6 +364,9 @@ def _run_phase_4_accounts(
     acct_def_map = {a.name: a for a in declared}
 
     baseline_problems: list[str] = []
+    teardown = TeardownService(session_mgr)
+    removed: list[TeardownItemReport] = []
+    anomaly_off: dict[str, str] = {}
     for result in results:
         acct_def = acct_def_map.get(result.name)
         if result.status == "SKIPPED":
@@ -380,6 +387,19 @@ def _run_phase_4_accounts(
                 org_service.set_account_contacts(bundle.org.contacts, result.account_id)
             except GovernanceError as e:
                 baseline_problems.append(f"{result.name} ({result.account_id}) {e.message}: {e.details}")
+            if acct_def.baseline.budget is None:
+                removed.extend(
+                    teardown.teardown_account_budget(result.name, result.account_id, dry_run=False)
+                )
+            anomaly = acct_def.baseline.anomaly_detection
+            if anomaly is None or not anomaly.enabled:
+                anomaly_off[result.name] = result.account_id
+
+    removed.extend(teardown.teardown_anomaly_monitors(anomaly_off, dry_run=False))
+    try:
+        apply_removals("budgets and cost anomaly monitors", removed)
+    except GovernanceError as e:
+        baseline_problems.append(f"{e.message} {e.details}")
 
     failed_results = [r for r in results if r.status == "FAILED"]
     if failed_results:

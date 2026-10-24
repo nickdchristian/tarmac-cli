@@ -188,9 +188,30 @@ def test_teardown_budgets(test_bundle):
     deleted_cfn = [r for r in reports if r.resource_type == "CloudFormation Stack" and r.action == "DELETED"]
     deleted_budgets = [r for r in reports if r.resource_type == "AWS Budget" and r.action == "DELETED"]
     assert len(deleted_cfn) == len(test_bundle.accounts.accounts)
-    assert len(deleted_budgets) == len(test_bundle.accounts.accounts)
     assert mock_cfn.delete_stack.call_count == len(test_bundle.accounts.accounts)
-    assert mock_budgets.delete_budget.call_count == len(test_bundle.accounts.accounts)
+    # The stack's own budget shares its name; deleting the stack removes it, so it isn't deleted twice.
+    assert deleted_budgets == []
+    mock_budgets.delete_budget.assert_not_called()
+
+
+def test_a_budget_older_releases_created_directly_is_deleted_when_there_is_no_stack():
+    mgr = MagicMock(spec=AwsSessionManager)
+    cfn, budgets = MagicMock(), MagicMock()
+    cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    budgets.describe_budget.return_value = {"Budget": {}}
+    mgr.get_member_client.side_effect = lambda acct, svc, **kw: {"cloudformation": cfn, "budgets": budgets}[
+        svc
+    ]
+    mgr.default_region = "us-east-1"
+
+    reports = TeardownService(mgr).teardown_account_budget("dev", "111111111111", dry_run=False)
+
+    assert [(r.resource_type, r.action) for r in reports if r.action != "NOT_FOUND"] == [
+        ("AWS Budget", "DELETED")
+    ]
+    budgets.delete_budget.assert_called_once_with(AccountId="111111111111", BudgetName="dev-monthly-budget")
 
 
 def test_teardown_scps(test_bundle):
@@ -239,6 +260,29 @@ def test_teardown_scps(test_bundle):
     )
     mock_org.detach_policy.assert_called_once_with(PolicyId="p-12345", TargetId="r-root")
     mock_org.delete_policy.assert_called_once_with(PolicyId="p-12345")
+
+
+def test_teardown_scps_leaves_a_same_named_policy_tarmac_did_not_tag(test_bundle):
+    mgr = MagicMock(spec=AwsSessionManager)
+    cfn, org = MagicMock(), MagicMock()
+    cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    mgr.default_region = "us-east-1"
+    mgr.get_client.side_effect = lambda svc, **kwargs: cfn if svc == "cloudformation" else org
+    mgr.get_caller_identity.return_value = {"Account": "111122223333"}
+    pages = {
+        "list_policies": [{"Policies": [{"Id": "p-12345", "Name": "FoundationalGuardrails"}]}],
+        "list_tags_for_resource": [{"Tags": []}],
+    }
+    org.get_paginator.side_effect = lambda name: MagicMock(
+        paginate=MagicMock(return_value=pages.get(name, [{}]))
+    )
+
+    TeardownService(mgr).teardown_scps(test_bundle, dry_run=False)
+
+    org.detach_policy.assert_not_called()
+    org.delete_policy.assert_not_called()
 
 
 def test_teardown_all_orchestration(test_bundle):
@@ -887,21 +931,38 @@ def test_teardown_budgets_only_deletes_exact_tarmac_monitors(tmp_path: Path):
 
     mgr = MagicMock()
     mgr.get_caller_identity.return_value = {"Account": "111122223333"}
-    mock_ce = MagicMock()
-    mock_ce.get_anomaly_monitors.return_value = {
+    # Phase 4 creates the account's monitor and alert subscription in the management account, and a services
+    # monitor in the account itself.
+    management_ce = MagicMock()
+    management_ce.get_anomaly_monitors.return_value = {
         "AnomalyMonitors": [
             {"MonitorName": f"{acct.name}-cost-anomaly-monitor", "MonitorArn": "arn:ours"},
             {"MonitorName": f"{acct.name}-team-spend-watch", "MonitorArn": "arn:theirs"},
             {"MonitorName": "my-tarmac-notes", "MonitorArn": "arn:theirs2"},
         ]
     }
+    management_ce.get_anomaly_subscriptions.return_value = {
+        "AnomalySubscriptions": [
+            {"SubscriptionName": f"{acct.name}-anomaly-alerts", "SubscriptionArn": "arn:sub"}
+        ]
+    }
+    member_ce = MagicMock()
+    member_ce.get_anomaly_monitors.return_value = {
+        "AnomalyMonitors": [
+            {"MonitorName": f"{acct.name}-services-monitor", "MonitorArn": "arn:member"},
+            {"MonitorName": "their-own-monitor", "MonitorArn": "arn:theirs3"},
+        ]
+    }
     cfn = MagicMock()
     cfn.describe_stacks.side_effect = ClientError(
         {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
     )
-    mgr.get_member_client.side_effect = lambda _id, svc, **_: mock_ce if svc == "ce" else cfn
+    mgr.get_client.side_effect = lambda svc, **_: management_ce if svc == "ce" else MagicMock()
+    mgr.get_member_client.side_effect = lambda _id, svc, **_: member_ce if svc == "ce" else cfn
 
     TeardownService(mgr).teardown_budgets(bundle, dry_run=False, account_id_map={acct.name: "444455556666"})
 
-    deleted = [c.kwargs["MonitorArn"] for c in mock_ce.delete_anomaly_monitor.call_args_list]
-    assert deleted == ["arn:ours"]
+    deleted = [c.kwargs["MonitorArn"] for c in management_ce.delete_anomaly_monitor.call_args_list]
+    deleted += [c.kwargs["MonitorArn"] for c in member_ce.delete_anomaly_monitor.call_args_list]
+    assert deleted == ["arn:ours", "arn:member"]
+    management_ce.delete_anomaly_subscription.assert_called_once_with(SubscriptionArn="arn:sub")
