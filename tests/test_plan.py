@@ -277,3 +277,53 @@ def test_the_plan_summary_reads_like_a_sentence(counts, line):
     from tarmac.cli.plan_view import summarize
 
     assert summarize(counts) == line
+
+
+def test_a_baseline_stack_shows_the_ous_and_regions_whose_stack_instances_change(bundle):
+    from tarmac.core.config_schema import BaselineStackDef
+
+    planner = _planner(bundle)
+    planner.__dict__.update(
+        ou_map={"Workloads": "ou-w", "Security": "ou-s", "Sandbox": "ou-x", "Infrastructure": "ou-i"},
+        root_id="r-root",
+    )
+    stack = BaselineStackDef(
+        name="p",
+        template_file="t.yaml",
+        target_ous=["Workloads", "Security", "Sandbox"],
+        regions=["eu-west-1", "us-east-1"],
+    )
+    instances = [
+        {"OrganizationalUnitId": "ou-w", "Region": "eu-west-1"},
+        {"OrganizationalUnitId": "ou-w", "Region": "eu-west-2"},
+        {"OrganizationalUnitId": "ou-i", "Region": "eu-west-1"},
+    ]
+    with (
+        patch.object(Planner, "_stack_set", return_value=("NO CHANGE", "")),
+        patch("tarmac.services.plan.StackSetService") as stack_sets,
+    ):
+        stack_sets.return_value.list_instances.return_value = instances
+        action, detail = planner._baseline_stack("acme-baseline-p", stack)
+
+    # Workloads has accounts through its child OUs; Sandbox has none, so deploying to it changes nothing.
+    assert action == "UPDATE"
+    assert detail == (
+        "remove Infrastructure; add us-east-1 in Workloads; remove eu-west-2 in Workloads; "
+        "add eu-west-1, us-east-1 in Security"
+    )
+
+
+def test_a_baseline_stack_whose_instances_match_is_unchanged(bundle):
+    from tarmac.core.config_schema import BaselineStackDef
+
+    planner = _planner(bundle)
+    planner.__dict__.update(ou_map={"Security": "ou-s"}, root_id="r-root")
+    stack = BaselineStackDef(name="p", template_file="t.yaml", target_ous=["Security"], regions=["eu-west-1"])
+    with (
+        patch.object(Planner, "_stack_set", return_value=("NO CHANGE", "")),
+        patch("tarmac.services.plan.StackSetService") as stack_sets,
+    ):
+        stack_sets.return_value.list_instances.return_value = [
+            {"OrganizationalUnitId": "ou-s", "Region": "eu-west-1"}
+        ]
+        assert planner._baseline_stack("acme-baseline-p", stack) == ("NO CHANGE", "in eu-west-1")

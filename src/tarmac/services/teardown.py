@@ -11,6 +11,7 @@ from ..core.inventory import Inventory
 from ..core.models import TeardownItemReport
 from ..core.stack_names import Stack
 from .teardown_base import TeardownReport
+from .teardown_baseline_stacks import BaselineStacksTeardown
 from .teardown_config import ConfigRecorderTeardown
 from .teardown_everything import EverythingTeardown
 from .teardown_governance import GovernanceTeardown
@@ -21,7 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class TeardownService(
-    LoggingTeardown, WorkloadTeardown, GovernanceTeardown, ConfigRecorderTeardown, EverythingTeardown
+    LoggingTeardown,
+    WorkloadTeardown,
+    GovernanceTeardown,
+    ConfigRecorderTeardown,
+    BaselineStacksTeardown,
+    EverythingTeardown,
 ):
     """Orchestrates comprehensive teardown of Tarmac governance resources."""
 
@@ -61,6 +67,8 @@ class TeardownService(
             items.extend(self.teardown_log_archive(bundle, region, dry_run=dry_run, account_id_map=accts))
 
         if 4 in phases_set:
+            self._notify_phase("Phase 4 | Baseline Stacks")
+            items.extend(self.teardown_baseline_stacks(bundle, region, dry_run=dry_run))
             self._notify_phase("Phase 4 | Budgets & Cost Monitors")
             items.extend(self.teardown_budgets(bundle, dry_run=dry_run, account_id_map=accts))
 

@@ -26,6 +26,7 @@ from ..core.text import plural
 logger = logging.getLogger(__name__)
 
 DEFAULT_TRUSTED_SERVICES = [
+    "account.amazonaws.com",
     "cloudtrail.amazonaws.com",
     "config.amazonaws.com",
     # Required before Phase 5 can delegate Config administration to the Audit account.
@@ -35,6 +36,10 @@ DEFAULT_TRUSTED_SERVICES = [
     "sso.amazonaws.com",
     "member.org.stacksets.cloudformation.amazonaws.com",
 ]
+
+
+def contact_types(contacts: ContactsConfig) -> dict[str, Any]:
+    return {"BILLING": contacts.billing, "OPERATIONS": contacts.operations, "SECURITY": contacts.security}
 
 
 class OrganizationService:
@@ -84,31 +89,31 @@ class OrganizationService:
         )
         return str(org_id)
 
-    def set_account_contacts(self, contacts: ContactsConfig) -> list[str]:
-        """Configure alternate contacts (Billing, Operations, Security) on the management account.
+    def set_account_contacts(self, contacts: ContactsConfig, account_id: str | None = None) -> list[str]:
+        """Configure alternate contacts (Billing, Operations, Security) on a member account, or on the
+        management account when ``account_id`` is None.
 
         Returns a list of successfully updated contact types.
         """
-        contact_map = {
-            "BILLING": contacts.billing,
-            "OPERATIONS": contacts.operations,
-            "SECURITY": contacts.security,
-        }
+        target = {"AccountId": account_id} if account_id else {}
+        where = f"account {account_id}" if account_id else "the management account"
+        prefix = f"member-contact:{account_id}" if account_id else "alternate-contact"
         updated = []
 
-        for contact_type, contact_data in contact_map.items():
-            previous = self._current_contact(contact_type)
+        for contact_type, contact_data in contact_types(contacts).items():
+            previous = self._current_contact(contact_type, account_id)
             if self._contact_matches(previous, contact_data):
                 audit(
                     "update",
-                    f"alternate-contact:{contact_type}",
+                    f"{prefix}:{contact_type}",
                     Outcome.UNCHANGED,
-                    f"{contact_type} alternate contact is already {contact_data.email}",
+                    f"{contact_type} alternate contact on {where} is already {contact_data.email}",
                     contact_type=contact_type,
                 )
                 continue
             try:
                 self.account_client.put_alternate_contact(
+                    **target,
                     AlternateContactType=contact_type,
                     Name=contact_data.name,
                     Title=contact_data.title,
@@ -117,9 +122,9 @@ class OrganizationService:
                 )
                 audit(
                     "update",
-                    f"alternate-contact:{contact_type}",
+                    f"{prefix}:{contact_type}",
                     Outcome.SUCCEEDED,
-                    f"Set {contact_type} alternate contact on the management account to {contact_data.email}",
+                    f"Set {contact_type} alternate contact on {where} to {contact_data.email}",
                     contact_type=contact_type,
                     replaced_existing=previous is not None,
                 )
@@ -127,22 +132,31 @@ class OrganizationService:
             except ClientError as e:
                 audit(
                     "update",
-                    f"alternate-contact:{contact_type}",
+                    f"{prefix}:{contact_type}",
                     Outcome.FAILED,
-                    f"Could not set {contact_type} alternate contact: {aws_error_message(e)}",
+                    f"Could not set {contact_type} alternate contact on {where}: {aws_error_message(e)}",
                     contact_type=contact_type,
                 )
                 raise GovernanceError(
-                    f"Failed to set {contact_type} contact",
+                    f"Failed to set {contact_type} contact on {where}",
                     details=aws_error_message(e),
                 ) from e
 
         return updated
 
-    def _current_contact(self, contact_type: str) -> dict[str, Any] | None:
-        """The alternate contact now set on the management account, or None (not set, or not readable)."""
+    def stale_contacts(self, contacts: ContactsConfig, account_id: str | None = None) -> list[str]:
+        """The contact types (BILLING, ...) the account does not have as configured."""
+        return [
+            contact_type
+            for contact_type, contact in contact_types(contacts).items()
+            if not self._contact_matches(self._current_contact(contact_type, account_id), contact)
+        ]
+
+    def _current_contact(self, contact_type: str, account_id: str | None = None) -> dict[str, Any] | None:
+        """The alternate contact now set on the account, or None (not set, or not readable)."""
+        target = {"AccountId": account_id} if account_id else {}
         try:
-            response = self.account_client.get_alternate_contact(AlternateContactType=contact_type)
+            response = self.account_client.get_alternate_contact(**target, AlternateContactType=contact_type)
         except (ClientError, BotoCoreError):
             return None
         return response.get("AlternateContact")

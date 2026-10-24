@@ -228,6 +228,15 @@ def test_bootstrap_fails_with_aws_reason_when_an_assignment_fails(
     assert not (tmp_path / ".aws").exists()
 
 
+@pytest.mark.parametrize("repo", ["landing-zone", "acme@1/landing-zone", "acme/landing-zone@x"])
+def test_bootstrap_rejects_a_github_repo_that_is_not_owner_slash_repo(
+    writable_config_dir: Path, repo: str
+) -> None:
+    result = runner.invoke(app, ["bootstrap", "-c", str(writable_config_dir), "--github-repo", repo])
+    assert result.exit_code == 1
+    assert "OWNER/REPO or OWNER@ID/REPO@ID" in result.output
+
+
 def test_bootstrap_without_identity_center_says_what_to_enable(
     writable_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -384,6 +393,8 @@ def test_policy_covers_every_management_account_api_call() -> None:
     for (kind, service, operation), files in _client_calls().items():
         if kind == "member" and service not in _MEMBER_CLIENT_SERVICES_ON_MANAGEMENT:
             continue
+        if files == {"bootstrap.py"}:
+            continue  # bootstrap runs as root or an administrator, not with this policy
         action = f"{_PREFIX_TO_SERVICE_INVERSE.get(service, service)}:{operation}"
         action = _IAM_ACTION_FOR_OPERATION.get(action, action)
         if not _is_allowed(action):

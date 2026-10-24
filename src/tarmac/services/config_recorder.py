@@ -14,25 +14,16 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
 from ..core.models import TAG_MANAGED_BY, StackDeployReport
 from ..core.org_accounts import is_active, iter_accounts
 from ..core.stack_names import Stack
-from ..core.tagging import merge_tags, to_cfn_tags
-from ..core.text import plural
+from ..core.tagging import merge_tags
 from .cloudformation import CloudFormationService
+from .stackset import StackSetService
 
 logger = logging.getLogger(__name__)
-
-TERMINAL_OPERATION_STATUSES = frozenset({"SUCCEEDED", "FAILED", "STOPPED"})
-# Failures in one account or Region must not stop the others; they are collected and reported together.
-OPERATION_PREFERENCES = {
-    "RegionConcurrencyType": "PARALLEL",
-    "MaxConcurrentPercentage": 100,
-    "FailureTolerancePercentage": 100,
-}
 
 
 def service_linked_role_arn(session_mgr: AwsSessionManager, management_account_id: str) -> str:
@@ -65,9 +56,7 @@ class ConfigRecorderService:
     ) -> None:
         self.session_mgr = session_mgr
         self.cfn_service = cfn_service or CloudFormationService(session_mgr)
-        self._sleep = sleep
-        self._poll_seconds = poll_seconds
-        self._timeout_seconds = timeout_seconds
+        self.stack_sets = StackSetService(sleep, poll_seconds, timeout_seconds)
 
     def deploy(
         self,
@@ -92,8 +81,10 @@ class ConfigRecorderService:
             cf.activate_organizations_access()
             root_id = self._root_id()
             targets = self._targets(root_id, management_account_id)
-            report.stack_set_action = self._ensure_stack_set(cf, name, template_body, parameters, cfn_tags)
-            report.failures.extend(self._sync_instances(cf, name, regions, targets))
+            report.stack_set_action = self.stack_sets.ensure(
+                cf, name, "AWS Config recorders managed by tarmac", template_body, parameters, cfn_tags
+            )
+            report.failures.extend(self.stack_sets.sync_instances(cf, name, regions, targets))
         except ClientError as e:
             raise GovernanceError(
                 f"Could not deploy AWS Config recorders through StackSet '{name}'",
@@ -155,159 +146,6 @@ class ConfigRecorderService:
             "Accounts": sorted(a for a in excluded if a),
         }
 
-    @staticmethod
-    def _owned(stack_set: dict[str, Any]) -> bool:
-        return any(
-            t.get("Key") == TAG_MANAGED_BY and t.get("Value") == "tarmac" for t in stack_set.get("Tags", [])
-        )
-
-    def _describe(self, cf: Any, name: str) -> dict[str, Any] | None:
-        try:
-            return dict(cf.describe_stack_set(StackSetName=name)["StackSet"])
-        except ClientError as e:
-            if aws_error_code(e) == "StackSetNotFoundException":
-                return None
-            raise
-
-    def _ensure_stack_set(
-        self, cf: Any, name: str, template_body: str, parameters: dict[str, str], tags: dict[str, str]
-    ) -> str:
-        cfn_parameters = [{"ParameterKey": k, "ParameterValue": str(v)} for k, v in parameters.items()]
-        settings = {
-            "TemplateBody": template_body,
-            "Parameters": cfn_parameters,
-            "Capabilities": ["CAPABILITY_NAMED_IAM"],
-            "Tags": to_cfn_tags(tags),
-            "PermissionModel": "SERVICE_MANAGED",
-            "AutoDeployment": {"Enabled": True, "RetainStacksOnAccountRemoval": False},
-        }
-        existing = self._describe(cf, name)
-        if existing is None:
-            cf.create_stack_set(
-                StackSetName=name,
-                Description="AWS Config recorders managed by tarmac",
-                **settings,
-            )
-            audit("create", f"stackset:{name}", Outcome.SUCCEEDED, f"Created StackSet '{name}'")
-            return "CREATED"
-
-        if not self._owned(existing):
-            raise GovernanceError(
-                f"StackSet '{name}' exists but was not created by tarmac (no {TAG_MANAGED_BY}=tarmac tag).",
-                details="tarmac will not update a StackSet it does not own. Rename or remove it, then re-run.",
-            )
-        if self._unchanged(existing, template_body, cfn_parameters, tags):
-            audit("update", f"stackset:{name}", Outcome.UNCHANGED, f"StackSet '{name}' is already up to date")
-            return "UNCHANGED"
-
-        response = cf.update_stack_set(
-            StackSetName=name, OperationPreferences=OPERATION_PREFERENCES, **settings
-        )
-        self._wait(cf, name, response["OperationId"])
-        audit("update", f"stackset:{name}", Outcome.SUCCEEDED, f"Updated StackSet '{name}'")
-        return "UPDATED"
-
-    @staticmethod
-    def _unchanged(
-        existing: dict[str, Any], template_body: str, parameters: list[dict[str, str]], tags: dict[str, str]
-    ) -> bool:
-        def params(items: list[dict[str, Any]]) -> dict[str, str]:
-            return {str(p["ParameterKey"]): str(p["ParameterValue"]) for p in items}
-
-        def tag_map(items: list[dict[str, Any]]) -> dict[str, str]:
-            return {str(t["Key"]): str(t["Value"]) for t in items}
-
-        return (
-            existing.get("TemplateBody") == template_body
-            # AWS also lists parameters left at their template default (RecorderRoleArn), so compare only ours.
-            and {k: v for k, v in params(existing.get("Parameters", [])).items() if k in params(parameters)}
-            == params(parameters)
-            and tag_map(existing.get("Tags", [])) == tags
-            and existing.get("Status") == "ACTIVE"
-        )
-
-    def _list_instances(self, cf: Any, name: str) -> list[dict[str, Any]]:
-        instances: list[dict[str, Any]] = []
-        for page in cf.get_paginator("list_stack_instances").paginate(StackSetName=name):
-            instances.extend(page.get("Summaries", []))
-        return instances
-
-    def _sync_instances(self, cf: Any, name: str, regions: list[str], targets: dict[str, Any]) -> list[str]:
-        """Add instances for Regions that have none, drop Regions no longer configured, report what is not
-        current. Template and parameter changes reach existing instances through the StackSet update."""
-        present = {str(i["Region"]) for i in self._list_instances(cf, name)}
-        missing = [r for r in regions if r not in present]
-        surplus = sorted(present - set(regions))
-        if missing:
-            response = cf.create_stack_instances(
-                StackSetName=name,
-                DeploymentTargets=targets,
-                Regions=missing,
-                OperationPreferences=OPERATION_PREFERENCES,
-            )
-            self._wait(cf, name, response["OperationId"])
-            audit(
-                "create",
-                f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
-                f"Deployed StackSet '{name}' to {', '.join(missing)}",
-                regions=missing,
-            )
-        if surplus:
-            response = cf.delete_stack_instances(
-                StackSetName=name,
-                DeploymentTargets=targets,
-                Regions=surplus,
-                RetainStacks=False,
-                OperationPreferences=OPERATION_PREFERENCES,
-            )
-            self._wait(cf, name, response["OperationId"])
-            audit(
-                "delete",
-                f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
-                f"Removed StackSet '{name}' from {', '.join(surplus)}",
-                regions=surplus,
-            )
-        return self._instance_failures(cf, name)
-
-    def _instance_failures(self, cf: Any, name: str) -> list[str]:
-        failures = []
-        for inst in self._list_instances(cf, name):
-            if inst.get("Status") == "CURRENT":
-                continue
-            reason = inst.get("StatusReason") or inst.get("StackInstanceStatus", {}).get("DetailedStatus", "")
-            failures.append(
-                f"{inst.get('Account')} {inst.get('Region')}: {inst.get('Status')} {reason}".strip()
-            )
-        if failures:
-            audit(
-                "create",
-                f"stackset-instances:{name}",
-                Outcome.FAILED,
-                f"StackSet '{name}' has {plural(len(failures), 'out-of-date instance')}",
-                failures=failures,
-            )
-        return failures
-
-    def _wait(self, cf: Any, name: str, operation_id: str) -> str:
-        deadline = time.monotonic() + self._timeout_seconds
-        while True:
-            status = str(
-                cf.describe_stack_set_operation(StackSetName=name, OperationId=operation_id)[
-                    "StackSetOperation"
-                ]["Status"]
-            )
-            if status in TERMINAL_OPERATION_STATUSES:
-                return status
-            if time.monotonic() >= deadline:
-                raise GovernanceError(
-                    f"StackSet operation {operation_id} on '{name}' did not finish in "
-                    f"{int(self._timeout_seconds)} seconds (last status {status}). "
-                    "It keeps running in AWS; re-run tarmac when it has finished."
-                )
-            self._sleep(self._poll_seconds)
-
     def _deploy_management_stack(
         self,
         org_name: str,
@@ -351,41 +189,15 @@ class ConfigRecorderService:
     def _remove_stack_set(
         self, org_name: str, primary_region: str, management_account_id: str, dry_run: bool
     ) -> list[tuple[str, str, str]]:
-        name = Stack.CONFIG_RECORDER.for_org(org_name)
-        resource = f"StackSet {name}"
         cf = self.session_mgr.get_client("cloudformation", region_name=primary_region)
-        try:
-            existing = self._describe(cf, name)
-            if existing is None:
-                return [(resource, "NOT_FOUND", "StackSet does not exist")]
-            if not self._owned(existing):
-                return [(resource, "SKIPPED", f"Not created by tarmac (no {TAG_MANAGED_BY}=tarmac tag)")]
-            if dry_run:
-                return [(resource, "SIMULATED", "Would delete the StackSet and its stack instances")]
-            instances = self._list_instances(cf, name)
-            regions = sorted({str(i["Region"]) for i in instances})
-            if regions:
-                targets = self._targets(self._root_id(), management_account_id)
-                response = cf.delete_stack_instances(
-                    StackSetName=name,
-                    DeploymentTargets=targets,
-                    Regions=regions,
-                    RetainStacks=False,
-                    OperationPreferences=OPERATION_PREFERENCES,
-                )
-                self._wait(cf, name, response["OperationId"])
-                left = self._list_instances(cf, name)
-                if left:
-                    return [
-                        (resource, "FAILED", f"{plural(len(left), 'stack instance')} could not be deleted")
-                    ]
-            cf.delete_stack_set(StackSetName=name)
-            audit("delete", f"stackset:{name}", Outcome.SUCCEEDED, f"Deleted StackSet '{name}'")
-            return [
-                (resource, "DELETED", f"Deleted the StackSet and {plural(len(instances), 'stack instance')}")
-            ]
-        except AWS_ERRORS as e:
-            return [(resource, "FAILED", str(e))]
+        return [
+            self.stack_sets.remove(
+                cf,
+                Stack.CONFIG_RECORDER.for_org(org_name),
+                lambda: self._targets(self._root_id(), management_account_id),
+                dry_run,
+            )
+        ]
 
     def _remove_management_stack(
         self, org_name: str, region: str, management_account_id: str, dry_run: bool

@@ -8,13 +8,15 @@ from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
-from ..core.models import BaselineReport, StackDeployReport
+from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
+from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
 from ..core.text import plural
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
+from ..services.baseline_stacks import BaselineStacksService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
@@ -342,10 +344,16 @@ def _run_phase_4_accounts(
 
     account_service = AccountService(session_mgr)
     baseliner = BaselineService(session_mgr)
+    org_service = OrganizationService(session_mgr)
 
     wanted = {normalize_account_name(name) for name in only or []}
     declared = [a for a in bundle.accounts.accounts if not wanted or normalize_account_name(a.name) in wanted]
-    ou_map = _existing_ou_map(session_mgr, {a.ou for a in declared})
+    baseline_ous = (
+        set()
+        if wanted
+        else {t for s in bundle.org.baseline_stacks for t in s.target_ous if t.lower() != "root"}
+    )
+    ou_map = _existing_ou_map(session_mgr, {a.ou for a in declared} | baseline_ous)
     results = account_service.provision_accounts(
         declared, ou_map=ou_map, org_tags=bundle.get_organization_tags()
     )
@@ -368,6 +376,10 @@ def _run_phase_4_accounts(
                 custom_tags=custom_tags,
             )
             baseline_problems.extend(_baseline_failures(baseline_report))
+            try:
+                org_service.set_account_contacts(bundle.org.contacts, result.account_id)
+            except GovernanceError as e:
+                baseline_problems.append(f"{result.name} ({result.account_id}) {e.message}: {e.details}")
 
     failed_results = [r for r in results if r.status == "FAILED"]
     if failed_results:
@@ -390,6 +402,17 @@ def _run_phase_4_accounts(
 
     account_service.export_inventory(bundle.accounts, ou_map, project_root / "outputs")
     _ensure_delegated_admin(session_mgr, bundle)
+
+    if not wanted:
+        baseline_problems.extend(
+            BaselineStacksService(session_mgr, session_mgr.default_region).deploy(
+                bundle.org.organization.name,
+                bundle.org.baseline_stacks,
+                project_root,
+                {**ou_map, "root": OUService(session_mgr).get_root_id()},
+                merge_tags(bundle.get_organization_tags(), custom_tags, {TAG_MANAGED_BY: "tarmac"}),
+            )
+        )
 
     if baseline_problems:
         # Do not record the "accounts" milestone: the accounts exist, but their baseline is incomplete.

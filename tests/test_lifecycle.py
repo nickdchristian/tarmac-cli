@@ -237,6 +237,30 @@ def test_phase_4_does_not_report_success_when_a_baseline_step_failed(bundle, tmp
     org.record_phase_completed.assert_not_called()
 
 
+def test_phase_4_sets_contacts_on_every_account_and_reports_a_failure_without_stopping(bundle, tmp_path):
+    names = [a.name for a in bundle.accounts.accounts]
+    results = [_result(n, "SUCCEEDED", f"{i:012d}") for i, n in enumerate(names, start=1)]
+    reports = {n: BaselineReport(account_name=n, account_id="x") for n in names}
+    accounts, baseliner, org = _phase_4_mocks(results, reports)
+    org.set_account_contacts.side_effect = [
+        GovernanceError("Failed to set BILLING contact", details="denied")
+    ] + [[]] * (len(names) - 1)
+    mgr = MagicMock()
+    mgr.get_caller_identity.return_value = {"Account": "111111111111"}
+
+    with (
+        patch("tarmac.cli.deploy_phases.OUService", return_value=_ous(bundle)),
+        patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
+        patch("tarmac.cli.deploy_phases.BaselineService", return_value=baseliner),
+        patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org),
+        pytest.raises(AccountProvisioningError, match="failed baseline step") as exc,
+    ):
+        deploy_phases._run_phase_4_accounts(mgr, bundle, tmp_path)
+
+    assert [c.args[1] for c in org.set_account_contacts.call_args_list] == [r.account_id for r in results]
+    assert "Failed to set BILLING contact: denied" in str(exc.value.details)
+
+
 # phase 5: security-service failures and missing accounts are not silent
 
 
