@@ -4,7 +4,7 @@
 # or incident response tooling.
 
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS Governance - Member Account Monthly Budget with SNS Alerting
+Description: Monthly budget for a member account, with SNS alerts
 
 Parameters:
   AccountName:

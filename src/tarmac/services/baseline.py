@@ -253,10 +253,8 @@ class BaselineService:
         emails = list(budget_cfg.notification_emails)
         if len(emails) > 1:
             logger.info(
-                "FinOps Best Practice: Account '%s' specifies %d alert emails. "
-                "The SNS topic is configured with primary subscription '%s'. "
-                "Consider consolidating alerts to a shared team distribution list (e.g. finops-alerts@company.com) "
-                "or subscribing additional endpoints to the SNS topic.",
+                "Account '%s' lists %d alert emails; the SNS topic subscribes only '%s'. "
+                "A shared team mailbox, or more subscriptions on the topic, reaches everyone.",
                 account_name,
                 len(emails),
                 emails[0],

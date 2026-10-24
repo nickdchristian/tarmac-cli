@@ -113,7 +113,7 @@ class PermissionSetMixin(IdentityBase):
 
         return {
             "AWSTemplateFormatVersion": "2010-09-09",
-            "Description": "AWS Governance - IAM Identity Center Permission Sets",
+            "Description": "IAM Identity Center permission sets managed by tarmac",
             "Resources": resources,
         }
 

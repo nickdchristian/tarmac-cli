@@ -1,5 +1,5 @@
 # =============================================================================
-# AWS Governance: Management account root activity alert
+# Management account root activity alert
 # =============================================================================
 # The deny-root SCP does not apply to the management account, so root use there is
 # only visible, not blocked. This stack emails (and optionally posts to a webhook)
