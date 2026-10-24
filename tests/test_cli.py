@@ -790,8 +790,7 @@ def test_cli_deploy_dry_run_renders_every_phase(sample_config_dir, monkeypatch):
     for number in range(1, 7):
         assert f"Phase {number}: Title {number}" in result.stdout
     assert "Workloads" in result.stdout
-    assert "1 CREATE" in result.stdout
-    assert "6 NO CHANGE" in result.stdout
+    assert "Plan: 1 to create, 6 unchanged." in result.stdout
 
 
 def test_cli_deploy_dry_run_single_phase_json(sample_config_dir, monkeypatch):
