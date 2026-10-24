@@ -17,7 +17,7 @@ import pytest
 from botocore.response import StreamingBody
 from botocore.stub import ANY, Stubber
 
-from tarmac.cli.bootstrap import _grant
+from tarmac.cli.bootstrap import _github_role, _grant, _update_github_role_policy
 from tarmac.core.aws_client import AwsSessionManager
 from tarmac.core.exceptions import GovernanceError, IdentityCenterError
 from tarmac.core.inventory import Inventory
@@ -262,6 +262,114 @@ def test_bootstrap_grant_creates_the_deployment_permission_set_and_assigns_it():
         )
         _assign(stub, {"Status": "SUCCEEDED"})
         _grant(_identity(sso), INST, ACCOUNT, USER, "TarmacDeployment", policy)
+        stub.assert_no_pending_responses()
+
+
+_PROVIDER = f"arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com"
+_ROLE = {
+    "Role": {
+        "Path": "/",
+        "RoleName": "TarmacGitHubDeployment",
+        "RoleId": "AROAEXAMPLE1234567890",
+        "Arn": f"arn:aws:iam::{ACCOUNT}:role/TarmacGitHubDeployment",
+        "CreateDate": "2026-10-23T00:00:00Z",
+    }
+}
+
+
+def _github_mgr(iam: Any) -> Any:
+    mgr = _mgr(iam=iam)
+    mgr.get_caller_identity.return_value = {"Account": ACCOUNT, "Arn": f"arn:aws:iam::{ACCOUNT}:root"}
+    return mgr
+
+
+def _trust(branch: str) -> str:
+    host = "token.actions.githubusercontent.com"
+    return json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Federated": _PROVIDER},
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            f"{host}:aud": "sts.amazonaws.com",
+                            f"{host}:sub": f"repo:acme/landing-zone:ref:refs/heads/{branch}",
+                        }
+                    },
+                }
+            ],
+        }
+    )
+
+
+def test_github_role_trusts_only_the_branch_and_carries_the_deployment_policy():
+    iam = _client("iam")
+    tags = [{"Key": "tarmac:managed-by", "Value": "tarmac"}]
+    with Stubber(iam) as stub:
+        stub.add_client_error(
+            "get_open_id_connect_provider",
+            "NoSuchEntity",
+            expected_params={"OpenIDConnectProviderArn": _PROVIDER},
+        )
+        stub.add_response(
+            "create_open_id_connect_provider",
+            {"OpenIDConnectProviderArn": _PROVIDER},
+            {
+                "Url": "https://token.actions.githubusercontent.com",
+                "ClientIDList": ["sts.amazonaws.com"],
+                "Tags": tags,
+            },
+        )
+        stub.add_response(
+            "create_role",
+            _ROLE,
+            {
+                "RoleName": "TarmacGitHubDeployment",
+                "AssumeRolePolicyDocument": _trust("main"),
+                "MaxSessionDuration": 14400,
+                "Tags": tags,
+            },
+        )
+        stub.add_response(
+            "put_role_policy",
+            {},
+            {
+                "RoleName": "TarmacGitHubDeployment",
+                "PolicyName": "TarmacDeployment",
+                "PolicyDocument": deployment_policy(),
+            },
+        )
+        arn = _github_role(_github_mgr(iam), "acme/landing-zone", "main")
+        stub.assert_no_pending_responses()
+    assert arn == _ROLE["Role"]["Arn"]
+
+
+def test_github_role_rerun_updates_the_existing_role():
+    iam = _client("iam")
+    with Stubber(iam) as stub:
+        stub.add_response("get_open_id_connect_provider", {}, {"OpenIDConnectProviderArn": _PROVIDER})
+        stub.add_client_error("create_role", "EntityAlreadyExists")
+        stub.add_response(
+            "update_assume_role_policy",
+            {},
+            {"RoleName": "TarmacGitHubDeployment", "PolicyDocument": _trust("trunk")},
+        )
+        stub.add_response("get_role", _ROLE, {"RoleName": "TarmacGitHubDeployment"})
+        stub.add_response("put_role_policy", {}, None)
+        _github_role(_github_mgr(iam), "acme/landing-zone", "trunk")
+        stub.assert_no_pending_responses()
+
+
+def test_bootstrap_refreshes_the_github_role_policy_only_when_the_role_exists():
+    iam = _client("iam")
+    with Stubber(iam) as stub:
+        stub.add_response("put_role_policy", {}, None)
+        stub.add_client_error("put_role_policy", "NoSuchEntity")
+        assert _update_github_role_policy(iam) is True
+        assert _update_github_role_policy(iam) is False
         stub.assert_no_pending_responses()
 
 
