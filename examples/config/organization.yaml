@@ -78,6 +78,15 @@ ou_structure:
   - name: "Suspended"
     description: "Quarantined or decommissioned accounts"
 
+# Your own CloudFormation templates, deployed to the accounts in these OUs through StackSets (phase 4)
+# baseline_stacks:
+#   - name: "iam-password-policy"
+#     template_file: "templates/password-policy.yaml"
+#     target_ous: ["Workloads", "Sandbox"]   # or "root" for every account
+#     regions: ["us-east-1"]
+#     parameters:
+#       MinimumLength: "14"
+
 # Organization-wide CloudTrail configuration
 cloudtrail:
   trail_name: "myorg-organization-trail"
