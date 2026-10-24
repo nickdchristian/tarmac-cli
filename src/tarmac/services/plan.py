@@ -472,6 +472,14 @@ class Planner:
                     if stale:
                         action, detail = "UPDATE", "tags " + ", ".join(stale)
                 phase.items.append(PlanItem("account", acct.name, action, detail, acct.name))
+                if current.account_id and current.action != "SUSPENDED":
+                    self._check(
+                        phase,
+                        "alternate contacts",
+                        "billing, operations, security",
+                        lambda a=current.account_id: self._member_contacts(a),
+                        acct.name,
+                    )
             budget = acct.baseline.budget if acct.baseline else None
             if not budget or (current is not None and current.action == "SUSPENDED"):
                 continue
@@ -497,6 +505,20 @@ class Planner:
                 if item.action == "SUSPEND":
                     phase.items.append(PlanItem("account", item.name, "SUSPEND", item.reason, item.name))
         phase.notes.append("Account IDs are written to outputs/accounts.json and outputs/accounts.env.")
+
+    def _member_contacts(self, account_id: str) -> tuple[str, str]:
+        org = OrganizationService(self.session_mgr)
+        contacts = self.bundle.org.contacts
+        stale = [
+            label.lower()
+            for label, contact in (
+                ("BILLING", contacts.billing),
+                ("OPERATIONS", contacts.operations),
+                ("SECURITY", contacts.security),
+            )
+            if not org._contact_matches(org._current_contact(label, account_id), contact)
+        ]
+        return ("UPDATE", "set " + ", ".join(stale)) if stale else (NO_CHANGE, "")
 
     # Phase 5
 

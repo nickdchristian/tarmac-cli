@@ -14,7 +14,7 @@ organization:
     CostCenter: "1040"
     Owner: "CloudPlatform"
 
-# Alternate contacts for the AWS Management Account
+# Alternate contacts for the management account and every member account
 contacts:
   billing:
     name: "Billing Team"
