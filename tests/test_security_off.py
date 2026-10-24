@@ -91,7 +91,7 @@ def test_security_hub_is_disabled_after_a_warning(monkeypatch, capsys):
     item = TeardownItemReport(
         "Security Hub (us-east-1)", "hub", AUDIT, AUDIT, "DELETED", "Disable Security Hub"
     )
-    off.disable_securityhub.side_effect = lambda *a, dry_run: [item] if not dry_run else [item]
+    off.disable_securityhub.return_value = [item]
     monkeypatch.setattr(deploy_phases, "SecurityServicesOff", lambda _s: off)
 
     deploy_phases._turn_off_security_services(MagicMock(), bundle, "us-east-1", {"audit": AUDIT})
