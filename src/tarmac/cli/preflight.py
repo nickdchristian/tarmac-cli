@@ -109,7 +109,7 @@ def _evaluate_cli_report(report: PreflightReport, strict: bool) -> None:
         raise typer.Exit(code=1)
 
     if strict and report.warnings > 0:
-        error_console.print(f"\n[yellow]![/yellow] {summary_msg}")
+        error_console.print(f"\n[yellow]Warning:[/yellow] {summary_msg}")
         error_console.print(
             "[bold yellow]Strict mode: Aborting due to unresolved pre-flight warnings.[/bold yellow]\n"
         )

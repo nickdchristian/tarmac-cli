@@ -565,7 +565,7 @@ def destroy_command(
 
     console.print(table)
     if report.status == "FAILED":
-        print_warning(f"Teardown finished with {report.failed_count} failure(s).")
+        error_console.print(f"[red]Error: teardown finished with {report.failed_count} failure(s).[/red]")
         raise typer.Exit(code=1)
     if dry_run:
         print_info("Teardown dry-run simulation complete.")
