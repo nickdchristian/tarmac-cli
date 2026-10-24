@@ -28,7 +28,7 @@ from ..core.templates import resolve_resource_path
 from .accounts import AccountService
 from .baseline import BUDGET_TEMPLATE, budget_parameters, budget_stack_name
 from .cloudformation import CloudFormationService, lock_table_wanted
-from .config_recorder import ConfigRecorderService, service_linked_role_arn
+from .config_recorder import service_linked_role_arn
 from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService
@@ -46,6 +46,7 @@ from .stack_parameters import (
     root_alert_parameters,
     root_alert_regions,
 )
+from .stackset import StackSetService
 
 PHASE_TITLES = {
     1: "Organization",
@@ -627,20 +628,20 @@ class Planner:
             )
 
     def _stack_set(self, name: str, parameters: dict[str, str]) -> tuple[str, str]:
-        recorder = ConfigRecorderService(self.session_mgr, self.cfn)
-        existing = recorder._describe(
+        stack_sets = StackSetService()
+        existing = stack_sets.describe(
             self.session_mgr.get_client("cloudformation", region_name=self.region), name
         )
         if existing is None:
             return "CREATE", ""
-        if not recorder._owned(existing):
+        if not stack_sets.owned(existing):
             return "BLOCKED", f"exists without the {TAG_MANAGED_BY}=tarmac tag; tarmac will not update it"
         body = resolve_resource_path(
             "cloudformation/config-recorder.yaml", project_root=self.project_root
         ).read_text(encoding="utf-8")
         cfn_parameters = [{"ParameterKey": k, "ParameterValue": v} for k, v in parameters.items()]
         tags = merge_tags(self.org_tags, self.custom_tags, {TAG_MANAGED_BY: "tarmac"})
-        if recorder._unchanged(existing, body, cfn_parameters, tags):
+        if stack_sets.unchanged(existing, body, cfn_parameters, tags):
             return NO_CHANGE, "Region instances are reconciled on apply"
         return "UPDATE", ""
 
