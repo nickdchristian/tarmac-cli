@@ -81,6 +81,13 @@ Keep your config in a GitHub repository and let merges to `main` deploy it:
 tarmac bootstrap --github-repo OWNER/REPO   # as root or ManagementAdministrator; --github-branch if not main
 ```
 
+Repositories created, renamed or transferred after 15 July 2026 identify their workflow runs by
+[immutable owner and repository IDs](https://docs.github.com/en/actions/reference/security/oidc), so pass
+`--github-repo OWNER@ID/REPO@ID` for those. Get it with
+`gh api repos/OWNER/REPO --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'`. With the wrong form, AWS refuses
+the workflow with "Not authorized to perform sts:AssumeRoleWithWebIdentity"; run `bootstrap` again with the other
+form.
+
 This adds GitHub's OIDC provider and the `TarmacGitHubDeployment` role, with the same policy as
 `TarmacDeployment`, to the management account. Only workflow runs on that branch can assume it, so protect the
 branch and require pull request reviews. Pull requests get no AWS access, because whoever opens one can change

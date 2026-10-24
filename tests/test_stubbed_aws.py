@@ -283,7 +283,7 @@ def _github_mgr(iam: Any) -> Any:
     return mgr
 
 
-def _trust(branch: str) -> str:
+def _trust(branch: str, repo: str = "acme/landing-zone") -> str:
     host = "token.actions.githubusercontent.com"
     return json.dumps(
         {
@@ -296,7 +296,7 @@ def _trust(branch: str) -> str:
                     "Condition": {
                         "StringEquals": {
                             f"{host}:aud": "sts.amazonaws.com",
-                            f"{host}:sub": f"repo:acme/landing-zone:ref:refs/heads/{branch}",
+                            f"{host}:sub": f"repo:{repo}:ref:refs/heads/{branch}",
                         }
                     },
                 }
@@ -360,6 +360,24 @@ def test_github_role_rerun_updates_the_existing_role():
         stub.add_response("get_role", _ROLE, {"RoleName": "TarmacGitHubDeployment"})
         stub.add_response("put_role_policy", {}, None)
         _github_role(_github_mgr(iam), "acme/landing-zone", "trunk")
+        stub.assert_no_pending_responses()
+
+
+def test_github_role_trusts_the_immutable_subject_as_given():
+    """Repositories created after 15 July 2026 send repo:OWNER@ID/REPO@ID; the trust must match it exactly."""
+    iam = _client("iam")
+    repo = "acme@123/landing-zone@456"
+    with Stubber(iam) as stub:
+        stub.add_response("get_open_id_connect_provider", {}, {"OpenIDConnectProviderArn": _PROVIDER})
+        stub.add_client_error("create_role", "EntityAlreadyExists")
+        stub.add_response(
+            "update_assume_role_policy",
+            {},
+            {"RoleName": "TarmacGitHubDeployment", "PolicyDocument": _trust("main", repo)},
+        )
+        stub.add_response("get_role", _ROLE, {"RoleName": "TarmacGitHubDeployment"})
+        stub.add_response("put_role_policy", {})
+        _github_role(_github_mgr(iam), repo, "main")
         stub.assert_no_pending_responses()
 
 

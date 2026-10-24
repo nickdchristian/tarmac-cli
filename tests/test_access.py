@@ -228,12 +228,13 @@ def test_bootstrap_fails_with_aws_reason_when_an_assignment_fails(
     assert not (tmp_path / ".aws").exists()
 
 
-def test_bootstrap_rejects_a_github_repo_that_is_not_owner_slash_repo(writable_config_dir: Path) -> None:
-    result = runner.invoke(
-        app, ["bootstrap", "-c", str(writable_config_dir), "--github-repo", "landing-zone"]
-    )
+@pytest.mark.parametrize("repo", ["landing-zone", "acme@1/landing-zone", "acme/landing-zone@x"])
+def test_bootstrap_rejects_a_github_repo_that_is_not_owner_slash_repo(
+    writable_config_dir: Path, repo: str
+) -> None:
+    result = runner.invoke(app, ["bootstrap", "-c", str(writable_config_dir), "--github-repo", repo])
     assert result.exit_code == 1
-    assert "OWNER/REPO" in result.output
+    assert "OWNER/REPO or OWNER@ID/REPO@ID" in result.output
 
 
 def test_bootstrap_without_identity_center_says_what_to_enable(

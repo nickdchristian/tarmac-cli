@@ -180,7 +180,10 @@ def bootstrap_command(
         str | None,
         typer.Option(
             "--github-repo",
-            help="OWNER/REPO whose GitHub Actions runs on --github-branch may deploy with tarmac",
+            help=(
+                "OWNER/REPO whose GitHub Actions runs on --github-branch may deploy with tarmac; "
+                "OWNER@ID/REPO@ID for repositories created, renamed or transferred after 15 July 2026"
+            ),
         ),
     ] = None,
     github_branch: Annotated[str, typer.Option("--github-branch", help="Branch trusted to deploy")] = "main",
@@ -196,8 +199,10 @@ def bootstrap_command(
     """
     bundle = load_configs_or_exit(config_dir)
     github_message = None
-    if github_repo is not None and not re.fullmatch(r"[\w.-]+/[\w.-]+", github_repo):
-        error_console.print(f"[red]--github-repo must look like OWNER/REPO, not '{github_repo}'.[/red]")
+    if github_repo is not None and not re.fullmatch(r"[\w.-]+/[\w.-]+|[\w.-]+@\d+/[\w.-]+@\d+", github_repo):
+        error_console.print(
+            f"[red]--github-repo must look like OWNER/REPO or OWNER@ID/REPO@ID, not '{github_repo}'.[/red]"
+        )
         raise typer.Exit(code=1)
     admin = bundle.identity.identity_center.admin_user
     session_mgr = AwsSessionManager()
@@ -233,6 +238,11 @@ def bootstrap_command(
     )
     if github_message:
         print_success(github_message)
+    if github_repo and "@" not in github_repo:
+        print_info(
+            "Repositories created, renamed or transferred after 15 July 2026 need OWNER@ID/REPO@ID instead: "
+            f"gh api repos/{github_repo} --jq '\"\\(.owner.login)@\\(.owner.id)/\\(.name)@\\(.id)\"'"
+        )
 
     config_path = Path("~/.aws/config").expanduser()
     _append_section(
