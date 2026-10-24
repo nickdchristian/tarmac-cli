@@ -1,9 +1,11 @@
 """tarmac bootstrap: the IAM Identity Center login tarmac runs as."""
 
+import json
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
 
@@ -20,6 +22,8 @@ from .common import ConfigDirOption, load_configs_or_exit
 from .ui import error_console, print_info, print_success
 
 PROFILE = "tarmac"
+GITHUB_ROLE = "TarmacGitHubDeployment"
+GITHUB_OIDC_HOST = "token.actions.githubusercontent.com"
 
 
 def _append_section(config_path: Path, name: str, fields: dict[str, str]) -> bool:
@@ -111,14 +115,95 @@ def _grant(
         )
 
 
-def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
+def _github_role(session_mgr: AwsSessionManager, repo: str, branch: str) -> str:
+    """Let GitHub Actions runs on the repository's branch assume a role with tarmac's deployment policy.
+
+    Pull requests get no role: anyone who can open one can change the workflow and use its credentials.
+    """
+    iam: Any = session_mgr.get_client("iam")
+    caller = session_mgr.get_caller_identity()
+    partition = str(caller["Arn"]).split(":")[1]
+    provider_arn = f"arn:{partition}:iam::{caller['Account']}:oidc-provider/{GITHUB_OIDC_HOST}"
+    tags = [{"Key": TAG_MANAGED_BY, "Value": "tarmac"}]
+    try:
+        iam.get_open_id_connect_provider(OpenIDConnectProviderArn=provider_arn)
+    except iam.exceptions.NoSuchEntityException:
+        iam.create_open_id_connect_provider(
+            Url=f"https://{GITHUB_OIDC_HOST}", ClientIDList=["sts.amazonaws.com"], Tags=tags
+        )
+    trust = json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Federated": provider_arn},
+                    "Action": "sts:AssumeRoleWithWebIdentity",
+                    "Condition": {
+                        "StringEquals": {
+                            f"{GITHUB_OIDC_HOST}:aud": "sts.amazonaws.com",
+                            f"{GITHUB_OIDC_HOST}:sub": f"repo:{repo}:ref:refs/heads/{branch}",
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    try:
+        arn = iam.create_role(
+            RoleName=GITHUB_ROLE,
+            AssumeRolePolicyDocument=trust,
+            MaxSessionDuration=14400,
+            Tags=tags,
+        )["Role"]["Arn"]
+    except iam.exceptions.EntityAlreadyExistsException:
+        iam.update_assume_role_policy(RoleName=GITHUB_ROLE, PolicyDocument=trust)
+        arn = iam.get_role(RoleName=GITHUB_ROLE)["Role"]["Arn"]
+    _update_github_role_policy(iam)
+    return str(arn)
+
+
+def _update_github_role_policy(iam: Any) -> bool:
+    """Give the GitHub role the current deployment policy; False when there is no GitHub role."""
+    try:
+        iam.put_role_policy(
+            RoleName=GITHUB_ROLE, PolicyName=DEPLOYMENT_PERMISSION_SET, PolicyDocument=deployment_policy()
+        )
+    except iam.exceptions.NoSuchEntityException:
+        return False
+    return True
+
+
+def bootstrap_command(
+    config_dir: ConfigDirOption = None,
+    github_repo: Annotated[
+        str | None,
+        typer.Option(
+            "--github-repo",
+            help=(
+                "OWNER/REPO whose GitHub Actions runs on --github-branch may deploy with tarmac; "
+                "OWNER@ID/REPO@ID for repositories created, renamed or transferred after 15 July 2026"
+            ),
+        ),
+    ] = None,
+    github_branch: Annotated[str, typer.Option("--github-branch", help="Branch trusted to deploy")] = "main",
+) -> None:
     """Create your IAM Identity Center login for the management account, and the AWS CLI profile tarmac runs with.
 
     The admin_user from identity.yaml gets two permission sets there: TarmacDeployment, tarmac's least-privilege
     policy, and ManagementAdministrator for the console. Run this once as root from AWS CloudShell after enabling
     IAM Identity Center, and again after upgrading tarmac to refresh TarmacDeployment's policy.
+
+    With --github-repo it also lets GitHub Actions runs on that repository's --github-branch deploy, through the
+    TarmacGitHubDeployment role with the same policy.
     """
     bundle = load_configs_or_exit(config_dir)
+    github_message = None
+    if github_repo is not None and not re.fullmatch(r"[\w.-]+/[\w.-]+|[\w.-]+@\d+/[\w.-]+@\d+", github_repo):
+        error_console.print(
+            f"[red]--github-repo must look like OWNER/REPO or OWNER@ID/REPO@ID, not '{github_repo}'.[/red]"
+        )
+        raise typer.Exit(code=1)
     admin = bundle.identity.identity_center.admin_user
     session_mgr = AwsSessionManager()
     try:
@@ -139,6 +224,11 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
         user_id = identity.get_or_create_user(admin)
         _grant(identity, instance_arn, account_id, user_id, DEPLOYMENT_PERMISSION_SET, deployment_policy())
         _grant(identity, instance_arn, account_id, user_id, MANAGEMENT_ADMIN_PERMISSION_SET, None)
+        if github_repo:
+            role_arn = _github_role(session_mgr, github_repo, github_branch)
+            github_message = f"GitHub Actions runs on {github_repo}@{github_branch} can deploy as {role_arn}."
+        elif _update_github_role_policy(session_mgr.get_client("iam")):
+            github_message = f"Updated the policy of {GITHUB_ROLE}, the role GitHub Actions deploys with."
     except AWS_ERRORS as e:
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")
         raise typer.Exit(code=1)
@@ -146,6 +236,13 @@ def bootstrap_command(config_dir: ConfigDirOption = None) -> None:
         f"'{admin.username}' can sign in to account {account_id} as {DEPLOYMENT_PERMISSION_SET} (tarmac) "
         f"and {MANAGEMENT_ADMIN_PERMISSION_SET} (the console)."
     )
+    if github_message:
+        print_success(github_message)
+    if github_repo and "@" not in github_repo:
+        print_info(
+            "Repositories created, renamed or transferred after 15 July 2026 need OWNER@ID/REPO@ID instead: "
+            f"gh api repos/{github_repo} --jq '\"\\(.owner.login)@\\(.owner.id)/\\(.name)@\\(.id)\"'"
+        )
 
     config_path = Path("~/.aws/config").expanduser()
     _append_section(

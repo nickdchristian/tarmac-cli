@@ -11,7 +11,8 @@
       "prerelease": false,
       "include-component-in-tag": false,
       "extra-files": [
-        "src/tarmac/__init__.py"
+        "src/tarmac/__init__.py",
+        "examples/github/tarmac.yml"
       ]
     }
   }
