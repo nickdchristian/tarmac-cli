@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
-from ..core.config_schema import BaselineStackDef, OUDef, ServiceControlPoliciesConfig
+from ..core.config_schema import BaselineStackDef, GroupDef, OUDef, ServiceControlPoliciesConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code
 from ..core.models import TAG_MANAGED_BY
 from ..core.org_accounts import get_active_account_id_map
@@ -814,6 +814,38 @@ class Planner:
                         else ("CREATE", "")
                     ),
                 )
+            if group_id:
+                self._undeclared_access(phase, identity, instance_arn, group, group_id, permission_sets)
+
+    def _undeclared_access(
+        self,
+        phase: PhasePlan,
+        identity: IdentityService,
+        instance_arn: str,
+        group: GroupDef,
+        group_id: str,
+        permission_sets: dict[str, str],
+    ) -> None:
+        """What a deploy removes from the group because identity.yaml no longer declares it."""
+        managed = {normalize_account_name(a.name) for a in self.bundle.accounts.accounts}
+        managed_ids = {i for name, i in self.accounts.items() if normalize_account_name(name) in managed}
+        try:
+            assignments, members = identity.undeclared_access(
+                instance_arn, group, group_id, permission_sets, self.accounts, managed_ids
+            )
+        except AWS_ERRORS as e:
+            phase.items.append(PlanItem("group", group.name, UNKNOWN, f"could not read its access: {e}"))
+            return
+        set_names = {arn: name for name, arn in permission_sets.items()}
+        account_names = {i: name for name, i in self.accounts.items()}
+        for account_id, ps_arn in assignments:
+            account = account_names.get(account_id, account_id)
+            name = f"{group.name} -> {set_names.get(ps_arn, ps_arn)}"
+            phase.items.append(PlanItem("assignment", name, "DELETE", "not in identity.yaml", account))
+        for username in members:
+            phase.items.append(
+                PlanItem("membership", f"{username} in {group.name}", "DELETE", "not in identity.yaml")
+            )
 
     def _permission_sets(
         self, identity: IdentityService, session: AwsSessionManager, instance_arn: str

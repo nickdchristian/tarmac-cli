@@ -115,6 +115,11 @@ account.
 | 5 | Terraform state backend, audit account, AWS Config, GuardDuty, Security Hub, root user alert |
 | 6 | Identity Center permission sets, users, groups and assignments |
 
+Groups in `identity.yaml` get exactly the members and account assignments listed there: phase 6 removes anyone
+else from the group, and the group's other assignments on the accounts in `accounts.yaml`. Assignments on the
+management account and other accounts tarmac doesn't manage are left alone, as are users and groups that aren't in
+`identity.yaml`. The dry run lists every removal.
+
 Following AWS's guidance, the management account holds only what has to live there:
 
 - **Management account:** Organizations, SCPs, Identity Center, the trail's stack, the AWS Config StackSet, and

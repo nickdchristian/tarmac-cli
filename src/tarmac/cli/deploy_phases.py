@@ -624,6 +624,7 @@ def _run_phase_6_identity(
         org_name=bundle.org.organization.name,
         org_tags=bundle.get_organization_tags(),
         custom_tags=custom_tags,
+        managed_accounts=[a.name for a in bundle.accounts.accounts],
     )
 
     _record_phase(session_mgr, "identity")
@@ -632,3 +633,8 @@ def _run_phase_6_identity(
         f"{plural(len(report.users_synced), 'user')}, {plural(report.assignments_created, 'assignment')}, "
         f"and {plural(report.memberships_added, 'membership')}."
     )
+    if report.assignments_removed or report.memberships_removed:
+        print_success(
+            f"Removed {plural(report.assignments_removed, 'assignment')} and "
+            f"{plural(report.memberships_removed, 'membership')} that identity.yaml no longer declares."
+        )

@@ -748,3 +748,94 @@ def test_existing_sets_missing_from_an_existing_stack_are_imported_into_it(tmp_p
     }
     assert resources["PermissionSetDeploy"]["Properties"]["Name"] == "Deploy"
     cfn.update_stack.assert_called()
+
+
+def _access_service(assignments: list[tuple[str, str]], members: dict[str, str]) -> IdentityService:
+    """An IdentityService whose group holds ``assignments`` and has ``members`` ({username: user id})."""
+    session_mgr = MagicMock()
+    sso, idstore = MagicMock(), MagicMock()
+    session_mgr.get_client.side_effect = lambda name, **_: {"sso-admin": sso, "identitystore": idstore}.get(
+        name, MagicMock()
+    )
+    sso.list_instances.return_value = {"Instances": [{"InstanceArn": "arn:i", "IdentityStoreId": "d-1"}]}
+    sso.get_paginator.return_value.paginate.return_value = [
+        {"AccountAssignments": [{"AccountId": a, "PermissionSetArn": p} for a, p in assignments]}
+    ]
+    idstore.get_paginator.return_value.paginate.return_value = [
+        {
+            "GroupMemberships": [
+                {"MembershipId": f"m-{u}", "MemberId": {"UserId": uid}} for u, uid in members.items()
+            ]
+        }
+    ]
+    by_id = {uid: u for u, uid in members.items()}
+    idstore.describe_user.side_effect = lambda IdentityStoreId, UserId: {"UserName": by_id[UserId]}
+    return IdentityService(session_mgr)
+
+
+def test_undeclared_access_is_found_only_on_the_accounts_tarmac_manages():
+    service = _access_service(
+        assignments=[("111", "arn:admin"), ("111", "arn:read"), ("222", "arn:read"), ("999", "arn:admin")],
+        members={"alice": "u-1", "bob": "u-2"},
+    )
+    group = GroupDef(
+        name="Admins",
+        members=["alice"],
+        assignments=[AssignmentDef(permission_set="Admin", accounts=["dev"])],
+    )
+    assignments, members = service.undeclared_access(
+        "arn:i",
+        group,
+        "g-1",
+        {"Admin": "arn:admin", "Read": "arn:read"},
+        {"dev": "111", "prod": "222", "management": "999"},
+        managed_ids={"111", "222"},
+    )
+    # 999 (the management account) is not in accounts.yaml, so its assignment is left alone.
+    assert assignments == [("111", "arn:read"), ("222", "arn:read")]
+    assert members == {"bob": "m-bob"}
+
+
+def test_sync_identity_removes_what_identity_yaml_no_longer_declares(monkeypatch):
+    service = _access_service(assignments=[("111", "arn:read")], members={"bob": "u-2"})
+    monkeypatch.setattr(
+        service, "sync_permission_sets_via_cloudformation", lambda *a, **k: {"Read": "arn:read"}
+    )
+    monkeypatch.setattr(service, "get_or_create_user", lambda user: f"u-{user.username}")
+    monkeypatch.setattr(service, "sync_groups_and_assignments", lambda *a: (0, {"Admins": "g-1"}, ["Admins"]))
+    monkeypatch.setattr(service, "sync_group_memberships", lambda *a: 0)
+    removed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        service,
+        "delete_account_assignment",
+        lambda inst, acct, ps, kind, pid: removed.append((acct, ps)) or True,
+    )
+    cfg = IdentityCenterConfig(
+        admin_user=UserDef(username="admin", email="a@example.com", first_name="A", last_name="U"),
+        breakglass_user=UserDef(username="bg", email="b@example.com", first_name="B", last_name="G"),
+        groups=[GroupDef(name="Admins", members=[], assignments=[])],
+    )
+
+    report = service.sync_identity(cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"])
+
+    assert removed == [("111", "arn:read")]
+    assert (report.assignments_removed, report.memberships_removed) == (1, 1)
+    service.identitystore_client.delete_group_membership.assert_called_once_with(
+        IdentityStoreId="d-1", MembershipId="m-bob"
+    )
+
+
+def test_an_assignment_that_cannot_be_removed_fails_the_sync(monkeypatch):
+    service = _access_service(assignments=[("111", "arn:read")], members={})
+    monkeypatch.setattr(service, "sync_permission_sets_via_cloudformation", lambda *a, **k: {})
+    monkeypatch.setattr(service, "get_or_create_user", lambda user: "u")
+    monkeypatch.setattr(service, "sync_groups_and_assignments", lambda *a: (0, {"Admins": "g-1"}, ["Admins"]))
+    monkeypatch.setattr(service, "sync_group_memberships", lambda *a: 0)
+    monkeypatch.setattr(service, "delete_account_assignment", lambda *a: False)
+    cfg = IdentityCenterConfig(
+        admin_user=UserDef(username="admin", email="a@example.com", first_name="A", last_name="U"),
+        breakglass_user=UserDef(username="bg", email="b@example.com", first_name="B", last_name="G"),
+        groups=[GroupDef(name="Admins")],
+    )
+    with pytest.raises(IdentityCenterError, match="Could not remove 1 undeclared assignment"):
+        service.sync_identity(cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"])
