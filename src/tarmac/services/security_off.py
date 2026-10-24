@@ -1,7 +1,9 @@
 """GuardDuty or Security Hub turned off in the config.
 
-GuardDuty is suspended: monitoring and charges stop, findings are kept, and turning it back on resumes it. Security Hub
-has no suspend, so it is disabled, and AWS then deletes its findings (archived after 30 days, active after 90).
+GuardDuty is suspended in the member accounts: monitoring and charges stop, findings are kept, and turning it back on
+resumes it. It stays on in the audit account, because AWS only suspends a detector once its members are disassociated.
+Security Hub has no suspend, so it is disabled, and AWS then deletes its findings (archived after 30 days, active
+after 90).
 """
 
 import logging
@@ -12,6 +14,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.models import TeardownItemReport
+from ..core.text import plural
 from .teardown_security import SecurityServicesTeardown
 
 logger = logging.getLogger(__name__)
@@ -33,7 +36,11 @@ class SecurityServicesOff:
         return any(a.get(key) == audit_id for a in admins.get("AdminAccounts", []))
 
     def suspend_guardduty(self, audit_id: str, regions: list[str], dry_run: bool) -> list[TeardownItemReport]:
-        """Stop monitoring the members and the audit account's own detector, keeping the delegation and findings."""
+        """Stop monitoring the member accounts, keeping the delegation, the members and their findings.
+
+        The audit account's own detector stays on: "All member accounts must be disassociated or deleted before you
+        can suspend or disable GuardDuty", and disassociating them would undo the setup turning it back on resumes.
+        """
         results: list[TeardownItemReport] = []
         for region in regions:
             if not self._delegated("guardduty", region, audit_id):
@@ -48,11 +55,11 @@ class SecurityServicesOff:
                     for m in page.get("Members", [])
                     if m.get("RelationshipStatus") == "Enabled"
                 ]
-                if gd.get_detector(DetectorId=detector).get("Status") == "DISABLED" and not members:
+                if not members:
                     continue
                 name = region
                 if dry_run:
-                    message = f"Would suspend it in the audit account and {len(members)} member accounts"
+                    message = f"Would suspend it in {plural(len(members), 'member account')}"
                     results.append(
                         TeardownItemReport("GuardDuty", name, "audit", audit_id, "SIMULATED", message)
                     )
@@ -70,13 +77,9 @@ class SecurityServicesOff:
                     results.append(TeardownItemReport("GuardDuty", name, "audit", audit_id, "FAILED", str(e)))
                     continue
                 message = (
-                    f"Suspended it in {len(members)} member accounts and the audit account; findings are kept"
+                    f"Suspended it in {plural(len(members), 'member account')}; findings are kept. It stays on in "
+                    "the audit account, since AWS needs the members disassociated to suspend it there"
                 )
-                try:
-                    gd.update_detector(DetectorId=detector, Enable=False)
-                except ClientError as e:
-                    # The members carry the cost; the audit account's own detector is reported, not retried as a failure.
-                    message = f"Suspended it in {len(members)} member accounts; it stays on in the audit account: {e}"
                 results.append(TeardownItemReport("GuardDuty", name, "audit", audit_id, "DELETED", message))
         return results
 

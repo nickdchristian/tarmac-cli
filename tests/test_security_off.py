@@ -3,8 +3,6 @@
 from typing import Any
 from unittest.mock import MagicMock
 
-from botocore.exceptions import ClientError
-
 from tarmac.cli import deploy_phases
 from tarmac.core.models import TeardownItemReport
 from tarmac.services.security import SecurityServicesService
@@ -13,9 +11,7 @@ from tarmac.services.security_off import SECURITY_HUB_WARNING, SecurityServicesO
 AUDIT = "222222222222"
 
 
-def _guardduty(
-    delegated: bool = True, status: str = "ENABLED", members: list[str] | None = None
-) -> tuple[Any, Any]:
+def _guardduty(delegated: bool = True, members: list[str] | None = None) -> tuple[Any, Any]:
     """A session whose management GuardDuty client lists the delegated admin, and the audit account's client."""
     mgr, management, audit_gd = MagicMock(), MagicMock(), MagicMock()
     management.list_organization_admin_accounts.return_value = {
@@ -24,14 +20,13 @@ def _guardduty(
     mgr.get_client.return_value = management
     mgr.get_member_client.return_value = audit_gd
     audit_gd.list_detectors.return_value = {"DetectorIds": ["det-1"]}
-    audit_gd.get_detector.return_value = {"Status": status}
     audit_gd.get_paginator.return_value.paginate.return_value = [
         {"Members": [{"AccountId": a, "RelationshipStatus": "Enabled"} for a in members or []]}
     ]
     return mgr, audit_gd
 
 
-def test_guardduty_is_suspended_in_the_members_and_the_audit_account():
+def test_guardduty_is_suspended_in_the_members_and_stays_on_in_the_audit_account():
     mgr, gd = _guardduty(members=["111", "333"])
 
     items = SecurityServicesOff(mgr).suspend_guardduty(AUDIT, ["us-east-1"], dry_run=False)
@@ -40,27 +35,18 @@ def test_guardduty_is_suspended_in_the_members_and_the_audit_account():
         DetectorId="det-1", AutoEnableOrganizationMembers="NONE"
     )
     gd.stop_monitoring_members.assert_called_once_with(DetectorId="det-1", AccountIds=["111", "333"])
-    gd.update_detector.assert_called_once_with(DetectorId="det-1", Enable=False)
+    # AWS only suspends an administrator's detector once its members are disassociated.
+    gd.update_detector.assert_not_called()
     gd.delete_detector.assert_not_called()
-    assert [(i.action, i.message) for i in items] == [
-        ("DELETED", "Suspended it in 2 member accounts and the audit account; findings are kept")
-    ]
-
-
-def test_an_audit_detector_aws_will_not_suspend_is_reported_without_failing():
-    mgr, gd = _guardduty(members=["111"])
-    gd.update_detector.side_effect = ClientError(
-        {"Error": {"Code": "BadRequestException", "Message": "no"}}, "x"
-    )
-
-    (item,) = SecurityServicesOff(mgr).suspend_guardduty(AUDIT, ["us-east-1"], dry_run=False)
-
+    (item,) = items
     assert item.action == "DELETED"
+    assert item.message.startswith("Suspended it in 2 member accounts; findings are kept.")
     assert "stays on in the audit account" in item.message
 
 
 def test_guardduty_already_suspended_or_not_run_by_tarmac_is_left_alone():
-    for mgr, gd in (_guardduty(status="DISABLED"), _guardduty(delegated=False, members=["111"])):
+    # Once suspended, the members no longer show as Enabled, so a second deploy changes nothing.
+    for mgr, gd in (_guardduty(members=[]), _guardduty(delegated=False, members=["111"])):
         assert SecurityServicesOff(mgr).suspend_guardduty(AUDIT, ["us-east-1"], dry_run=False) == []
         gd.stop_monitoring_members.assert_not_called()
 
