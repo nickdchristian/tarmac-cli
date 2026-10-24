@@ -65,7 +65,7 @@ def _bundle(guardduty: dict | None = None) -> SimpleNamespace:
 
 def test_creates_the_export_when_the_detector_has_none():
     gd = _gd()
-    assert reconcile_findings_export(gd, "det", ON, "eu-west-1") == "CREATE"
+    assert reconcile_findings_export(gd, "det", ON, "eu-west-1")[0] == "CREATE"
     gd.create_publishing_destination.assert_called_once_with(
         DetectorId="det", DestinationType="S3", DestinationProperties=_wanted()
     )
@@ -73,32 +73,43 @@ def test_creates_the_export_when_the_detector_has_none():
 
 def test_leaves_a_matching_export_alone():
     gd = _gd(_wanted())
-    assert reconcile_findings_export(gd, "det", ON, "eu-west-1") == "NO CHANGE"
+    assert reconcile_findings_export(gd, "det", ON, "eu-west-1")[0] == "NO CHANGE"
     gd.create_publishing_destination.assert_not_called()
     gd.update_publishing_destination.assert_not_called()
 
 
-def test_repoints_an_existing_export_since_a_detector_has_only_one():
-    gd = _gd({"DestinationArn": "arn:aws:s3:::elsewhere", "KmsKeyArn": "arn:aws:kms:eu-west-1:1:key/x"})
-    assert reconcile_findings_export(gd, "det", ON, "eu-west-1") == "UPDATE"
+def test_repoints_tarmacs_own_export_when_it_changes():
+    gd = _gd({**_wanted(), "KmsKeyArn": "arn:aws:kms:eu-west-1:1:key/old"})
+    assert reconcile_findings_export(gd, "det", ON, "eu-west-1") == (
+        "UPDATE",
+        "acme-guardduty-findings-1a2b3c4d",
+    )
     gd.update_publishing_destination.assert_called_once_with(
         DetectorId="det", DestinationId="d0", DestinationProperties=_wanted()
     )
 
 
+def test_an_export_the_organization_set_up_is_left_alone():
+    gd = _gd({"DestinationArn": "arn:aws:s3:::their-findings", "KmsKeyArn": "arn:aws:kms:eu-west-1:1:key/x"})
+    action, detail = reconcile_findings_export(gd, "det", ON, "eu-west-1")
+    assert (action, detail) == ("NO CHANGE", "already exports to their-findings, which tarmac leaves alone")
+    gd.update_publishing_destination.assert_not_called()
+    gd.create_publishing_destination.assert_not_called()
+
+
 def test_turning_export_off_deletes_only_tarmacs_destination():
     gd = _gd(_wanted())
-    assert reconcile_findings_export(gd, "det", OFF, "eu-west-1") == "DELETE"
+    assert reconcile_findings_export(gd, "det", OFF, "eu-west-1")[0] == "DELETE"
     gd.delete_publishing_destination.assert_called_once_with(DetectorId="det", DestinationId="d0")
 
     other = _gd({"DestinationArn": "arn:aws:s3:::someone-elses-bucket"})
-    assert reconcile_findings_export(other, "det", OFF, "eu-west-1") == "NO CHANGE"
+    assert reconcile_findings_export(other, "det", OFF, "eu-west-1")[0] == "NO CHANGE"
     other.delete_publishing_destination.assert_not_called()
 
 
 def test_dry_run_changes_nothing():
     for gd, export, action in ((_gd(), ON, "CREATE"), (_gd(_wanted()), OFF, "DELETE")):
-        assert reconcile_findings_export(gd, "det", export, "eu-west-1", dry_run=True) == action
+        assert reconcile_findings_export(gd, "det", export, "eu-west-1", dry_run=True)[0] == action
         gd.create_publishing_destination.assert_not_called()
         gd.delete_publishing_destination.assert_not_called()
 
@@ -108,7 +119,7 @@ def test_ignores_non_s3_destinations():
     gd.list_publishing_destinations.return_value = {
         "Destinations": [{"DestinationId": "x", "DestinationType": "OTHER"}]
     }
-    assert reconcile_findings_export(gd, "det", ON, "eu-west-1") == "CREATE"
+    assert reconcile_findings_export(gd, "det", ON, "eu-west-1")[0] == "CREATE"
     gd.describe_publishing_destination.assert_not_called()
 
 

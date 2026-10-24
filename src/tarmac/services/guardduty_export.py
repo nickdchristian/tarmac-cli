@@ -64,12 +64,12 @@ def _s3_destinations(gd: Any, detector_id: str) -> list[tuple[str, dict[str, str
 
 def reconcile_findings_export(
     gd: Any, detector_id: str, export: FindingsExport, region: str, dry_run: bool = False
-) -> str:
+) -> tuple[str, str]:
     """Point the detector's S3 export at the findings bucket, or remove tarmac's export when it is off.
 
-    A detector has one S3 destination, so with export on an existing one is repointed. With export off only a
-    destination at tarmac's bucket is deleted; one the organization set up elsewhere is left alone. Findings
-    already in the bucket stay there. Returns the plan action.
+    Only an export to tarmac's bucket is changed or deleted. A detector has one S3 destination, so when the
+    organization already exports elsewhere, tarmac leaves it and says so. Findings already in the bucket stay there.
+    Returns the plan action and detail.
     """
     destinations = _s3_destinations(gd, detector_id)
     resource = f"guardduty-export:{detector_id}:{region}"
@@ -86,28 +86,34 @@ def reconcile_findings_export(
                 dry_run=dry_run,
                 region=region,
             )
-        return DELETE if ours else NO_CHANGE
+        return (DELETE, "export stops; exported findings stay") if ours else (NO_CHANGE, "")
 
     wanted = {
         "DestinationArn": export.bucket_arn,
         "KmsKeyArn": export.kms_key_arn,
         "ExpectedBucketOwner": export.bucket_owner,
     }
-    message = f"GuardDuty findings in {region} to {export.bucket_arn.rsplit(':', 1)[-1]}"
+    bucket = export.bucket_arn.rsplit(":", 1)[-1]
+    message = f"GuardDuty findings in {region} to {bucket}"
     if not destinations:
         if not dry_run:
             gd.create_publishing_destination(
                 DetectorId=detector_id, DestinationType="S3", DestinationProperties=wanted
             )
         audit("create", resource, Outcome.SUCCEEDED, f"Exporting {message}", dry_run=dry_run, region=region)
-        return CREATE
+        return CREATE, bucket
 
     dest_id, props = destinations[0]
+    current = props.get("DestinationArn", "")
+    if not export.owns(current):
+        detail = f"already exports to {current.rsplit(':', 1)[-1]}, which tarmac leaves alone"
+        audit("create", resource, Outcome.SKIPPED, f"GuardDuty in {region} {detail}", region=region)
+        return NO_CHANGE, detail
     if all(props.get(key) == value for key, value in wanted.items()):
-        return NO_CHANGE
+        return NO_CHANGE, bucket
     if not dry_run:
         gd.update_publishing_destination(
             DetectorId=detector_id, DestinationId=dest_id, DestinationProperties=wanted
         )
     audit("update", resource, Outcome.SUCCEEDED, f"Now exporting {message}", dry_run=dry_run, region=region)
-    return UPDATE
+    return UPDATE, bucket

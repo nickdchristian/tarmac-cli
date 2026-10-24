@@ -775,9 +775,7 @@ class Planner:
                 detectors = gd.list_detectors().get("DetectorIds", [])
                 if not detectors:
                     return ("CREATE", "with the detector") if export.bucket_arn else (NO_CHANGE, "")
-                action = reconcile_findings_export(gd, str(detectors[0]), export, region, dry_run=True)
-                detail = "export stops; exported findings stay" if action == "DELETE" else ""
-                return action, detail or export.bucket_arn.rsplit(":", 1)[-1]
+                return reconcile_findings_export(gd, str(detectors[0]), export, region, dry_run=True)
 
             self._check(phase, "findings export", name, check, audit_name)
 
