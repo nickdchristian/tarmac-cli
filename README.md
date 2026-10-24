@@ -147,6 +147,11 @@ tarmac created for it, and the dry run lists each removal first: service control
 (`service_control_policies.enabled: false` or no policies), AWS Config recorders, the root activity alert, an
 account's budget, and its cost anomaly monitors. Log buckets and the history in them are kept.
 
+Turning off GuardDuty suspends it in the member accounts: monitoring and charges stop, its findings are kept, and
+turning it back on resumes it. It stays on in the audit account, because AWS only suspends an administrator's own
+detector once its members are disassociated. Security Hub can't be suspended, so turning it off disables it, and AWS deletes its findings after
+90 days (archived ones after 30) unless you turn it back on first; the dry run and the deploy both warn about this.
+
 ## Commands
 
 | Command | What it does |

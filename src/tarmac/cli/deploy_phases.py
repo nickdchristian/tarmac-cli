@@ -24,6 +24,7 @@ from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
+from ..services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff
 from ..services.stack_parameters import (
     audit_hardening_parameters,
     backend_parameters,
@@ -536,14 +537,37 @@ def _deploy_hardening_stacks(
     )
 
 
+def _turn_off_security_services(
+    session_mgr: AwsSessionManager, bundle: ConfigBundle, target_region: str, accts: dict[str, str]
+) -> None:
+    """Suspend GuardDuty and disable Security Hub where tarmac runs them but the config turns them off."""
+    sec_cfg = bundle.org.security_services
+    audit_id = bundle.resolve_account_id(sec_cfg.delegated_account, accts)
+    if not audit_id or (sec_cfg.guardduty.enabled and sec_cfg.securityhub.enabled):
+        return
+    regions = [target_region, *bundle.org.organization.additional_regions]
+    off = SecurityServicesOff(session_mgr)
+    if not sec_cfg.guardduty.enabled:
+        apply_removals("GuardDuty", off.suspend_guardduty(audit_id, regions, dry_run=False))
+    if not sec_cfg.securityhub.enabled:
+        mgmt_id = str(session_mgr.get_caller_identity().get("Account", ""))
+        if off.disable_securityhub(bundle, audit_id, regions, accts, mgmt_id, dry_run=True):
+            print_warning(SECURITY_HUB_WARNING)
+            apply_removals(
+                "Security Hub",
+                off.disable_securityhub(bundle, audit_id, regions, accts, mgmt_id, dry_run=False),
+            )
+
+
 def _delegate_security_services(
     session_mgr: AwsSessionManager,
     bundle: ConfigBundle,
     target_region: str,
     accts: dict[str, str],
 ) -> None:
-    """Delegate GuardDuty and Security Hub to Audit account if configured."""
+    """Delegate GuardDuty and Security Hub to Audit account if configured, and turn off the ones the config turns off."""
     sec_cfg = bundle.org.security_services
+    _turn_off_security_services(session_mgr, bundle, target_region, accts)
     if not (sec_cfg.guardduty.enabled or sec_cfg.securityhub.enabled):
         return
 

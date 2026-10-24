@@ -37,6 +37,7 @@ from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
 from .ou import OUService
 from .scp import SCPService
+from .security_off import SECURITY_HUB_WARNING, SecurityServicesOff
 from .stack_parameters import (
     audit_hardening_parameters,
     backend_parameters,
@@ -363,7 +364,11 @@ class Planner:
             )
 
     def _removals(
-        self, phase: PhasePlan, why: str, teardown: Callable[[TeardownService], list[TeardownItemReport]]
+        self,
+        phase: PhasePlan,
+        why: str,
+        teardown: Callable[[TeardownService], list[TeardownItemReport]],
+        action: str = "DELETE",
     ) -> None:
         """What a deploy removes because the config turns it off: the teardown of it, simulated."""
         try:
@@ -374,7 +379,7 @@ class Planner:
         for item in items:
             if item.action == "SIMULATED":
                 phase.items.append(
-                    PlanItem(item.resource_type, item.resource_name, "DELETE", why, item.account_name)
+                    PlanItem(item.resource_type, item.resource_name, action, why, item.account_name)
                 )
             elif item.action == "FAILED":
                 phase.items.append(
@@ -704,6 +709,34 @@ class Planner:
                     lambda principal=principal: self._security_service(org, principal, audit_name),
                     audit_name,
                 )
+        audit_id = self._account_id(audit_name)
+        if audit_id and not (security.guardduty.enabled and security.securityhub.enabled):
+            self._security_off(phase, audit_id)
+
+    def _security_off(self, phase: PhasePlan, audit_id: str) -> None:
+        """GuardDuty and Security Hub that tarmac runs but the config turns off."""
+        security = self.bundle.org.security_services
+        regions = [self.region, *self.bundle.org.organization.additional_regions]
+        off = SecurityServicesOff(self.session_mgr)
+        if not security.guardduty.enabled:
+            self._removals(
+                phase,
+                "guardduty is off; findings are kept",
+                lambda _t: off.suspend_guardduty(audit_id, regions, dry_run=True),
+                action="SUSPEND",
+            )
+        if not security.securityhub.enabled:
+            mgmt_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
+            before = len(phase.items)
+            self._removals(
+                phase,
+                "securityhub is off",
+                lambda _t: off.disable_securityhub(
+                    self.bundle, audit_id, regions, self.accounts, mgmt_id, dry_run=True
+                ),
+            )
+            if len(phase.items) > before:
+                phase.notes.append(SECURITY_HUB_WARNING)
 
     def _security_service(self, org: OrganizationService, principal: str, audit_name: str) -> tuple[str, str]:
         action, detail = self._delegated(org, principal, audit_name)

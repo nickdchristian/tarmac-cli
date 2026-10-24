@@ -208,6 +208,7 @@ class SecurityServicesService:
             self._reconcile_existing_detector(gd_audit, audit_id, region, detector_id, wanted)
 
         if config.auto_enable_members and detector_id:
+            self._resume_suspended_members(gd_audit, detector_id, audit_id, region)
             org_features = [
                 {"Name": f["Name"], "AutoEnable": "ALL" if f["Status"] == "ENABLED" else "NONE"}
                 for f in wanted
@@ -260,6 +261,41 @@ class SecurityServicesService:
             region=region,
         )
 
+    @staticmethod
+    def _member_status(gd_audit: Any, detector_id: str) -> dict[str, str]:
+        return {
+            str(m["AccountId"]): str(m.get("RelationshipStatus"))
+            for page in gd_audit.get_paginator("list_members").paginate(
+                DetectorId=detector_id, OnlyAssociated="false"
+            )
+            for m in page.get("Members", [])
+        }
+
+    def _resume_suspended_members(self, gd_audit: Any, detector_id: str, audit_id: str, region: str) -> None:
+        """Restart members suspended by turning GuardDuty off in the config, keeping their findings.
+
+        AWS rejects StartMonitoringMembers while auto-enable is set to all accounts, so it is turned off first; the
+        caller turns it back on straight after.
+        """
+        paused = [a for a, s in self._member_status(gd_audit, detector_id).items() if s == "Disabled"]
+        if not paused:
+            return
+        try:
+            gd_audit.update_organization_configuration(
+                DetectorId=detector_id, AutoEnableOrganizationMembers="NONE"
+            )
+        except ClientError:
+            gd_audit.update_organization_configuration(DetectorId=detector_id, AutoEnable=False)
+        for start in range(0, len(paused), 50):
+            gd_audit.start_monitoring_members(DetectorId=detector_id, AccountIds=paused[start : start + 50])
+        audit(
+            "configure",
+            f"guardduty-members:{audit_id}:{region}",
+            Outcome.SUCCEEDED,
+            f"Resumed GuardDuty in {plural(len(paused), 'member account')} in {region}",
+            region=region,
+        )
+
     def _add_existing_guardduty_members(
         self, gd_audit: Any, detector_id: str, audit_id: str, region: str
     ) -> None:
@@ -267,18 +303,11 @@ class SecurityServicesService:
 
         An account whose membership is not Enabled (for example Removed by an earlier teardown) is added again.
         """
-        enabled = {
-            m["AccountId"]
-            for page in gd_audit.get_paginator("list_members").paginate(
-                DetectorId=detector_id, OnlyAssociated="false"
-            )
-            for m in page.get("Members", [])
-            if m.get("RelationshipStatus") == "Enabled"
-        }
+        status = self._member_status(gd_audit, detector_id)
         missing = [
             {"AccountId": a["Id"], "Email": a["Email"]}
             for a in iter_accounts(self.session_mgr.get_client("organizations"))
-            if is_active(a) and a["Id"] != audit_id and a["Id"] not in enabled
+            if is_active(a) and a["Id"] != audit_id and status.get(a["Id"]) not in ("Enabled", "Disabled")
         ]
         refused: list[str] = []
         for start in range(0, len(missing), 50):
@@ -310,6 +339,16 @@ class SecurityServicesService:
         reports the optional features that are on but not requested.
         """
         response = gd_audit.get_detector(DetectorId=detector_id)
+        if isinstance(response, dict) and response.get("Status") == "DISABLED":
+            # Suspended by turning GuardDuty off in the config.
+            gd_audit.update_detector(DetectorId=detector_id, Enable=True)
+            audit(
+                "configure",
+                f"guardduty-detector:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Resumed GuardDuty in the audit account in {region}",
+                region=region,
+            )
         raw = response.get("Features", []) if isinstance(response, dict) else []
         current = (
             {f.get("Name"): f.get("Status") for f in raw if isinstance(f, dict)}
