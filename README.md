@@ -74,6 +74,26 @@ Read what it reports, and check the dry run before the first real deploy. Keep i
   delivering logs.
 - **Set `delete_default_vpc: false`** for accounts that already run workloads.
 
+## Deploying from GitHub Actions
+
+Keep your config in a GitHub repository and let merges to `main` deploy it:
+
+```bash
+tarmac bootstrap --github-repo OWNER/REPO   # as root or ManagementAdministrator; --github-branch if not main
+```
+
+This adds GitHub's OIDC provider and the `TarmacGitHubDeployment` role, with the same policy as
+`TarmacDeployment`, to the management account. Only workflow runs on that branch can assume it, so protect the
+branch and require pull request reviews. Pull requests get no AWS access, because whoever opens one can change
+the workflow; they run `tarmac validate`, and the dry run is printed in the deploy log before the real deploy.
+Copy [`examples/github/tarmac.yml`](examples/github/tarmac.yml) to `.github/workflows/` and fill in the role ARN
+and Region.
+
+Running `tarmac bootstrap` after an upgrade also updates the role's policy.
+
+`destroy --everything` doesn't remove the role or the OIDC provider. Delete them in the IAM console when you stop
+deploying from GitHub.
+
 ## What it deploys
 
 `tarmac deploy` runs six phases in order. `--phase N` runs one, and `--phase 4 --account NAME` updates a single

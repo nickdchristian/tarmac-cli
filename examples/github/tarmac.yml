@@ -1,0 +1,63 @@
+# Copy to .github/workflows/tarmac.yml in the repository holding your tarmac config, after running
+# `tarmac bootstrap --github-repo OWNER/REPO`. Protect the branch so changes reach it only through reviewed pull
+# requests: every run on it can deploy.
+name: tarmac
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1" # weekly drift check
+
+permissions:
+  contents: read
+
+env:
+  TARMAC: tarmac-cli==0.4.2 # pin the version you have tested
+  CONFIG_DIR: config
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - run: uvx --from "$TARMAC" tarmac validate --config-dir "$CONFIG_DIR"
+
+  deploy:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # One deploy at a time. A newer merge replaces a waiting deploy, which is fine: it deploys everything.
+    concurrency:
+      group: tarmac-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::111111111111:role/TarmacGitHubDeployment # printed by tarmac bootstrap
+          aws-region: us-east-1 # organization.primary_region
+          role-duration-seconds: 14400
+      - run: uvx --from "$TARMAC" tarmac deploy --dry-run --config-dir "$CONFIG_DIR"
+      - run: uvx --from "$TARMAC" tarmac deploy --yes --config-dir "$CONFIG_DIR"
+
+  drift:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::111111111111:role/TarmacGitHubDeployment
+          aws-region: us-east-1
+      - run: uvx --from "$TARMAC" tarmac status --strict --config-dir "$CONFIG_DIR"
