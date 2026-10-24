@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
-from ..core.config_schema import OUDef, ServiceControlPoliciesConfig
+from ..core.config_schema import BaselineStackDef, OUDef, ServiceControlPoliciesConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code
 from ..core.models import TAG_MANAGED_BY
 from ..core.org_accounts import get_active_account_id_map
@@ -453,7 +453,7 @@ class Planner:
                 phase,
                 "stack set",
                 name,
-                lambda name=name, stack=stack: self._stack_set(name, stack.template_file, stack.parameters),
+                lambda name=name, stack=stack: self._baseline_stack(name, stack),
                 ", ".join(stack.target_ous),
             )
         if not self.org_id:
@@ -469,6 +469,49 @@ class Planner:
             return
         for name in undeclared:
             phase.items.append(PlanItem("stack set", name, "DELETE", "no longer in baseline_stacks"))
+
+    def _baseline_stack(self, name: str, stack: BaselineStackDef) -> tuple[str, str]:
+        """The StackSet's own change, plus the OUs and Regions whose stack instances would be added or removed."""
+        action, detail = self._stack_set(name, stack.template_file, stack.parameters)
+        if action not in (NO_CHANGE, "UPDATE"):
+            return action, detail or f"in {', '.join(stack.regions)}"
+        targets = {
+            t: self.root_id if t.lower() == "root" else self.ou_map.get(t, "") for t in stack.target_ous
+        }
+        present: dict[str, set[str]] = {}
+        cf = self.session_mgr.get_client("cloudformation", region_name=self.region)
+        for instance in StackSetService().list_instances(cf, name):
+            present.setdefault(str(instance["OrganizationalUnitId"]), set()).add(str(instance["Region"]))
+        names = {ou_id: ou for ou, ou_id in self.ou_map.items()} | {self.root_id: "root"}
+        changes = ["template, parameters or tags"] if action == "UPDATE" else []
+        changes += [f"remove {names.get(ou, ou)}" for ou in sorted(set(present) - set(targets.values()))]
+        for target, ou_id in targets.items():
+            have = present.get(ou_id, set())
+            # An OU without accounts has no stack instances, and deploying to it changes nothing.
+            if not have and not self._has_accounts(target):
+                continue
+            if add := [r for r in stack.regions if r not in have]:
+                changes.append(f"add {', '.join(add)} in {target}")
+            if drop := sorted(have - set(stack.regions)):
+                changes.append(f"remove {', '.join(drop)} in {target}")
+        return ("UPDATE", "; ".join(changes)) if changes else (NO_CHANGE, f"in {', '.join(stack.regions)}")
+
+    def _has_accounts(self, target: str) -> bool:
+        """Whether a declared account sits in the OU, or in an OU below it (``root``: in any OU)."""
+        homes = {a.ou for a in self.bundle.accounts.accounts}
+        if target.lower() == "root":
+            return bool(homes)
+
+        def find(ous: list[OUDef]) -> OUDef | None:
+            for ou in ous:
+                if ou.name == target:
+                    return ou
+                if (found := find(ou.children)) is not None:
+                    return found
+            return None
+
+        ou = find(self.bundle.org.ou_structure)
+        return ou is not None and bool(homes & ({ou.name} | ConfigBundle._collect_ou_names(ou.children)))
 
     def _phase_4(self, phase: PhasePlan) -> None:
         declared = [
