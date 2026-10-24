@@ -15,6 +15,7 @@ from ..core.logging import bind
 from ..core.models import SecurityServiceReport
 from ..core.org_accounts import is_active, iter_accounts
 from ..core.text import plural
+from .guardduty_export import FindingsExport, reconcile_findings_export
 from .security_central import (
     POLICY_NAME,
     SecurityHubCentralConfiguration,
@@ -60,6 +61,7 @@ class SecurityServicesService:
         primary_region: str,
         all_regions: list[str],
         account_id_map: dict[str, str],
+        findings_export: FindingsExport | None = None,
     ) -> list[SecurityServiceReport]:
         """Configure all enabled security services (GuardDuty, Security Hub)."""
         reports: list[SecurityServiceReport] = []
@@ -83,7 +85,11 @@ class SecurityServicesService:
             return reports
 
         if config.guardduty.enabled:
-            reports.append(self.configure_guardduty(audit_id, primary_region, all_regions, config.guardduty))
+            reports.append(
+                self.configure_guardduty(
+                    audit_id, primary_region, all_regions, config.guardduty, findings_export
+                )
+            )
 
         if config.securityhub.enabled:
             reports.append(
@@ -107,8 +113,12 @@ class SecurityServicesService:
         primary_region: str,
         all_regions: list[str],
         config: GuardDutyConfig,
+        findings_export: FindingsExport | None = None,
     ) -> SecurityServiceReport:
-        """Delegate and configure GuardDuty across all designated regions."""
+        """Delegate and configure GuardDuty across all designated regions.
+
+        ``findings_export`` is reconciled on each Region's audit detector; None leaves exports untouched.
+        """
         try:
             self._ensure_guardduty_admin(audit_id, primary_region)
         except ClientError as e:
@@ -134,7 +144,7 @@ class SecurityServicesService:
                     # Region needs its own registration before the audit account may configure members there.
                     if reg != primary_region:
                         self._ensure_guardduty_admin(audit_id, reg)
-                    self._configure_guardduty_region(audit_id, reg, config)
+                    self._configure_guardduty_region(audit_id, reg, config, findings_export)
                 configured_regions.append(reg)
             except ClientError as e:
                 audit(
@@ -185,7 +195,13 @@ class SecurityServicesService:
                 region=region,
             )
 
-    def _configure_guardduty_region(self, audit_id: str, region: str, config: GuardDutyConfig) -> None:
+    def _configure_guardduty_region(
+        self,
+        audit_id: str,
+        region: str,
+        config: GuardDutyConfig,
+        findings_export: FindingsExport | None = None,
+    ) -> None:
         """Create detector and configure auto-enrollment in the Audit account for a single region."""
         gd_audit = self.session_mgr.get_member_client(audit_id, "guardduty", region_name=region)
         detectors = gd_audit.list_detectors().get("DetectorIds", [])
@@ -206,6 +222,9 @@ class SecurityServicesService:
         else:
             detector_id = str(detectors[0])
             self._reconcile_existing_detector(gd_audit, audit_id, region, detector_id, wanted)
+
+        if findings_export is not None and detector_id:
+            reconcile_findings_export(gd_audit, detector_id, findings_export, region)
 
         if config.auto_enable_members and detector_id:
             self._resume_suspended_members(gd_audit, detector_id, audit_id, region)

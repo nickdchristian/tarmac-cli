@@ -23,6 +23,10 @@
 # 2. Centralized S3 Log Storage (AWS Security Reference Architecture - SRA):
 #    - 'OrganizationCloudTrailBucket': Centralized organizational log repository
 #      encrypted with 'LogArchiveKmsKey' and protected by an explicit bucket policy.
+#    - 'GuardDutyFindingsBucket': Optional export of GuardDuty findings from the
+#      delegated administrator, kept past GuardDuty's 90-day retention. GuardDuty
+#      only exports to an SSE-KMS bucket, so the KMS key is created for it even when
+#      EnableKmsEncryption is 'false'.
 #    - 'AccessLogsBucket': Dedicated target for S3 Server Access Logs to track
 #      who accesses the audit buckets while preventing recursive logging loops.
 # =============================================================================
@@ -68,6 +72,14 @@ Parameters:
       Management account ID. Its AWS Config recorder uses a service-linked role, so it delivers as the Config service
       principal; member accounts deliver with their recorder role. Required when EnableConfigDelivery is 'true'.
 
+  GuardDutyFindingsAccountId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^([0-9]{12})?$'
+    Description: >-
+      GuardDuty delegated administrator account ID. When set, a bucket is created for its findings export and its
+      detectors may write to it. Empty leaves findings export off.
+
   LogRetentionDays:
     Type: String
     Default: '0'
@@ -108,11 +120,13 @@ Conditions:
   CreateConfigBucket: !Equals [!Ref EnableConfigDelivery, 'true']
   UseKmsEncryption: !Equals [!Ref EnableKmsEncryption, 'true']
   HasLogRetention: !Not [!Equals [!Ref LogRetentionDays, '0']]
+  ExportGuardDutyFindings: !Not [!Equals [!Ref GuardDutyFindingsAccountId, '']]
+  CreateKmsKey: !Or [!Condition UseKmsEncryption, !Condition ExportGuardDutyFindings]
 
 Resources:
   LogArchiveKmsKey:
     Type: AWS::KMS::Key
-    Condition: UseKmsEncryption
+    Condition: CreateKmsKey
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -195,6 +209,20 @@ Resources:
                 StringEquals:
                   aws:SourceAccount: !Ref ManagementAccountId
             - !Ref 'AWS::NoValue'
+          - !If
+            - ExportGuardDutyFindings
+            - Sid: AllowGuardDutyEncrypt
+              Effect: Allow
+              Principal:
+                Service: guardduty.amazonaws.com
+              Action: kms:GenerateDataKey
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  aws:SourceAccount: !Ref GuardDutyFindingsAccountId
+                ArnLike:
+                  aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${GuardDutyFindingsAccountId}:detector/*'
+            - !Ref 'AWS::NoValue'
           - Sid: AllowDecryptForLogAccess
             Effect: Allow
             Principal:
@@ -209,7 +237,7 @@ Resources:
 
   LogArchiveKmsAlias:
     Type: AWS::KMS::Alias
-    Condition: UseKmsEncryption
+    Condition: CreateKmsKey
     Properties:
       AliasName: !Sub 'alias/${OrgName}-log-archive'
       TargetKeyId: !Ref LogArchiveKmsKey
@@ -505,6 +533,120 @@ Resources:
               ArnLike:
                 aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::*:role/tarmac-config-recorder-*'
 
+  # GuardDuty findings exported by the delegated administrator, members' findings included. A separate bucket from
+  # CloudTrail's: GuardDuty requires SSE-KMS with this key, and the bucket is not Object Locked.
+  GuardDutyFindingsBucket:
+    Type: AWS::S3::Bucket
+    Condition: ExportGuardDutyFindings
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub
+        - '${OrgName}-guardduty-findings-${Suffix}'
+        - Suffix: !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: guardduty-access/
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'aws:kms'
+              KMSMasterKeyID: !Ref LogArchiveKmsKey
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionOldVersionsToGlacier
+            Status: Enabled
+            NoncurrentVersionTransitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+            NoncurrentVersionExpirationInDays: 365
+          - !If
+            - HasLogRetention
+            - Id: ExpireFindingsAfterRetention
+              Status: Enabled
+              ExpirationInDays: !Ref LogRetentionDays
+              NoncurrentVersionExpirationInDays: 7
+            - !Ref 'AWS::NoValue'
+          - !If
+            - HasLogRetention
+            - Id: RemoveExpiredDeleteMarkers
+              Status: Enabled
+              ExpiredObjectDeleteMarker: true
+            - !Ref 'AWS::NoValue'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Purpose
+          Value: GuardDuty Findings
+
+  GuardDutyFindingsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ExportGuardDutyFindings
+    Properties:
+      Bucket: !Ref GuardDutyFindingsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTLSRequests
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt GuardDutyFindingsBucket.Arn
+              - !Sub '${GuardDutyFindingsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: AllowGuardDutyGetBucketLocation
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:GetBucketLocation
+            Resource: !GetAtt GuardDutyFindingsBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref GuardDutyFindingsAccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${GuardDutyFindingsAccountId}:detector/*'
+          - Sid: AllowGuardDutyPutObject
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${GuardDutyFindingsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref GuardDutyFindingsAccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${GuardDutyFindingsAccountId}:detector/*'
+          - Sid: DenyGuardDutyUnencryptedUploads
+            Effect: Deny
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${GuardDutyFindingsBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: 'aws:kms'
+          - Sid: DenyGuardDutyOtherKmsKeys
+            Effect: Deny
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${GuardDutyFindingsBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt LogArchiveKmsKey.Arn
+
 Outputs:
   KmsKeyArn:
     Condition: UseKmsEncryption
@@ -544,3 +686,13 @@ Outputs:
     Value: !Ref ConfigLogsBucket
     Export:
       Name: !Sub '${AWS::StackName}-ConfigBucketName'
+
+  GuardDutyFindingsBucketArn:
+    Condition: ExportGuardDutyFindings
+    Description: GuardDuty findings export S3 bucket ARN
+    Value: !GetAtt GuardDutyFindingsBucket.Arn
+
+  GuardDutyFindingsKmsKeyArn:
+    Condition: ExportGuardDutyFindings
+    Description: KMS key GuardDuty encrypts exported findings with
+    Value: !GetAtt LogArchiveKmsKey.Arn

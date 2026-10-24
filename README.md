@@ -129,7 +129,7 @@ Following AWS's guidance, the management account holds only what has to live the
   tarmac shares it.
 - **Audit account:** delegated administrator for CloudTrail, AWS Config, GuardDuty, Security Hub and IAM root
   access management.
-- **Log archive account:** the CloudTrail and Config log buckets.
+- **Log archive account:** the CloudTrail and Config log buckets, and GuardDuty's exported findings.
 
 `tarmac init` starts you with the OUs AWS recommends: Security, Infrastructure, Workloads (Prod and Test),
 Deployments, Sandbox, Policy Staging and Suspended.
@@ -198,6 +198,7 @@ security_services:
   guardduty:
     enabled: true
     features: {s3_data_events: true}   # optional paid protections stay off unless listed
+    export_findings: true            # keep findings past GuardDuty's 90 days in a log archive bucket (SSE-KMS)
   securityhub:
     enabled: true
     standards: [aws-foundational-security-best-practices]   # every account; newest version unless you add /v/X.Y.Z

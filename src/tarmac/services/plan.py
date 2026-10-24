@@ -32,6 +32,7 @@ from .baseline import BUDGET_TEMPLATE, budget_parameters, budget_stack_name
 from .baseline_stacks import BaselineStacksService, stack_set_name
 from .cloudformation import CloudFormationService, lock_table_wanted
 from .config_recorder import service_linked_role_arn
+from .guardduty_export import FindingsExport, findings_export, reconcile_findings_export
 from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
@@ -447,7 +448,12 @@ class Planner:
             self._member_cfn(account_id),
             stack_name,
             name,
-            log_archive_parameters(self.bundle, self.org_id, self.management_id),
+            log_archive_parameters(
+                self.bundle,
+                self.org_id,
+                self.management_id,
+                self._account_id(self.bundle.get_audit_account_name() or "audit"),
+            ),
             template="cloudformation/log-archive-hardening.yaml",
             account_tags=self.bundle.get_account_tags(name),
         )
@@ -723,6 +729,8 @@ class Planner:
         audit_id = self._account_id(audit_name)
         if audit_id and not (security.guardduty.enabled and security.securityhub.enabled):
             self._security_off(phase, audit_id)
+        if security.guardduty.enabled and audit_id:
+            self._findings_export(phase, audit_id, audit_name)
 
     def _security_off(self, phase: PhasePlan, audit_id: str) -> None:
         """GuardDuty and Security Hub that tarmac runs but the config turns off."""
@@ -748,6 +756,30 @@ class Planner:
             )
             if len(phase.items) > before:
                 phase.notes.append(SECURITY_HUB_WARNING)
+
+    def _findings_export(self, phase: PhasePlan, audit_id: str, audit_name: str) -> None:
+        """The audit detectors' S3 export of GuardDuty findings, per Region."""
+        export = findings_export(self.session_mgr, self.bundle, self.region, self.accounts)
+        for region in config_recorder_regions(self.bundle, self.region):
+            name = f"GuardDuty findings ({region})"
+            if export is None:
+                phase.items.append(
+                    PlanItem(
+                        "findings export", name, "CREATE", "once the log archive has its findings bucket"
+                    )
+                )
+                continue
+
+            def check(region: str = region, export: FindingsExport = export) -> tuple[str, str]:
+                gd = self.session_mgr.get_member_client(audit_id, "guardduty", region_name=region)
+                detectors = gd.list_detectors().get("DetectorIds", [])
+                if not detectors:
+                    return ("CREATE", "with the detector") if export.bucket_arn else (NO_CHANGE, "")
+                action = reconcile_findings_export(gd, str(detectors[0]), export, region, dry_run=True)
+                detail = "export stops; exported findings stay" if action == "DELETE" else ""
+                return action, detail or export.bucket_arn.rsplit(":", 1)[-1]
+
+            self._check(phase, "findings export", name, check, audit_name)
 
     def _security_service(self, org: OrganizationService, principal: str, audit_name: str) -> tuple[str, str]:
         action, detail = self._delegated(org, principal, audit_name)

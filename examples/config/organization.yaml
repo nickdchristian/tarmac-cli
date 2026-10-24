@@ -102,7 +102,9 @@ cloudtrail:
 # Security services (all off unless enabled)
 # security_services:
 #   delegated_account: audit
-#   guardduty: {enabled: true}
+#   guardduty:
+#     enabled: true
+#     export_findings: true   # copy findings to a log archive bucket; GuardDuty keeps them 90 days. Needs a KMS key.
 #   securityhub: {enabled: true}
 #   config_recorder:          # AWS Config in every account, delivered to its own log archive bucket. Billed per item.
 #     enabled: true           # Security Hub CSPM standards need it. `config_recorder: null` acknowledges the warning.
