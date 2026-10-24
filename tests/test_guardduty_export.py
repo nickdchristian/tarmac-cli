@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import yaml
 
-from tarmac.core.config_schema import CloudTrailConfig, SecurityServicesConfig
+from tarmac.core.config_schema import CloudTrailConfig, GuardDutyConfig, SecurityServicesConfig
 from tarmac.services import guardduty_export
 from tarmac.services.guardduty_export import FindingsExport, findings_export, reconcile_findings_export
 from tarmac.services.stack_parameters import log_archive_parameters
@@ -55,7 +55,7 @@ def _bundle(guardduty: dict | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         org=SimpleNamespace(
             organization=SimpleNamespace(name="acme"),
-            security_services=SecurityServicesConfig(guardduty=guardduty or {}),
+            security_services=SecurityServicesConfig(guardduty=GuardDutyConfig(**(guardduty or {}))),
             cloudtrail=CloudTrailConfig(),
         ),
         get_log_archive_account_name=lambda: "log-archive",
@@ -115,9 +115,8 @@ def test_ignores_non_s3_destinations():
 def test_audit_account_is_passed_to_the_log_archive_only_when_exporting():
     def param(guardduty: dict) -> str:
         bundle = _bundle(guardduty)
-        return log_archive_parameters(bundle, "o-abc1234567", "", "111122223333")[
-            "GuardDutyFindingsAccountId"
-        ]  # type: ignore[arg-type]
+        params = log_archive_parameters(bundle, "o-abc1234567", "", "111122223333")  # type: ignore[arg-type]
+        return params["GuardDutyFindingsAccountId"]
 
     assert param({"enabled": True, "export_findings": True}) == "111122223333"
     assert param({"enabled": True}) == ""
