@@ -430,7 +430,7 @@ class SecurityServicesService:
                     self._ensure_hub_enabled(mgmt_sh, mgmt_id, region)
                 # Central policies take effect in every linked Region, so link only the declared ones.
                 self._ensure_finding_aggregator(sh, [r for r in all_regions if r != home_region])
-                SecurityHubCentralConfiguration(
+                enabled = SecurityHubCentralConfiguration(
                     sh,
                     policy_name=POLICY_NAME,
                     standards=config.standards,
@@ -457,8 +457,8 @@ class SecurityServicesService:
             status="ENABLED",
             regions=all_regions,
             message=(
-                f"Delegated to {audit_id}; central configuration from {home_region} applies standards "
-                f"{config.standards} to the organization in {', '.join(all_regions)}"
+                f"Delegated to {audit_id}; central configuration from {home_region} applies "
+                f"{', '.join(enabled) or 'no standards'} to the organization in {', '.join(all_regions)}"
             ),
         )
 

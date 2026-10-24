@@ -84,10 +84,12 @@ class SecurityHubCentralConfiguration:
         self._sleep = sleep
         self._timeout = timeout_seconds
 
-    def apply(self) -> None:
+    def apply(self) -> list[str]:
+        """Apply the policy; returns the standards it enables, each with its version (``cis-.../v/5.0.0``)."""
         self._enable_central_mode()
         policy_id = self._ensure_policy()
         self._ensure_association(policy_id)
+        return [arn.split("/", 1)[1] for arn in self.enabled_standards]
 
     def _require_no_local_members(self) -> None:
         """Switching to central configuration makes the policy authoritative for member accounts.
@@ -198,6 +200,7 @@ class SecurityHubCentralConfiguration:
 
     def _ensure_policy(self) -> str:
         desired = self._desired_policy()
+        self.enabled_standards: list[str] = desired["SecurityHub"]["EnabledStandardIdentifiers"]
         policy_id = self._find_policy_id()
         if policy_id is None:
             resp = self.sh.create_configuration_policy(
