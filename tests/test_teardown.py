@@ -241,6 +241,29 @@ def test_teardown_scps(test_bundle):
     mock_org.delete_policy.assert_called_once_with(PolicyId="p-12345")
 
 
+def test_teardown_scps_leaves_a_same_named_policy_tarmac_did_not_tag(test_bundle):
+    mgr = MagicMock(spec=AwsSessionManager)
+    cfn, org = MagicMock(), MagicMock()
+    cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    mgr.default_region = "us-east-1"
+    mgr.get_client.side_effect = lambda svc, **kwargs: cfn if svc == "cloudformation" else org
+    mgr.get_caller_identity.return_value = {"Account": "111122223333"}
+    pages = {
+        "list_policies": [{"Policies": [{"Id": "p-12345", "Name": "FoundationalGuardrails"}]}],
+        "list_tags_for_resource": [{"Tags": []}],
+    }
+    org.get_paginator.side_effect = lambda name: MagicMock(
+        paginate=MagicMock(return_value=pages.get(name, [{}]))
+    )
+
+    TeardownService(mgr).teardown_scps(test_bundle, dry_run=False)
+
+    org.detach_policy.assert_not_called()
+    org.delete_policy.assert_not_called()
+
+
 def test_teardown_all_orchestration(test_bundle):
     mock_session_mgr = MagicMock(spec=AwsSessionManager)
     mock_session_mgr.default_region = "us-east-1"
