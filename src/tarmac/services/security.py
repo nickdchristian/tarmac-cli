@@ -267,18 +267,29 @@ class SecurityServicesService:
 
         An account whose membership is not Enabled (for example Removed by an earlier teardown) is added again.
         """
-        enabled = {
-            m["AccountId"]
+        status = {
+            m["AccountId"]: m.get("RelationshipStatus")
             for page in gd_audit.get_paginator("list_members").paginate(
                 DetectorId=detector_id, OnlyAssociated="false"
             )
             for m in page.get("Members", [])
-            if m.get("RelationshipStatus") == "Enabled"
         }
+        # Disabled members were suspended by turning GuardDuty off in the config: resume them, keeping their findings.
+        paused = [account_id for account_id, s in status.items() if s == "Disabled"]
+        for start in range(0, len(paused), 50):
+            gd_audit.start_monitoring_members(DetectorId=detector_id, AccountIds=paused[start : start + 50])
+        if paused:
+            audit(
+                "configure",
+                f"guardduty-members:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Resumed GuardDuty in {plural(len(paused), 'member account')} in {region}",
+                region=region,
+            )
         missing = [
             {"AccountId": a["Id"], "Email": a["Email"]}
             for a in iter_accounts(self.session_mgr.get_client("organizations"))
-            if is_active(a) and a["Id"] != audit_id and a["Id"] not in enabled
+            if is_active(a) and a["Id"] != audit_id and status.get(a["Id"]) not in ("Enabled", "Disabled")
         ]
         refused: list[str] = []
         for start in range(0, len(missing), 50):
@@ -310,6 +321,16 @@ class SecurityServicesService:
         reports the optional features that are on but not requested.
         """
         response = gd_audit.get_detector(DetectorId=detector_id)
+        if isinstance(response, dict) and response.get("Status") == "DISABLED":
+            # Suspended by turning GuardDuty off in the config.
+            gd_audit.update_detector(DetectorId=detector_id, Enable=True)
+            audit(
+                "configure",
+                f"guardduty-detector:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Resumed GuardDuty in the audit account in {region}",
+                region=region,
+            )
         raw = response.get("Features", []) if isinstance(response, dict) else []
         current = (
             {f.get("Name"): f.get("Status") for f in raw if isinstance(f, dict)}

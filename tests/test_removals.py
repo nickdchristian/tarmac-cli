@@ -27,7 +27,9 @@ def bundle(sample_config_dir: Path) -> ConfigBundle:
 
 def test_removals_report_what_was_deleted_and_fail_on_what_was_not(capsys):
     apply_removals("AWS Config recorders", [_item("DELETED"), _item("NOT_FOUND", "other")])
-    assert "Removed Config recorder StackSet acme-config-recorder" in capsys.readouterr().out
+    assert (
+        "Config recorder StackSet acme-config-recorder (Organization): DELETED it." in capsys.readouterr().out
+    )
 
     with pytest.raises(GovernanceError, match="Could not remove the AWS Config recorders"):
         apply_removals("AWS Config recorders", [_item("FAILED")])
