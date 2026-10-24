@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 
 # Disabling this would delete the Identity Center instance created through Organizations.
 NEVER_AUTO_DISABLE = frozenset({"sso.amazonaws.com"})
+# What reverting each recorded setting did, as the deploy and destroy report it.
+_REVERTED = {
+    "delegated-admin": "Deregistered the delegated administrator tarmac registered",
+    "root-sessions": "Turned off; tarmac had turned it on",
+    "root-credentials-management": "Turned off; tarmac had turned it on",
+    "trusted-access": "Turned off trusted access tarmac had turned on",
+    "alternate-contact": "Removed the contact tarmac set",
+    "cost-allocation-tags": "Deactivated the tags tarmac activated",
+}
+
 _MISSING = {
     "NoSuchEntity",
     "NoSuchEntityException",
@@ -410,7 +420,7 @@ class EverythingTeardown(TeardownBase):
             return _item(label, name, "FAILED", str(exc), account_id=mgmt_id)
         audit("delete", f"{kind}:{key}", Outcome.SUCCEEDED, f"Reverted {label.lower()} '{name}'")
         inventory.forget(kind, key)
-        return _item(label, name, "DELETED", "Reverted a setting tarmac enabled", account_id=mgmt_id)
+        return _item(label, name, "DELETED", _REVERTED.get(kind, "Reverted"), account_id=mgmt_id)
 
     def report_accounts_kept(self) -> list[TeardownItemReport]:
         """List the member accounts tarmac manages; closing them stays a deliberate, per-account step."""

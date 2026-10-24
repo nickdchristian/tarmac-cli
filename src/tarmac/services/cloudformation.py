@@ -204,8 +204,12 @@ class CloudFormationService:
         live_params = {
             str(p["ParameterKey"]): str(p.get("ParameterValue", "")) for p in stack.get("Parameters", [])
         }
+
+        def shown(value: str | None) -> str:
+            return "(unset)" if value is None else value or "''"
+
         changes = [
-            f"{key}: {live_params.get(key, '(unset)')} -> {value}"
+            f"{key}: {shown(live_params.get(key))} -> {shown(str(value))}"
             for key, value in (parameters or {}).items()
             if live_params.get(key) != str(value)
         ]

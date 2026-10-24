@@ -202,7 +202,10 @@ def _run_phase_2_ou(
                 "Phase 2 failed: SCP targets not found in the organization.",
                 details="; ".join(f"{name}: {', '.join(targets)}" for name, targets in unresolved.items()),
             )
-        print_success(f"Phase 2 complete: Reconciled {len(results)} Service Control Policies.")
+        count = len(results)
+        print_success(
+            f"Phase 2 complete: Reconciled {count} Service Control {'Policy' if count == 1 else 'Policies'}."
+        )
     else:
         print_success("Phase 2 complete: OUs synchronized.")
 
