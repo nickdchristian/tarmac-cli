@@ -326,3 +326,36 @@ def test_default_trusted_services_cover_config_delegation() -> None:
     """Phase 5 delegates Config administration, which AWS refuses unless service access is already on."""
     assert "config-multiaccountsetup.amazonaws.com" in DEFAULT_TRUSTED_SERVICES
     assert "config.amazonaws.com" in DEFAULT_TRUSTED_SERVICES
+
+
+def test_set_account_contacts_on_member_account(stubs):
+    svc, s = stubs
+    contacts = ContactsConfig(
+        billing=_contact("Billing"), operations=_contact("Ops"), security=_contact("Sec")
+    )
+    for kind, c in (
+        ("BILLING", contacts.billing),
+        ("OPERATIONS", contacts.operations),
+        ("SECURITY", contacts.security),
+    ):
+        current = {
+            "AlternateContactType": kind,
+            "Name": c.name,
+            "Title": c.title,
+            "EmailAddress": c.email,
+            "PhoneNumber": c.phone,
+        }
+        if kind == "SECURITY":
+            s["account"].add_client_error(
+                "get_alternate_contact",
+                service_error_code="ResourceNotFoundException",
+                expected_params={"AccountId": "222222222222", "AlternateContactType": kind},
+            )
+            s["account"].add_response("put_alternate_contact", {}, {"AccountId": "222222222222", **current})
+        else:
+            s["account"].add_response(
+                "get_alternate_contact",
+                {"AlternateContact": current},
+                {"AccountId": "222222222222", "AlternateContactType": kind},
+            )
+    assert svc.set_account_contacts(contacts, "222222222222") == ["SECURITY"]
