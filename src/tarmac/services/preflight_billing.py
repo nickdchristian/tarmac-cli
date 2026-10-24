@@ -99,7 +99,7 @@ class BillingChecks:
                 status=PreflightCheckStatus.WARN,
                 live_value=f"{len(active_keys)} active (missing: {missing_str})",
                 action_required=(
-                    f"Activate missing tag(s) ({missing_str}) in Billing & Cost Management console "
+                    f"Activate {missing_str} in the Billing and Cost Management console "
                     "or run: tarmac deploy --phase 1"
                 ),
             )

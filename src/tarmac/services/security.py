@@ -14,6 +14,7 @@ from ..core.exceptions import GovernanceError
 from ..core.logging import bind
 from ..core.models import SecurityServiceReport
 from ..core.org_accounts import is_active, iter_accounts
+from ..core.text import plural
 from .security_central import POLICY_NAME, SecurityHubCentralConfiguration, resolve_standard_arn
 
 logger = logging.getLogger(__name__)
@@ -154,9 +155,9 @@ class SecurityServicesService:
     def _region_message(prefix: str, configured: list[str], failed: dict[str, str]) -> str:
         """Summarize per-region results; any failed region must be visible, never averaged away."""
         if not failed:
-            return f"{prefix} in {len(configured)} region(s)"
+            return f"{prefix} in {plural(len(configured), 'region')}"
         details = "; ".join(f"{region}: {reason}" for region, reason in failed.items())
-        return f"{prefix} configured in {len(configured)} region(s) but FAILED in {len(failed)}: {details}"
+        return f"{prefix} configured in {plural(len(configured), 'region')} but FAILED in {len(failed)}: {details}"
 
     def _ensure_guardduty_admin(self, audit_id: str, region: str) -> None:
         """Register the delegated GuardDuty administrator in one Region, if not already registered.
@@ -282,7 +283,7 @@ class SecurityServicesService:
                 "configure",
                 f"guardduty-members:{audit_id}:{region}",
                 Outcome.SUCCEEDED,
-                f"Added {len(missing) - len(refused)} existing account(s) to GuardDuty in {region}",
+                f"Added {plural(len(missing) - len(refused), 'existing account')} to GuardDuty in {region}",
                 region=region,
             )
         if refused:
@@ -290,7 +291,7 @@ class SecurityServicesService:
                 "configure",
                 f"guardduty-members:{audit_id}:{region}",
                 Outcome.FAILED,
-                f"GuardDuty did not add {len(refused)} account(s) in {region}: {'; '.join(refused)}",
+                f"GuardDuty did not add {plural(len(refused), 'account')} in {region}: {'; '.join(refused)}",
                 region=region,
             )
 

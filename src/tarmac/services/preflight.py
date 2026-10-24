@@ -12,6 +12,7 @@ from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 from ..core.placeholders import find_placeholder_values
 from ..core.stack_names import TARMAC_STACK_SUFFIXES
+from ..core.text import plural
 from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService, deployment_policy
 from .preflight_billing import BillingChecks
 from .preflight_org import OrganizationChecks
@@ -132,7 +133,7 @@ class PreflightService(OrganizationChecks, BillingChecks):
             name="Sample Configuration Values",
             target="YAML configuration",
             status=PreflightCheckStatus.WARN,
-            live_value=f"{len(problems)} sample value(s)",
+            live_value=f"{plural(len(problems), 'sample value')}",
             action_required="; ".join(problems[:3]) + (" ..." if len(problems) > 3 else ""),
         )
 
@@ -240,7 +241,7 @@ class PreflightService(OrganizationChecks, BillingChecks):
                     target=f"Region {target_region}",
                     status=PreflightCheckStatus.WARN,
                     live_value=f"{pending} Pending Confirmation",
-                    action_required="Confirm subscription email(s) sent to alert recipient inbox",
+                    action_required="Confirm the subscription emails sent to alert recipients",
                 )
             return PreflightCheckResult(
                 name="SNS Alert Subscriptions",

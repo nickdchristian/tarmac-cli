@@ -92,7 +92,7 @@ def parse_tags_or_exit(tags: list[str] | None) -> dict[str, str]:
     try:
         return parse_cli_tags(tags)
     except ValueError as e:
-        error_console.print(f"[red]Error: invalid tag option:[/red] {e}")
+        error_console.print(f"[red]Error: Invalid tag option:[/red] {e}")
         raise typer.Exit(code=1)
 
 

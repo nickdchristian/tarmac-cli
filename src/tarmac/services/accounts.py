@@ -24,6 +24,7 @@ from ..core.models import (
 )
 from ..core.org_accounts import account_state, is_active, is_closed, iter_accounts
 from ..core.placeholders import is_placeholder_email
+from ..core.text import plural
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +401,7 @@ class AccountService:
                 "tag",
                 f"account:{account_id}",
                 Outcome.SUCCEEDED,
-                f"Applied {len(tags_to_apply)} tag(s) to account '{account_name}' ({account_id})",
+                f"Applied {plural(len(tags_to_apply), 'tag')} to account '{account_name}' ({account_id})",
                 account_id=account_id,
                 tags=tags_to_apply,
             )
@@ -543,7 +544,7 @@ class AccountService:
 
         if failures:
             raise AccountProvisioningError(
-                f"{len(failures)} account(s) could not be provisioned; the others were completed.",
+                f"{plural(len(failures), 'account')} could not be provisioned; the others were completed.",
                 details="\n".join(failures),
             )
 

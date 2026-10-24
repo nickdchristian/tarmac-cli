@@ -597,7 +597,7 @@ def test_full_teardown_keeps_the_inventory_bucket_while_it_records_leftovers():
     inv.bucket = _OBJECT["Bucket"]
     items = TeardownService(mgr).teardown_inventory(_org_bundle(), inv)
     assert [(i.action, i.message) for i in items] == [
-        ("SKIPPED", "Kept: it still records 1 item(s) that were not removed")
+        ("SKIPPED", "Kept: it still records 1 item left in place")
     ]
 
 
@@ -660,8 +660,8 @@ def test_existing_and_removed_accounts_are_added_to_guardduty_and_refusals_repor
         )
         gd_stub.assert_no_pending_responses()
         org_stub.assert_no_pending_responses()
-    assert "Added 1 existing account(s)" in caplog.text
-    assert f"did not add 1 account(s) in us-east-1: {removed}: Account is not eligible" in caplog.text
+    assert "Added 1 existing account to" in caplog.text
+    assert f"did not add 1 account in us-east-1: {removed}: Account is not eligible" in caplog.text
 
 
 def test_guardduty_is_turned_on_in_the_management_account_so_it_can_be_added():

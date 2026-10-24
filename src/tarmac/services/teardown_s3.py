@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.audit import Outcome, audit
 from ..core.exceptions import GovernanceError
+from ..core.text import plural
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def _delete_s3_batch(s3_client: Any, bucket_name: str, batch: list[dict[str, str
                 "purge",
                 f"S3 Bucket:{bucket_name}",
                 Outcome.SUCCEEDED,
-                f"Deleted {bypassed} object version(s) in '{bucket_name}' by bypassing Object Lock governance retention",
+                f"Deleted {plural(bypassed, 'object version')} in '{bucket_name}' by bypassing Object Lock governance retention",
                 bypassed_governance_retention=bypassed,
             )
         errors = [e for e in errors if e.get("Code") != "AccessDenied"] + retry_errors
@@ -59,7 +60,7 @@ def _delete_s3_batch(s3_client: Any, bucket_name: str, batch: list[dict[str, str
             else ""
         )
         raise GovernanceError(
-            f"Failed to delete {len(errors)} object(s) from bucket '{bucket_name}'.",
+            f"Failed to delete {plural(len(errors), 'object')} from bucket '{bucket_name}'.",
             details=f"{first.get('Code', 'Unknown')}: {first.get('Message', '')} (key: {first.get('Key', '')}){hint}",
         )
     return len(batch)
@@ -145,7 +146,7 @@ def empty_s3_bucket(
             "purge",
             f"S3 Bucket:{bucket_name}",
             Outcome.SUCCEEDED,
-            f"Permanently deleted {total_deleted} object version(s) from S3 bucket '{bucket_name}'",
+            f"Permanently deleted {plural(total_deleted, 'object version')} from S3 bucket '{bucket_name}'",
             objects_deleted=total_deleted,
         )
     return total_deleted
