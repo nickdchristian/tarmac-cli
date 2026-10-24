@@ -36,7 +36,7 @@ def _style(table: dict[str, str], key: str) -> str:
 
 
 def _fail(message: str) -> typer.Exit:
-    error_console.print(f"[bold red]✗[/bold red] {escape(message)}")
+    error_console.print(f"[bold red]Error:[/bold red] {escape(message)}")
     return typer.Exit(code=1)
 
 

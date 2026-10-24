@@ -83,14 +83,14 @@ def _require_yes_for_json(dry_run: bool, yes: bool, json_output: bool) -> None:
     """--json only changes the output format; it must never stand in for consent on live changes."""
     if json_output and not (dry_run or yes):
         error_console.print(
-            "[red]✗ --json cannot prompt for confirmation. Re-run with --yes to confirm a live "
+            "[red]Error: --json cannot prompt for confirmation. Re-run with --yes to confirm a live "
             "operation, or with --dry-run to preview it.[/red]"
         )
         raise typer.Exit(code=2)
 
 
 def _usage_error(message: str) -> typer.Exit:
-    error_console.print(f"[red]✗ {message}[/red]")
+    error_console.print(f"[red]Error: {message}[/red]")
     return typer.Exit(code=2)
 
 
@@ -316,7 +316,7 @@ def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None
     is_prod = any(_is_production_tagged(tags) for tags in sources)
     if is_prod and not dry_run and not force:
         error_console.print(
-            "[bold red]⛔ SAFETY LOCK: Organization is tagged as 'production'.[/bold red]\n"
+            "[bold red]Teardown blocked: the organization is tagged as production.[/bold red]\n"
             "[red]Teardown would destroy production infrastructure and logs. "
             "To proceed, re-run with --force.[/red]"
         )
@@ -331,21 +331,21 @@ def _print_teardown_item(item: TeardownItemReport) -> None:
     msg = escape(item.message)
     if item.action in ("DELETED", "EMPTY"):
         console.print(
-            f"  [bold green]✓[/bold green] [green]{item.action}[/green] {r_type} "
+            f"  [bold green]{item.action}[/bold green] {r_type} "
             f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
         )
     elif item.action == "SIMULATED":
         console.print(
-            f"  [bold yellow]⚡[/bold yellow] [yellow]WOULD DELETE[/yellow] {r_type} "
+            f"  [bold yellow]WOULD DELETE[/bold yellow] {r_type} "
             f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
         )
     elif item.action == "NOT_FOUND":
-        console.print(f"  [dim]• NOT FOUND {r_type} {r_name} ({acct})[/dim]")
+        console.print(f"  [dim]NOT FOUND {r_type} {r_name} ({acct})[/dim]")
     elif item.action == "SKIPPED":
-        console.print(f"  [yellow]• SKIPPED {r_type} {r_name} ({acct}): {msg}[/yellow]")
+        console.print(f"  [yellow]SKIPPED {r_type} {r_name} ({acct}): {msg}[/yellow]")
     elif item.action == "FAILED":
         console.print(
-            f"  [bold red]✗ FAILED[/bold red] {r_type} [bold]{r_name}[/bold] ({acct}): [red]{msg}[/red]"
+            f"  [bold red]FAILED[/bold red] {r_type} [bold]{r_name}[/bold] ({acct}): [red]{msg}[/red]"
         )
 
 
@@ -375,7 +375,7 @@ def _load_inventory(
     inv = inventory_mod.connect(session_mgr, org.name, org.primary_region, bundle.config_dir)
     if from_log is not None:
         if not from_log.is_file():
-            error_console.print(f"[red]✗[/red] Log file not found: {from_log}")
+            error_console.print(f"[red]Error:[/red] log file not found: {from_log}")
             raise typer.Exit(code=1)
         found = inv.ingest_log(from_log)
         print_info(f"Read {found} change(s) tarmac made from {from_log}.")
@@ -417,7 +417,7 @@ def _confirm_teardown(
         _confirm_everything(bundle, inv)
         return
     confirm = typer.confirm(
-        "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
+        "This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
         "remove AWS Budgets, and detach SCPs"
         + (
             ", and DISABLE GuardDuty/Security Hub/Config delegation (finding history is deleted)"
@@ -498,7 +498,7 @@ def destroy_command(
         console.print(f"\n[bold blue]─── {phase_title} ───[/bold blue]")
 
     def _cli_on_progress(msg: str) -> None:
-        console.print(f"  [dim cyan]⏳ {escape(msg)}[/dim cyan]")
+        console.print(f"  [dim cyan]{escape(msg)}[/dim cyan]")
 
     on_phase_cb = _cli_on_phase if not json_output else None
     on_progress_cb = _cli_on_progress if not json_output else None

@@ -102,7 +102,7 @@ def _evaluate_cli_report(report: PreflightReport, strict: bool) -> None:
     )
 
     if report.failures > 0:
-        error_console.print(f"\n[red]✗[/red] {summary_msg}")
+        error_console.print(f"\n[red]Error:[/red] {summary_msg}")
         error_console.print(
             "[bold red]Pre-flight checks failed. Resolve blocking issues before deployment.[/bold red]\n"
         )
