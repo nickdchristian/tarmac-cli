@@ -17,6 +17,7 @@ from ..core.exceptions import AWS_ERRORS
 from ..core.logging import setup_logging, start_run
 from ..core.placeholders import find_placeholder_values
 from ..core.stack_names import Stack
+from ..core.text import plural
 from ..services.baseline import BaselineService
 from ..services.drift import DriftService
 from ..services.identity_base import SUPPORTED_SSO_REGIONS, _probe_region_for_instance
@@ -220,7 +221,7 @@ def validate_config(
         raise typer.Exit(code=1)
 
     _print_validation_table(bundle)
-    print_success("All configuration files and logical cross-references are valid!")
+    print_success("Configuration files and cross-references are valid.")
     placeholders = find_placeholder_values(bundle)
     if placeholders:
         print_warning(
@@ -334,9 +335,9 @@ def show_info(
             table.add_row("Feature Set", org_info["feature_set"])
             is_master = caller_acct == org_info["master_id"]
             role_msg = (
-                "[bold green]✓ Authenticated as Management Account[/bold green]"
+                "[bold green]Authenticated as Management Account[/bold green]"
                 if is_master
-                else f"[bold red]⚠ Warning: Caller is NOT the Management Account ({org_info['master_id']})[/bold red]"
+                else f"[bold red]Caller is not the Management Account ({org_info['master_id']})[/bold red]"
             )
             table.add_row("Role Verification", role_msg)
         else:
@@ -362,15 +363,16 @@ def show_info(
 def _credentials_verdict(is_root: bool, can_run_tarmac: bool) -> str:
     if is_root:
         return (
-            "[bold red]✗ Root credentials cannot assume roles in member accounts. Run 'tarmac bootstrap' "
-            "to create an IAM Identity Center login, then sign in with it.[/bold red]"
+            "[bold red]Not usable: Root credentials cannot assume roles in member accounts. Run "
+            "'tarmac bootstrap' to create an IAM Identity Center login, then sign in with it.[/bold red]"
         )
     if not can_run_tarmac:
         return (
-            "[yellow]✗ Cannot read the organization. Use management account credentials with Organizations read "
-            "access, and create the organization with 'tarmac deploy --phase 1' if it does not exist.[/yellow]"
+            "[yellow]Not usable: Cannot read the organization. Use management account credentials with "
+            "Organizations read access, and create the organization with 'tarmac deploy --phase 1' if it "
+            "does not exist.[/yellow]"
         )
-    return "[green]✓ Non-root and can read the organization[/green]"
+    return "[green]Usable: Non-root and can read the organization[/green]"
 
 
 def _eval_org_status(status: Any, bundle: Any) -> tuple[str, str, str, str, str | None]:
@@ -384,7 +386,7 @@ def _eval_ous_status(status: Any) -> tuple[str, str, str, str, str | None]:
     synced = status.ous_declared <= status.ous_live
     diff = status.ous_declared - status.ous_live
     badge = "[bold green]SYNCED[/bold green]" if synced else "[bold yellow]DRIFT[/bold yellow]"
-    action = f"Missing {diff} OU(s). Run: tarmac deploy --phase 2" if not synced else None
+    action = f"Missing {plural(diff, 'OU')}. Run: tarmac deploy --phase 2" if not synced else None
     return (
         "Organizational Units",
         f"{status.ous_declared} OUs declared",
@@ -398,7 +400,9 @@ def _eval_accounts_status(status: Any) -> tuple[str, str, str, str, str | None]:
     synced = status.accounts_declared <= status.accounts_live
     diff = status.accounts_declared - status.accounts_live
     badge = "[bold green]SYNCED[/bold green]" if synced else "[bold yellow]PENDING[/bold yellow]"
-    action = f"{diff} account(s) pending creation. Run: tarmac deploy --phase 4" if not synced else None
+    action = (
+        f"{plural(diff, 'account')} pending creation. Run: tarmac deploy --phase 4" if not synced else None
+    )
 
     live_label = f"{status.accounts_live} accounts live"
     if status.accounts_suspended > 0:
@@ -504,7 +508,7 @@ def _render_status_table(bundle: Any, status: Any) -> None:
             action_header="Action Required / Remediation",
         )
         print_info(
-            f"Reconciliation pending ({len(actions)} item(s)). Review actionable steps above or run 'tarmac deploy'.\n"
+            f"Reconciliation pending ({plural(len(actions), 'item')}). Review actionable steps above or run 'tarmac deploy'.\n"
         )
     else:
         print_success("Landing zone is fully reconciled and in sync with configuration.\n")
@@ -544,7 +548,7 @@ def _render_drift_table(report: Any) -> None:
 
     if report.has_drift:
         print_warning(
-            f"Drift detected across {report.drift_count + report.missing_count} item(s) "
+            f"Drift detected across {plural(report.drift_count + report.missing_count, 'item')} "
             f"({report.missing_count} missing, {report.drift_count} drifted). "
             "Execute the recommended remediation commands above or run 'tarmac deploy'.\n"
         )

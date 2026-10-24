@@ -2,8 +2,20 @@
 
 from rich.text import Text
 
-from ..services.plan import DeploymentPlan
+from ..services.plan import NO_CHANGE, DeploymentPlan
 from .ui import console, create_table, print_header, print_info
+
+# Summary wording for each action, in the order it is listed; other actions are listed after these as they are.
+_SUMMARY = {
+    "CREATE": "to create",
+    "IMPORT": "to import",
+    "UPDATE": "to update",
+    "APPLY": "to apply",
+    "MOVE": "to move",
+    "REPLACE": "to replace",
+    "SUSPEND": "to suspend",
+    "DELETE": "to delete",
+}
 
 _ACTION_STYLES = {
     "CREATE": "green",
@@ -41,5 +53,15 @@ def render_plan(plan: DeploymentPlan) -> None:
             print_info(note)
     counts = plan.counts()
     if counts:
-        print_info("Summary: " + ", ".join(f"{count} {action}" for action, count in sorted(counts.items())))
+        print_info(f"Plan: {summarize(counts)}.")
     print_info("Run without --dry-run to apply.")
+
+
+def summarize(counts: dict[str, int]) -> str:
+    """'7 to create, 4 to apply, 39 unchanged', like Terraform's plan line."""
+    parts = [f"{counts[action]} {verb}" for action, verb in _SUMMARY.items() if counts.get(action)]
+    parts += [f"{n} {a.lower()}" for a, n in sorted(counts.items()) if a not in _SUMMARY and a != NO_CHANGE]
+    unchanged = f"{counts[NO_CHANGE]} unchanged" if counts.get(NO_CHANGE) else ""
+    if not parts:
+        return f"no changes ({unchanged})" if unchanged else "no changes"
+    return ", ".join(parts + ([unchanged] if unchanged else []))

@@ -79,7 +79,7 @@ def test_destroy_blocked_for_production_tags_without_force(tmp_path: Path, env: 
     ):
         res = runner.invoke(app, ["destroy", "--yes", "-c", str(cfg)])
         assert res.exit_code == 1
-        assert "SAFETY LOCK" in res.output
+        assert "Teardown blocked" in res.output
         mock_all.assert_not_called()
 
         forced = runner.invoke(app, ["destroy", "--yes", "--force", "-c", str(cfg)])

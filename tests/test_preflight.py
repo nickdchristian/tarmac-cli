@@ -368,7 +368,7 @@ def test_check_iam_user_hygiene_warn(mock_session, test_bundle):
     res = service.check_iam_user_hygiene()
 
     assert res.status == PreflightCheckStatus.WARN
-    assert "3 Local IAM User(s)" in res.live_value
+    assert "3 Local IAM Users" in res.live_value
 
 
 def test_run_all_checks_compilation(mock_session, test_bundle):

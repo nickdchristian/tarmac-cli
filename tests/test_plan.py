@@ -265,6 +265,20 @@ def test_preview_ignores_key_order_but_not_content():
     assert (action, detail) == ("UPDATE", "template")
 
 
+@pytest.mark.parametrize(
+    ("counts", "line"),
+    [
+        ({"NO CHANGE": 39, "CREATE": 7, "APPLY": 4}, "7 to create, 4 to apply, 39 unchanged"),
+        ({"NO CHANGE": 3}, "no changes (3 unchanged)"),
+        ({"BLOCKED": 1, "DELETE": 2}, "2 to delete, 1 blocked"),
+    ],
+)
+def test_the_plan_summary_reads_like_a_sentence(counts, line):
+    from tarmac.cli.plan_view import summarize
+
+    assert summarize(counts) == line
+
+
 def test_a_baseline_stack_shows_the_ous_and_regions_whose_stack_instances_change(bundle):
     from tarmac.core.config_schema import BaselineStackDef
 

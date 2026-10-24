@@ -34,7 +34,7 @@ def test_cli_help_and_subcommand_helps():
 def test_cli_validate(sample_config_dir):
     result = runner.invoke(app, ["validate", "--config-dir", str(sample_config_dir)])
     assert result.exit_code == 0
-    assert "cross-references are valid!" in result.stdout
+    assert "cross-references are valid." in result.stdout
 
 
 def test_cli_info(monkeypatch):
@@ -343,7 +343,7 @@ def test_cli_deploy_run_prompts_and_yes(sample_config_dir, monkeypatch):
         ["deploy", "--config-dir", str(sample_config_dir), "--phase", "1", "--yes"],
     )
     assert result_yes.exit_code == 0
-    assert "Deployment completed successfully!" in result_yes.stdout
+    assert "Deployment complete." in result_yes.stdout
 
 
 def test_cli_global_profile(monkeypatch):
@@ -600,7 +600,7 @@ def test_cli_deploy_run_preflight_failure(monkeypatch, sample_config_dir):
 
     result = runner.invoke(app, ["deploy", "--config-dir", str(sample_config_dir), "--yes"])
     assert result.exit_code == 1
-    assert "Pre-flight found 1 blocking problem(s)" in result.output
+    assert "Pre-flight found 1 blocking problem;" in result.output
     assert "--skip-preflight" in result.output
 
 
@@ -790,8 +790,7 @@ def test_cli_deploy_dry_run_renders_every_phase(sample_config_dir, monkeypatch):
     for number in range(1, 7):
         assert f"Phase {number}: Title {number}" in result.stdout
     assert "Workloads" in result.stdout
-    assert "1 CREATE" in result.stdout
-    assert "6 NO CHANGE" in result.stdout
+    assert "Plan: 1 to create, 6 unchanged." in result.stdout
 
 
 def test_cli_deploy_dry_run_single_phase_json(sample_config_dir, monkeypatch):
