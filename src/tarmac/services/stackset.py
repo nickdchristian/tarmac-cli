@@ -82,9 +82,10 @@ class StackSetService:
         response = cf.update_stack_set(
             StackSetName=name, OperationPreferences=OPERATION_PREFERENCES, **settings
         )
-        self.wait(cf, name, response["OperationId"])
-        audit("update", f"stackset:{name}", Outcome.SUCCEEDED, f"Updated StackSet '{name}'")
-        return "UPDATED"
+        ok = self._finish(
+            cf, name, response["OperationId"], "update", f"stackset:{name}", f"Updated StackSet '{name}'"
+        )
+        return "UPDATED" if ok else "FAILED"
 
     @staticmethod
     def unchanged(
@@ -124,11 +125,12 @@ class StackSetService:
                 Regions=missing,
                 OperationPreferences=OPERATION_PREFERENCES,
             )
-            self.wait(cf, name, response["OperationId"])
-            audit(
+            self._finish(
+                cf,
+                name,
+                response["OperationId"],
                 "create",
                 f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
                 f"Deployed StackSet '{name}' to Region(s) {', '.join(missing)}",
                 regions=missing,
             )
@@ -140,11 +142,12 @@ class StackSetService:
                 RetainStacks=False,
                 OperationPreferences=OPERATION_PREFERENCES,
             )
-            self.wait(cf, name, response["OperationId"])
-            audit(
+            self._finish(
+                cf,
+                name,
+                response["OperationId"],
                 "delete",
                 f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
                 f"Removed StackSet '{name}' from Region(s) {', '.join(surplus)}",
                 regions=surplus,
             )
@@ -168,6 +171,23 @@ class StackSetService:
                 failures=failures,
             )
         return failures
+
+    def _finish(
+        self, cf: Any, name: str, operation_id: str, action: str, resource: str, done: str, **details: Any
+    ) -> bool:
+        """Wait for the operation and record ``done`` only if it succeeded; otherwise record how it ended."""
+        status = self.wait(cf, name, operation_id)
+        if status == "SUCCEEDED":
+            audit(action, resource, Outcome.SUCCEEDED, done, **details)
+            return True
+        audit(
+            action,
+            resource,
+            Outcome.FAILED,
+            f"StackSet operation {operation_id} on '{name}' ended {status}",
+            **details,
+        )
+        return False
 
     def wait(self, cf: Any, name: str, operation_id: str) -> str:
         deadline = time.monotonic() + self._timeout_seconds
