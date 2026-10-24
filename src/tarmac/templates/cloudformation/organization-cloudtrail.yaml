@@ -6,7 +6,7 @@
 # S3 bucket in the Log Archive account for audit purposes.
 
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Organization-wide CloudTrail — multi-account trail orchestration with SRA Log Archive support
+Description: Organization CloudTrail trail delivering to the log archive account
 
 Parameters:
   OrgName:

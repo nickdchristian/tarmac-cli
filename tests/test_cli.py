@@ -15,7 +15,7 @@ def test_cli_help_and_subcommand_helps():
     """Verify root help and help for all major subcommands."""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "Tarmac: Enterprise AWS Governance & Multi-Account Landing Zone CLI" in result.stdout
+    assert "Tarmac: set up and maintain a multi-account AWS Organization from YAML" in result.stdout
     for subcmd in [
         "bootstrap",
         "account",
@@ -174,11 +174,6 @@ def test_cli_init_project(tmp_path):
     assert (target / "accounts.yaml").exists()
     assert (target / "identity.yaml").exists()
     assert "Created" in result.stdout
-
-    target_pos = tmp_path / "positional_config"
-    result_pos = runner.invoke(app, ["init", str(target_pos)])
-    assert result_pos.exit_code == 0
-    assert (target_pos / "organization.yaml").exists()
 
     # With --force overwrites
     result_force = runner.invoke(app, ["init", "--config-dir", str(target), "--force"])

@@ -27,7 +27,7 @@ fi
 cd "$work"
 "$TARMAC_BIN" --version
 "$TARMAC_BIN" bootstrap --help >/dev/null
-"$TARMAC_BIN" init project/config --with-templates >/dev/null
+"$TARMAC_BIN" init --config-dir project/config --with-templates >/dev/null
 test -f project/cloudformation/organization-cloudtrail.yaml
 test -f project/policies/scp/foundational-guardrails.json
 "$TARMAC_BIN" validate --config-dir project/config >/dev/null

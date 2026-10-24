@@ -1,4 +1,4 @@
-"""AWS Governance CLI and Multi-Account Landing Zone Automation."""
+"""Set up and maintain a multi-account AWS Organization from YAML."""
 
 from importlib.metadata import PackageNotFoundError, version
 
