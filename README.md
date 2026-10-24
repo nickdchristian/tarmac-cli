@@ -163,6 +163,19 @@ security_services:
 `<org>-terraform-backend` stack's `BucketName` output. Locking uses S3 (`use_lockfile = true`, Terraform 1.10+);
 set `terraform_backend.enable_dynamodb: true` if you need a DynamoDB lock table.
 
+**Baseline stacks.** Your own CloudFormation templates, deployed in phase 4 to every active account in the listed
+OUs and their child OUs (`root` for all of them) through a StackSet, including accounts added later. StackSets can't deploy to the
+management account. Removing an entry deletes its StackSet and stacks. Templates can't use macros or transforms.
+
+```yaml
+baseline_stacks:
+  - name: iam-password-policy          # StackSet <org>-baseline-iam-password-policy
+    template_file: templates/password-policy.yaml   # relative to your project, like policy_file
+    target_ous: [Workloads, Sandbox]
+    regions: [us-east-1]
+    parameters: {MinimumLength: "14"}
+```
+
 **Example SCPs.** [`examples/policies/scp`](examples/policies/scp) has two optional policies, one restricting
 Regions and one stopping member accounts turning off GuardDuty or Security Hub. Keep their
 `OrganizationAccountAccessRole` exemption (tarmac works through that role), and test them on one OU before

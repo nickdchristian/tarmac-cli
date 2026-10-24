@@ -118,37 +118,62 @@ class StackSetService:
         missing = [r for r in regions if r not in present]
         surplus = sorted(present - set(regions))
         if missing:
-            response = cf.create_stack_instances(
-                StackSetName=name,
-                DeploymentTargets=targets,
-                Regions=missing,
-                OperationPreferences=OPERATION_PREFERENCES,
-            )
-            self.wait(cf, name, response["OperationId"])
-            audit(
-                "create",
-                f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
-                f"Deployed StackSet '{name}' to Region(s) {', '.join(missing)}",
-                regions=missing,
-            )
+            self._create_instances(cf, name, targets, missing)
         if surplus:
-            response = cf.delete_stack_instances(
-                StackSetName=name,
-                DeploymentTargets=targets,
-                Regions=surplus,
-                RetainStacks=False,
-                OperationPreferences=OPERATION_PREFERENCES,
-            )
-            self.wait(cf, name, response["OperationId"])
-            audit(
-                "delete",
-                f"stackset-instances:{name}",
-                Outcome.SUCCEEDED,
-                f"Removed StackSet '{name}' from Region(s) {', '.join(surplus)}",
-                regions=surplus,
-            )
+            self._delete_instances(cf, name, targets, surplus)
         return self._instance_failures(cf, name)
+
+    def sync_targets(self, cf: Any, name: str, ou_ids: list[str], regions: list[str]) -> list[str]:
+        """For a StackSet targeting OUs: give each OU instances in exactly ``regions``, remove the instances of
+        OUs no longer targeted, and report what is not current. Each instance records the OU it was deployed
+        for, so an OU without accounts has none and is targeted again on every run, which changes nothing."""
+        present: dict[str, set[str]] = {}
+        for instance in self.list_instances(cf, name):
+            present.setdefault(str(instance["OrganizationalUnitId"]), set()).add(str(instance["Region"]))
+        for ou in sorted(set(present) - set(ou_ids)):
+            self._delete_instances(cf, name, {"OrganizationalUnitIds": [ou]}, sorted(present[ou]))
+        for ou in ou_ids:
+            have = present.get(ou, set())
+            missing = [r for r in regions if r not in have]
+            surplus = sorted(have - set(regions))
+            if missing:
+                self._create_instances(cf, name, {"OrganizationalUnitIds": [ou]}, missing)
+            if surplus:
+                self._delete_instances(cf, name, {"OrganizationalUnitIds": [ou]}, surplus)
+        return self._instance_failures(cf, name)
+
+    def _create_instances(self, cf: Any, name: str, targets: dict[str, Any], regions: list[str]) -> None:
+        response = cf.create_stack_instances(
+            StackSetName=name,
+            DeploymentTargets=targets,
+            Regions=regions,
+            OperationPreferences=OPERATION_PREFERENCES,
+        )
+        self.wait(cf, name, response["OperationId"])
+        audit(
+            "create",
+            f"stackset-instances:{name}",
+            Outcome.SUCCEEDED,
+            f"Deployed StackSet '{name}' to Region(s) {', '.join(regions)}",
+            regions=regions,
+        )
+
+    def _delete_instances(self, cf: Any, name: str, targets: dict[str, Any], regions: list[str]) -> None:
+        response = cf.delete_stack_instances(
+            StackSetName=name,
+            DeploymentTargets=targets,
+            Regions=regions,
+            RetainStacks=False,
+            OperationPreferences=OPERATION_PREFERENCES,
+        )
+        self.wait(cf, name, response["OperationId"])
+        audit(
+            "delete",
+            f"stackset-instances:{name}",
+            Outcome.SUCCEEDED,
+            f"Removed StackSet '{name}' from Region(s) {', '.join(regions)}",
+            regions=regions,
+        )
 
     def _instance_failures(self, cf: Any, name: str) -> list[str]:
         failures = []

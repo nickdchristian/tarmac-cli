@@ -197,6 +197,14 @@ class ServiceControlPoliciesConfig(BaseModel):
     policies: list[SCPDef] = Field(default_factory=list)
 
 
+class BaselineStackDef(BaseModel):
+    name: str = Field(..., pattern=r"^[a-zA-Z][a-zA-Z0-9-]*$", max_length=64)
+    template_file: str = Field(..., min_length=1)
+    target_ous: list[str] = Field(..., min_length=1)
+    regions: list[str] = Field(..., min_length=1)
+    parameters: dict[str, str] = Field(default_factory=dict)
+
+
 class GuardDutyFeaturesConfig(BaseModel):
     """Optional GuardDuty protection plans. All off: each is billed on top of the foundational data sources.
 
@@ -354,6 +362,7 @@ class OrganizationConfig(BaseModel):
         default_factory=ServiceControlPoliciesConfig
     )
     ou_structure: list[OUDef] = Field(default_factory=list)
+    baseline_stacks: list[BaselineStackDef] = Field(default_factory=list)
     cloudtrail: CloudTrailConfig = Field(default_factory=CloudTrailConfig)
     terraform_backend: TerraformBackendConfig = Field(default_factory=TerraformBackendConfig)
     security_services: SecurityServicesConfig = Field(default_factory=SecurityServicesConfig)
