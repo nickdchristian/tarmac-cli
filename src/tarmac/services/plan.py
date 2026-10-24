@@ -20,7 +20,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.config_schema import BaselineStackDef, OUDef, ServiceControlPoliciesConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code
-from ..core.models import TAG_MANAGED_BY
+from ..core.models import TAG_MANAGED_BY, PreflightCheckResult, PreflightCheckStatus
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
@@ -35,6 +35,7 @@ from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
 from .ou import OUService
+from .preflight import PreflightService
 from .scp import SCPService
 from .stack_parameters import (
     audit_hardening_parameters,
@@ -249,8 +250,20 @@ class Planner:
 
     # Phase 1
 
+    @staticmethod
+    def _blocking_note(phase: PhasePlan, check: PreflightCheckResult) -> None:
+        """A preflight check that would stop the deploy, shown where the plan would otherwise look fine."""
+        if check.status in (PreflightCheckStatus.FAIL, PreflightCheckStatus.WARN) and check.action_required:
+            phase.notes.append(
+                f"{'Blocks the deploy' if check.status is PreflightCheckStatus.FAIL else 'Warning'}: "
+                f"{check.action_required}"
+            )
+
     def _phase_1(self, phase: PhasePlan) -> None:
         org = OrganizationService(self.session_mgr)
+        self._blocking_note(
+            phase, PreflightService(self.session_mgr, self.bundle).check_stack_name_prefix(self.region)
+        )
         self._stack(
             phase,
             self.session_mgr.get_client(
@@ -407,6 +420,10 @@ class Planner:
     def _phase_3(self, phase: PhasePlan) -> None:
         name = self.bundle.get_log_archive_account_name() or "log-archive"
         trail_stack = Stack.CLOUDTRAIL.for_org(self.org_name)
+        self._blocking_note(
+            phase,
+            PreflightService(self.session_mgr, self.bundle).check_declared_trail_outside_stack(self.region),
+        )
         account_id = self._account_id(name)
         if not account_id:
             declared = self.bundle.get_account(name)

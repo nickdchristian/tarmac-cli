@@ -112,9 +112,46 @@ def test_stacks_named_for_a_different_organization_name_are_flagged(bundle: Conf
 
     result = PreflightService(_session(cfn), bundle).check_stack_name_prefix("us-east-1")
 
-    assert result.status is PreflightCheckStatus.WARN
+    # No stack under the configured name: a deploy would build a second copy of everything, so it is blocked.
+    assert result.status is PreflightCheckStatus.FAIL
     assert "oldname" in result.live_value
     assert "Set organization.name back to 'oldname'" in (result.action_required or "")
+
+
+def test_leftover_stacks_under_another_name_only_warn(bundle: ConfigBundle):
+    name = bundle.org.organization.name
+    cfn = _stacks(f"{name}-tarmac-inventory", "oldname-tarmac-inventory")
+    result = PreflightService(_session(cfn), bundle).check_stack_name_prefix("us-east-1")
+    assert result.status is PreflightCheckStatus.WARN
+
+
+def _trail_session(trails: list[dict], stack_status: str | None) -> MagicMock:
+    cloudtrail, cfn = MagicMock(), MagicMock()
+    cloudtrail.describe_trails.return_value = {"trailList": trails}
+    if stack_status:
+        cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": stack_status}]}
+    else:
+        cfn.describe_stacks.side_effect = ClientError(
+            {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+        )
+    mgr = MagicMock()
+    mgr.get_client.side_effect = lambda name, **kw: cloudtrail if name == "cloudtrail" else cfn
+    return mgr
+
+
+def test_a_declared_trail_outside_tarmacs_stack_blocks_the_deploy(bundle: ConfigBundle):
+    declared = [{"Name": bundle.org.cloudtrail.trail_name}]
+    check = PreflightService(_trail_session(declared, None), bundle).check_declared_trail_outside_stack
+    result = check("us-east-1")
+    assert result.status is PreflightCheckStatus.FAIL
+    assert "organization.name" in (result.action_required or "")
+
+    in_stack = PreflightService(_trail_session(declared, "UPDATE_COMPLETE"), bundle)
+    assert in_stack.check_declared_trail_outside_stack("us-east-1").status is PreflightCheckStatus.PASS
+    rolled_back = PreflightService(_trail_session(declared, "ROLLBACK_COMPLETE"), bundle)
+    assert rolled_back.check_declared_trail_outside_stack("us-east-1").status is PreflightCheckStatus.FAIL
+    none = PreflightService(_trail_session([], None), bundle)
+    assert none.check_declared_trail_outside_stack("us-east-1").status is PreflightCheckStatus.PASS
 
 
 def test_stacks_matching_the_organization_name_pass(bundle: ConfigBundle):

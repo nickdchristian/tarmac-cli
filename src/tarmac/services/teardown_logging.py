@@ -51,7 +51,27 @@ class LoggingTeardown(TeardownBase):
         try:
             trail_client = self.session_mgr.get_client("cloudtrail", region_name=target_region)
             trail_arn = self._find_tarmac_trail_arn(trail_client, trail_name)
-            if trail_arn == "":
+            owner = (
+                self._other_stack_with_trail(
+                    self.session_mgr.get_client("cloudformation", region_name=target_region),
+                    trail_name,
+                    stack_name,
+                )
+                if trail_arn
+                else None
+            )
+            if owner:
+                results.append(
+                    TeardownItemReport(
+                        TRAIL,
+                        trail_name,
+                        "Management",
+                        mgmt_id,
+                        "SKIPPED",
+                        f"Belongs to stack {owner}, another tarmac deployment; not deleting it",
+                    )
+                )
+            elif trail_arn == "":
                 results.append(
                     TeardownItemReport(
                         TRAIL,
@@ -95,6 +115,32 @@ class LoggingTeardown(TeardownBase):
                 results.append(TeardownItemReport(TRAIL, trail_name, "Management", mgmt_id, "FAILED", str(e)))
 
         return results
+
+    @staticmethod
+    def _other_stack_with_trail(cfn_client: Any, trail_name: str, own_stack: str) -> str | None:
+        """Another tarmac CloudTrail stack that holds this trail: its tag alone can't say which deployment made it."""
+        suffix = f"-{Stack.CLOUDTRAIL.value}"
+        for page in cfn_client.get_paginator("list_stacks").paginate(
+            StackStatusFilter=[
+                "CREATE_COMPLETE",
+                "UPDATE_COMPLETE",
+                "UPDATE_ROLLBACK_COMPLETE",
+                "IMPORT_COMPLETE",
+            ]
+        ):
+            for summary in page.get("StackSummaries", []):
+                name = str(summary.get("StackName", ""))
+                if not name.endswith(suffix) or name == own_stack:
+                    continue
+                try:
+                    physical = cfn_client.describe_stack_resource(
+                        StackName=name, LogicalResourceId="OrganizationTrail"
+                    )["StackResourceDetail"].get("PhysicalResourceId", "")
+                except ClientError:
+                    continue
+                if str(physical).rsplit("/", 1)[-1] == trail_name:
+                    return name
+        return None
 
     @staticmethod
     def _find_tarmac_trail_arn(trail_client: Any, trail_name: str) -> str | None:

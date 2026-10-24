@@ -11,8 +11,9 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 from ..core.placeholders import find_placeholder_values
-from ..core.stack_names import TARMAC_STACK_SUFFIXES
+from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
 from ..core.text import plural
+from .cloudformation import CloudFormationService
 from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService, deployment_policy
 from .preflight_billing import BillingChecks
 from .preflight_org import OrganizationChecks
@@ -194,9 +195,14 @@ class PreflightService(OrganizationChecks, BillingChecks):
                 live_value="Unavailable",
             )
         prefixes: set[str] = set()
+        own = False
         for name in names:
             for suffix in TARMAC_STACK_SUFFIXES:
-                if name.endswith(f"-{suffix}") and not name.startswith(f"{org_name}-"):
+                if not name.endswith(f"-{suffix}"):
+                    continue
+                if name.startswith(f"{org_name}-"):
+                    own = True
+                else:
                     prefixes.add(name[: -len(suffix) - 1])
         if not prefixes:
             return PreflightCheckResult(
@@ -206,15 +212,63 @@ class PreflightService(OrganizationChecks, BillingChecks):
                 live_value="Consistent with organization.name",
             )
         found = ", ".join(sorted(prefixes))
+        # With no stack under the configured name at all, a deploy would build a second copy of everything.
         return PreflightCheckResult(
             name="Existing Tarmac Stacks",
             target=f"Region {target_region}",
-            status=PreflightCheckStatus.WARN,
+            status=PreflightCheckStatus.WARN if own else PreflightCheckStatus.FAIL,
             live_value=f"Stacks named for: {found}",
             action_required=(
                 f"organization.name is '{org_name}', but Tarmac stacks already exist under '{found}'. Stacks are "
                 f"named after organization.name, so deploying now would try to recreate resources those stacks "
                 f"already own and fail. Set organization.name back to '{found}'."
+            ),
+        )
+
+    def check_declared_trail_outside_stack(self, target_region: str) -> PreflightCheckResult:
+        """Fail when a trail with the declared name exists but tarmac's CloudTrail stack doesn't: creating the stack
+        would fail on the name, after the earlier phases had already run."""
+        declared = self.bundle.org.cloudtrail.trail_name
+        stack = Stack.CLOUDTRAIL.for_org(self.bundle.org.organization.name)
+        target = f"CloudTrail ({target_region})"
+        try:
+            trails = (
+                self.session_mgr.get_client("cloudtrail", region_name=target_region)
+                .describe_trails(trailNameList=[declared], includeShadowTrails=False)
+                .get("trailList", [])
+            )
+            if not trails:
+                return PreflightCheckResult(
+                    name="Declared Trail",
+                    target=target,
+                    status=PreflightCheckStatus.PASS,
+                    live_value="Not created yet",
+                )
+            cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
+            if CloudFormationService(self.session_mgr).is_usable(cfn, stack):
+                return PreflightCheckResult(
+                    name="Declared Trail",
+                    target=target,
+                    status=PreflightCheckStatus.PASS,
+                    live_value=f"In {stack}",
+                )
+        except (ClientError, BotoCoreError) as e:
+            logger.debug("Declared trail check: %s", e)
+            return PreflightCheckResult(
+                name="Declared Trail",
+                target=target,
+                status=PreflightCheckStatus.INFO,
+                live_value="Unavailable",
+            )
+        return PreflightCheckResult(
+            name="Declared Trail",
+            target=target,
+            status=PreflightCheckStatus.FAIL,
+            live_value=f"'{declared}' exists outside {stack}",
+            action_required=(
+                f"A trail named '{declared}' already exists, but not in the {stack} stack, so creating the stack would "
+                f"fail. If it belongs to another tarmac deployment, set organization.name to that deployment's name; "
+                f"otherwise delete the trail or set cloudtrail.trail_name to another name."
             ),
         )
 
@@ -319,6 +373,7 @@ class PreflightService(OrganizationChecks, BillingChecks):
             self.check_sample_values(),
             self.check_existing_organization_trail(home_region),
             self.check_stack_name_prefix(home_region),
+            self.check_declared_trail_outside_stack(home_region),
             self.check_sns_subscriptions(home_region),
             self.check_support_tier(),
             self.check_payment_and_tax(),
