@@ -545,3 +545,30 @@ def test_policy_calls_wait_until_central_configuration_takes_effect():
         stub.add_response("list_configuration_policies", {"ConfigurationPolicySummaries": []})
         assert _central(sh)._find_policy_id() is None
         stub.assert_no_pending_responses()
+
+
+CIS_VERSIONS = [
+    {"StandardsArn": CIS, "Name": "CIS AWS Foundations Benchmark v1.2.0"},
+    {
+        "StandardsArn": "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/5.0.0",
+        "Name": "x",
+    },
+    {
+        "StandardsArn": "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/1.4.0",
+        "Name": "x",
+    },
+    {
+        "StandardsArn": "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/3.0.0",
+        "Name": "x",
+    },
+]
+
+
+@pytest.mark.parametrize(
+    ("desired", "version"),
+    [("cis-aws-foundations-benchmark", "5.0.0"), ("cis-aws-foundations-benchmark/v/3.0.0", "3.0.0")],
+)
+def test_a_standard_with_several_versions_resolves_to_the_newest_unless_one_is_named(desired, version):
+    from tarmac.services.security_central import resolve_standard_arn
+
+    assert resolve_standard_arn(CIS_VERSIONS, desired).endswith(f"/v/{version}")

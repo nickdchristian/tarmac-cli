@@ -8,6 +8,7 @@ the finding aggregation Region.
 """
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -26,16 +27,28 @@ SELF_MANAGED = "SELF_MANAGED_SECURITY_HUB"
 
 
 def resolve_standard_arn(available: list[dict[str, Any]], desired: str) -> str:
-    """Find the ARN of a standard from a name like ``aws-foundational-security-best-practices``."""
+    """Find the ARN of a standard from a name like ``aws-foundational-security-best-practices``.
+
+    A name several versions match (CIS has 1.2.0 to 5.0.0) gets the newest; ``.../v/3.0.0`` picks one version.
+    """
     norm_desired = desired.lower().replace("_", "-")
-    for std in available:
-        std_arn = str(std.get("StandardsArn", ""))
-        if norm_desired in std_arn.lower() or norm_desired in str(std.get("Name", "")).lower():
-            return std_arn
+    matches = [
+        str(std.get("StandardsArn", ""))
+        for std in available
+        if norm_desired in str(std.get("StandardsArn", "")).lower()
+        or norm_desired in str(std.get("Name", "")).lower()
+    ]
+    if matches:
+        return max(matches, key=_standard_version)
     raise GovernanceError(
         f"Unknown Security Hub standard '{desired}'.",
         details="Check security_services.securityhub.standards in organization.yaml.",
     )
+
+
+def _standard_version(arn: str) -> tuple[int, ...]:
+    version = re.search(r"/v/([\d.]+)$", arn)
+    return tuple(int(part) for part in version.group(1).split(".") if part) if version else ()
 
 
 class SecurityHubCentralConfiguration:
