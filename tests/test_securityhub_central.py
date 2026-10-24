@@ -86,7 +86,8 @@ def test_first_run_switches_to_central_creates_the_policy_and_applies_it_to_the_
             {**_ASSOC_KEYS, "AssociationStatus": "PENDING"},
             {"ConfigurationPolicyIdentifier": "pol-1", "Target": {"RootId": ROOT}},
         )
-        _central(sh).apply()
+        # The deploy message names each standard with the version it resolved to.
+        assert _central(sh).apply() == [STD.split("/", 1)[1]]
         stub.assert_no_pending_responses()
 
 
@@ -594,3 +595,8 @@ def test_every_page_of_standards_is_read_so_the_newest_cis_is_found():
     assert len(standards) == 3
     assert sh.describe_standards.call_args_list[1].kwargs == {"NextToken": "t1"}
     assert resolve_standard_arn(standards, "cis-aws-foundations-benchmark") == cis.format("5.0.0")
+
+
+def test_a_standard_listed_twice_is_rejected():
+    with pytest.raises(ValueError, match="listed more than once"):
+        SecurityHubConfig(standards=["cis-aws-foundations-benchmark", "CIS_AWS_Foundations_Benchmark"])

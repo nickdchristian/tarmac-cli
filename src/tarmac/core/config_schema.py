@@ -247,6 +247,16 @@ class SecurityHubConfig(BaseModel):
     )
     standards: list[str] = Field(default_factory=lambda: ["aws-foundational-security-best-practices"])
 
+    @field_validator("standards")
+    def standards_listed_once(cls, v: list[str]) -> list[str]:
+        seen: set[str] = set()
+        for name in v:
+            key = name.lower().replace("_", "-")
+            if key in seen:
+                raise ValueError(f"'{name}' is listed more than once")
+            seen.add(key)
+        return v
+
 
 class ConfigRecorderConfig(BaseModel):
     enabled: bool = Field(
