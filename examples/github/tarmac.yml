@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 env:
-  TARMAC: tarmac-cli==0.4.2 # pin the version you have tested
+  # Pin the version you have tested. Releases of tarmac update this line.
+  TARMAC: tarmac-cli==0.4.2 # x-release-please-version
   CONFIG_DIR: config
 
 jobs:
