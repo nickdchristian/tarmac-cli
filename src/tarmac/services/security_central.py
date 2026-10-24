@@ -26,6 +26,19 @@ POLICY_NAME = "tarmac-security-baseline"
 SELF_MANAGED = "SELF_MANAGED_SECURITY_HUB"
 
 
+def all_standards(sh: Any) -> list[dict[str, Any]]:
+    """Every standard Security Hub offers. DescribeStandards is paged, and the newest CIS version can be past the
+    first page, so reading one page alone picks an older version."""
+    standards: list[dict[str, Any]] = []
+    token: str | None = None
+    while True:
+        resp = sh.describe_standards(**({"NextToken": token} if token else {}))
+        standards.extend(resp.get("Standards", []))
+        token = resp.get("NextToken")
+        if not token:
+            return standards
+
+
 def resolve_standard_arn(available: list[dict[str, Any]], desired: str) -> str:
     """Find the ARN of a standard from a name like ``aws-foundational-security-best-practices``.
 
@@ -147,7 +160,7 @@ class SecurityHubCentralConfiguration:
             waited += 5.0
 
     def _desired_policy(self) -> dict[str, Any]:
-        available = self.sh.describe_standards().get("Standards", [])
+        available = all_standards(self.sh)
         arns = sorted({resolve_standard_arn(available, s) for s in self.standards})
         # Disabling no controls enables all of them in the chosen standards, including ones AWS releases later.
         return {

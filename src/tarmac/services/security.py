@@ -15,7 +15,12 @@ from ..core.logging import bind
 from ..core.models import SecurityServiceReport
 from ..core.org_accounts import is_active, iter_accounts
 from ..core.text import plural
-from .security_central import POLICY_NAME, SecurityHubCentralConfiguration, resolve_standard_arn
+from .security_central import (
+    POLICY_NAME,
+    SecurityHubCentralConfiguration,
+    all_standards,
+    resolve_standard_arn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -545,7 +550,7 @@ class SecurityServicesService:
         Raises ClientError if AWS rejects a call and GovernanceError if a declared standard does not
         exist, so the region is reported as failed instead of silently lacking its standards.
         """
-        available = sh_client.describe_standards().get("Standards", [])
+        available = all_standards(sh_client)
         enabled_resp = sh_client.get_enabled_standards().get("StandardsSubscriptions", [])
         enabled_arns = {s.get("StandardsArn") for s in enabled_resp}
 
