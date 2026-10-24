@@ -1,6 +1,4 @@
-# =============================================================================
-# AWS Governance Configuration: Organization & Core Settings
-# =============================================================================
+# Organization settings, OUs, SCPs, CloudTrail and security services.
 
 organization:
   name: "myorg"                          # Lowercase prefix for stack and bucket names. Do not change it after the first deploy.
@@ -16,7 +14,7 @@ organization:
     CostCenter: "1040"
     Owner: "CloudPlatform"
 
-# Alternate contacts for the AWS Management Account
+# Alternate contacts for the management account and every member account
 contacts:
   billing:
     name: "Billing Team"
@@ -34,17 +32,9 @@ contacts:
     email: "security@example.com"
     phone: "+1-555-000-0003"
 
-# =============================================================================
-# Centralized Root Access Management
-# =============================================================================
-# AWS Organizations native root governance (eliminates individual member root passwords):
-# - enable_root_credentials_management: Centrally manages and recovers member account root
-#   credentials (passwords, MFA) from the organization level without requiring member console login.
-# - enable_root_sessions: Allows authorized administrators to start short-lived, audited temporary
-#   root sessions in member accounts via AWS STS/SSM for emergency break-glass operations.
-# - delegated_admin_account: Registers a designated security account (e.g. 'audit') as IAM
-#   delegated administrator, allowing security operators to manage root access without payer console access.
-# Note: Paired with the 'DenyMemberRootActivity' SCP below, which blocks all direct root logins.
+# Central root access management: manage member accounts' root credentials from the organization, allow
+# short audited root sessions for emergencies, and let the audit account run both. The DenyMemberRootActivity
+# SCP below blocks every other root sign-in.
 root_access_management:
   enabled: true
   enable_root_credentials_management: true

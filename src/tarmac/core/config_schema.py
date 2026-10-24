@@ -290,9 +290,8 @@ def _validate_webhook_url(v: str | None) -> str | None:
 def _validate_max_subscribers(v: list[EmailStr], service_name: str) -> list[EmailStr]:
     if len(v) > 10:
         raise ValueError(
-            f"AWS {service_name} supports a maximum of 10 notification subscribers per budget (received {len(v)}). "
-            "Enterprise best practice: consolidate multiple recipients into a shared team distribution list "
-            "(e.g. finops-alerts@company.com) or SNS topic."
+            f"AWS {service_name} allows at most 10 email recipients (got {len(v)}). "
+            "Use a shared team mailbox, such as finops-alerts@company.com, instead."
         )
     return v
 
@@ -401,9 +400,8 @@ class BudgetConfig(BaseModel):
     notification_emails: list[EmailStr] = Field(
         default_factory=list,
         description=(
-            "Dynamic list of recipient email addresses for budget alerts (up to 10 per AWS limit). "
-            "Enterprise best practice: use shared team distribution lists (e.g. finops-alerts@company.com) "
-            "rather than personal mailboxes for operational continuity."
+            "Who gets budget alerts (at most 10). A shared team mailbox keeps alerts reaching someone "
+            "when people leave."
         ),
     )
     incident_response_webhook_url: str | None = Field(
@@ -428,10 +426,7 @@ class AnomalyDetectionConfig(BaseModel):
     threshold_usd: float = Field(default=100.0, gt=0, description="Anomaly alert threshold in USD.")
     notification_emails: list[EmailStr] = Field(
         default_factory=list,
-        description=(
-            "Dynamic list of recipient email addresses for anomaly alerts (up to 10 per AWS limit). "
-            "Enterprise best practice: use shared team distribution lists (e.g. finops-alerts@company.com)."
-        ),
+        description=("Who gets cost anomaly alerts (at most 10). A shared team mailbox is best."),
     )
 
     @field_validator("notification_emails")

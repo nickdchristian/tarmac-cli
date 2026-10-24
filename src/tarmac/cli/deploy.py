@@ -437,21 +437,23 @@ def destroy_command(
     config_dir: ConfigDirOption = None,
     region: RegionOption = None,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Simulate teardown without deleting resources")
+        bool, typer.Option("--dry-run", help="Show what would be removed, without removing it")
     ] = False,
     yes: YesOption = False,
-    force: Annotated[bool, typer.Option("--force", help="Bypass production environment safety lock")] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Also remove resources tagged as production")
+    ] = False,
     preserve_backend: Annotated[
         bool,
-        typer.Option("--preserve-backend", help="Preserve Terraform backend state bucket and lock table"),
+        typer.Option("--preserve-backend", help="Keep the Terraform state bucket and lock table"),
     ] = False,
     disable_security_services: Annotated[
         bool,
         typer.Option(
             "--disable-security-services",
             help=(
-                "Also disable GuardDuty/Security Hub/Config delegation tarmac set up (runs with Phase 5). "
-                "Deletes finding history."
+                "Also turn off the GuardDuty, Security Hub and Config setup tarmac made (with phase 5). "
+                "This deletes their findings."
             ),
         ),
     ] = False,
@@ -460,8 +462,8 @@ def destroy_command(
         typer.Option(
             "--everything",
             help=(
-                "Full teardown: also remove OUs, Identity Center users/groups, organization settings and the "
-                "access role that tarmac created (never member accounts)"
+                "Also remove the OUs, Identity Center users and groups, organization settings, bootstrap "
+                "permission sets and inventory bucket tarmac created (never closes accounts)"
             ),
         ),
     ] = False,

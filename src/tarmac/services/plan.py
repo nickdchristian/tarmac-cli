@@ -32,7 +32,7 @@ from .cloudformation import CloudFormationService, lock_table_wanted
 from .config_recorder import service_linked_role_arn
 from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
-from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService
+from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
 from .ou import OUService
 from .scp import SCPService
 from .stack_parameters import (
@@ -266,20 +266,14 @@ class Planner:
             else PlanItem("organization", self.org_name, "CREATE", "with all features")
         )
         contacts = self.bundle.org.contacts
-        for label, contact in (
-            ("BILLING", contacts.billing),
-            ("OPERATIONS", contacts.operations),
-            ("SECURITY", contacts.security),
-        ):
-            self._check(
-                phase,
-                "alternate contact",
-                label.lower(),
-                lambda label=label, contact=contact: (
-                    (NO_CHANGE, str(contact.email))
-                    if org._contact_matches(org._current_contact(label), contact)
-                    else ("UPDATE", f"set to {contact.name} <{contact.email}>")
-                ),
+        stale = org.stale_contacts(contacts)
+        for label, contact in contact_types(contacts).items():
+            phase.items.append(
+                PlanItem(
+                    "alternate contact", label.lower(), "UPDATE", f"set to {contact.name} <{contact.email}>"
+                )
+                if label in stale
+                else PlanItem("alternate contact", label.lower(), NO_CHANGE, str(contact.email))
             )
         self._check(phase, "trusted access", "AWS services", lambda: self._trusted_access(org))
         root = self.bundle.org.root_access_management
@@ -541,6 +535,14 @@ class Planner:
                     if stale:
                         action, detail = "UPDATE", "tags " + ", ".join(stale)
                 phase.items.append(PlanItem("account", acct.name, action, detail, acct.name))
+                if current.account_id and current.action != "SUSPENDED":
+                    self._check(
+                        phase,
+                        "alternate contacts",
+                        "billing, operations, security",
+                        lambda a=current.account_id: self._member_contacts(a),
+                        acct.name,
+                    )
             budget = acct.baseline.budget if acct.baseline else None
             if not budget or (current is not None and current.action == "SUSPENDED"):
                 continue
@@ -567,6 +569,10 @@ class Planner:
                     phase.items.append(PlanItem("account", item.name, "SUSPEND", item.reason, item.name))
             self._baseline_stacks(phase)
         phase.notes.append("Account IDs are written to outputs/accounts.json and outputs/accounts.env.")
+
+    def _member_contacts(self, account_id: str) -> tuple[str, str]:
+        stale = OrganizationService(self.session_mgr).stale_contacts(self.bundle.org.contacts, account_id)
+        return ("UPDATE", "set " + ", ".join(t.lower() for t in stale)) if stale else (NO_CHANGE, "")
 
     # Phase 5
 

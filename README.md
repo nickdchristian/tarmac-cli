@@ -1,5 +1,6 @@
 # Tarmac
 
+[![CI](https://github.com/nickdchristian/tarmac-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/nickdchristian/tarmac-cli/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/tarmac-cli)](https://pypi.org/project/tarmac-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/tarmac-cli)](https://pypi.org/project/tarmac-cli/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
@@ -83,7 +84,7 @@ account.
 | 1 | Organization settings, contacts, trusted services, root access management, cost tags, the inventory bucket |
 | 2 | OUs and service control policies |
 | 3 | Log archive buckets and the organization CloudTrail |
-| 4 | Member accounts, their tags, budgets and default VPC cleanup |
+| 4 | Member accounts, their tags, alternate contacts, budgets and default VPC cleanup |
 | 5 | Terraform state backend, audit account, AWS Config, GuardDuty, Security Hub, root user alert |
 | 6 | Identity Center permission sets, users, groups and assignments |
 
@@ -209,6 +210,12 @@ tarmac logs run.jsonl --run latest            # what the last run did, and what 
 tarmac logs run.jsonl --outcome failed
 ```
 
+## Upgrading
+
+Tarmac is pre-1.0, so a minor release can change commands or config. Read the breaking changes in
+[CHANGELOG.md](CHANGELOG.md) before upgrading; an entry names the commands of its own release, which a later
+release may have renamed again.
+
 ## Development
 
 ```bash
@@ -218,6 +225,8 @@ uv run ruff check . && uv run ruff format --check . && uv run basedpyright
 uv run cfn-lint src/tarmac/templates/cloudformation/*.yaml
 uv run tarmac validate --config-dir examples/config
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 
