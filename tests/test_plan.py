@@ -263,3 +263,17 @@ def test_preview_ignores_key_order_but_not_content():
         _cfn("UPDATE_COMPLETE", {}, live, merge_tags()), "s", template_body=changed
     )
     assert (action, detail) == ("UPDATE", "template")
+
+
+@pytest.mark.parametrize(
+    ("counts", "line"),
+    [
+        ({"NO CHANGE": 39, "CREATE": 7, "APPLY": 4}, "7 to create, 4 to apply, 39 unchanged"),
+        ({"NO CHANGE": 3}, "no changes (3 unchanged)"),
+        ({"BLOCKED": 1, "DELETE": 2}, "2 to delete, 1 blocked"),
+    ],
+)
+def test_the_plan_summary_reads_like_a_sentence(counts, line):
+    from tarmac.cli.plan_view import summarize
+
+    assert summarize(counts) == line
