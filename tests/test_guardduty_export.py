@@ -71,6 +71,12 @@ def test_creates_the_export_when_the_detector_has_none():
     )
 
 
+def test_an_export_described_without_its_bucket_owner_still_matches():
+    gd = _gd({"DestinationArn": BUCKET, "KmsKeyArn": KEY})
+    assert reconcile_findings_export(gd, "det", ON, "eu-west-1")[0] == "NO CHANGE"
+    gd.update_publishing_destination.assert_not_called()
+
+
 def test_leaves_a_matching_export_alone():
     gd = _gd(_wanted())
     assert reconcile_findings_export(gd, "det", ON, "eu-west-1")[0] == "NO CHANGE"

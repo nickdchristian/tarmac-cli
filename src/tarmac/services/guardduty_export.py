@@ -109,7 +109,9 @@ def reconcile_findings_export(
         detail = f"already exports to {current.rsplit(':', 1)[-1]}, which tarmac leaves alone"
         audit("create", resource, Outcome.SKIPPED, f"GuardDuty in {region} {detail}", region=region)
         return NO_CHANGE, detail
-    if all(props.get(key) == value for key, value in wanted.items()):
+    # Compare only what DescribePublishingDestination is known to return: it can leave out ExpectedBucketOwner,
+    # which would otherwise make every run look like a change.
+    if all(props.get(key) == wanted[key] for key in ("DestinationArn", "KmsKeyArn")):
         return NO_CHANGE, bucket
     if not dry_run:
         gd.update_publishing_destination(
