@@ -68,6 +68,9 @@ class WorkloadTeardown(TeardownBase):
                 noun="budget stack",
             ):
                 results.append(item)
+            if status:
+                # The stack's own budget has this name too; deleting the stack removes it.
+                return results
 
             budgets_client = self.session_mgr.get_member_client(acct_id, "budgets", region_name="us-east-1")
             try:

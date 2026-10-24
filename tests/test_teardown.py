@@ -188,9 +188,30 @@ def test_teardown_budgets(test_bundle):
     deleted_cfn = [r for r in reports if r.resource_type == "CloudFormation Stack" and r.action == "DELETED"]
     deleted_budgets = [r for r in reports if r.resource_type == "AWS Budget" and r.action == "DELETED"]
     assert len(deleted_cfn) == len(test_bundle.accounts.accounts)
-    assert len(deleted_budgets) == len(test_bundle.accounts.accounts)
     assert mock_cfn.delete_stack.call_count == len(test_bundle.accounts.accounts)
-    assert mock_budgets.delete_budget.call_count == len(test_bundle.accounts.accounts)
+    # The stack's own budget shares its name; deleting the stack removes it, so it isn't deleted twice.
+    assert deleted_budgets == []
+    mock_budgets.delete_budget.assert_not_called()
+
+
+def test_a_budget_older_releases_created_directly_is_deleted_when_there_is_no_stack():
+    mgr = MagicMock(spec=AwsSessionManager)
+    cfn, budgets = MagicMock(), MagicMock()
+    cfn.describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+    )
+    budgets.describe_budget.return_value = {"Budget": {}}
+    mgr.get_member_client.side_effect = lambda acct, svc, **kw: {"cloudformation": cfn, "budgets": budgets}[
+        svc
+    ]
+    mgr.default_region = "us-east-1"
+
+    reports = TeardownService(mgr).teardown_account_budget("dev", "111111111111", dry_run=False)
+
+    assert [(r.resource_type, r.action) for r in reports if r.action != "NOT_FOUND"] == [
+        ("AWS Budget", "DELETED")
+    ]
+    budgets.delete_budget.assert_called_once_with(AccountId="111111111111", BudgetName="dev-monthly-budget")
 
 
 def test_teardown_scps(test_bundle):
