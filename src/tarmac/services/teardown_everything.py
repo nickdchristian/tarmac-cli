@@ -17,6 +17,7 @@ from ..core.inventory import Inventory
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from ..core.org_accounts import is_active, iter_accounts
 from ..core.stack_names import Stack
+from ..core.text import plural
 from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket
@@ -491,7 +492,7 @@ class EverythingTeardown(TeardownBase):
         mgmt_id = self._get_management_account_id()
         stack_name = Stack.INVENTORY.for_org(bundle.org.organization.name)
         if inventory.count() and not dry_run:
-            message = f"Kept: it still records {inventory.count()} item(s) that were not removed"
+            message = f"Kept: it still records {plural(inventory.count(), 'item')} left in place"
             results.append(TeardownItemReport(STACK, stack_name, "Management", mgmt_id, "SKIPPED", message))
             return results
         region = bundle.org.organization.primary_region

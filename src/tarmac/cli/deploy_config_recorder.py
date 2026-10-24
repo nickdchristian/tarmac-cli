@@ -7,6 +7,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import GovernanceError
 from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
+from ..core.text import plural
 from ..services.cloudformation import CloudFormationService
 from ..services.config_recorder import ConfigRecorderService
 from ..services.stack_parameters import (
@@ -61,7 +62,7 @@ def deploy_config_recorder(
     kms_key_arn = outputs.get("KmsKeyArn", "")
 
     regions = config_recorder_regions(bundle, target_region)
-    print_info(f"Deploying AWS Config recorders to {len(regions)} Region(s) of every account...")
+    print_info(f"Deploying AWS Config recorders to {plural(len(regions), 'Region')} of every account...")
     report = ConfigRecorderService(session_mgr, cfn_service).deploy(
         org_name=org_name,
         template_file=resolve_resource_path("cloudformation/config-recorder.yaml", project_root=project_root),
@@ -79,5 +80,5 @@ def deploy_config_recorder(
         )
     print_success(
         f"AWS Config recorders: StackSet {report.stack_set_action.lower()}, "
-        f"{len(report.management_stacks)} management account stack(s)."
+        f"{plural(len(report.management_stacks), 'management account stack')}."
     )

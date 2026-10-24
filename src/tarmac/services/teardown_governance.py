@@ -8,6 +8,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
 from ..core.stack_names import Stack
+from ..core.text import plural
 from .identity import IdentityService
 from .scp import SCPService
 from .teardown_base import STACK, TeardownBase
@@ -60,7 +61,7 @@ class GovernanceTeardown(TeardownBase):
                     pol_id = str(existing[p_name]["Id"])
                     targets = scp_service.list_targets_for_policy(pol_id)
                     if dry_run:
-                        message = f"Would detach from {len(targets)} target(s) and delete"
+                        message = f"Would detach from {plural(len(targets), 'target')} and delete"
                         results.append(
                             TeardownItemReport(SCP, p_name, "Management", mgmt_id, "SIMULATED", message)
                         )

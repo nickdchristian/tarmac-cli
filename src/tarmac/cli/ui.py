@@ -34,16 +34,16 @@ def print_header(title: str, subtitle: str = "") -> None:
 
 
 def print_success(message: str) -> None:
-    console.print(f"[bold green]✓[/bold green] {message}")
+    console.print(f"[green]{message}[/green]")
 
 
 def print_info(message: str) -> None:
     """Print an informational message."""
-    console.print(f"[cyan]ℹ[/cyan] {message}")
+    console.print(message)
 
 
 def print_warning(message: str) -> None:
-    console.print(f"[bold yellow]⚠[/bold yellow] {message}")
+    console.print(f"[bold yellow]Warning:[/bold yellow] {message}")
 
 
 def print_action_panel(

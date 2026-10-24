@@ -9,6 +9,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import PreflightCheckResult, PreflightCheckStatus
 from ..core.org_accounts import is_active, iter_accounts
+from ..core.text import plural
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ class OrganizationChecks:
                 name="Local IAM User Hygiene",
                 target="Management Account",
                 status=PreflightCheckStatus.WARN,
-                live_value=f"{user_count} Local IAM User(s) Found",
+                live_value=f"{plural(user_count, 'Local IAM User')} Found",
                 action_required="Migrate local users to IAM Identity Center and deprecate IAM users",
             )
         except AWS_ERRORS as e:
@@ -201,7 +202,7 @@ class OrganizationChecks:
                 status=PreflightCheckStatus.WARN,
                 live_value=f"{active_accounts} active accounts; quota could not be verified",
                 action_required=(
-                    f"Confirm the account quota allows {declared_count} more account(s) in AWS Service Quotas "
+                    f"Confirm the account quota allows {plural(declared_count, 'more account')} in AWS Service Quotas "
                     "(code: L-25807E2B); grant servicequotas:GetServiceQuota to automate this check"
                 ),
             )
