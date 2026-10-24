@@ -691,8 +691,12 @@ Outputs:
     Condition: ExportGuardDutyFindings
     Description: GuardDuty findings export S3 bucket ARN
     Value: !GetAtt GuardDutyFindingsBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-GuardDutyFindingsBucketArn'
 
   GuardDutyFindingsKmsKeyArn:
     Condition: ExportGuardDutyFindings
     Description: KMS key GuardDuty encrypts exported findings with
     Value: !GetAtt LogArchiveKmsKey.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-GuardDutyFindingsKmsKeyArn'
