@@ -17,6 +17,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import GovernanceError
 from ..core.logging import bind
 from ..core.models import PreflightCheckStatus, TeardownItemReport
+from ..core.text import plural
 from ..services.organization import OrganizationService
 from ..services.plan import Planner
 from ..services.preflight import PreflightService
@@ -83,14 +84,14 @@ def _require_yes_for_json(dry_run: bool, yes: bool, json_output: bool) -> None:
     """--json only changes the output format; it must never stand in for consent on live changes."""
     if json_output and not (dry_run or yes):
         error_console.print(
-            "[red]✗ --json cannot prompt for confirmation. Re-run with --yes to confirm a live "
+            "[red]Error: --json cannot prompt for confirmation. Re-run with --yes to confirm a live "
             "operation, or with --dry-run to preview it.[/red]"
         )
         raise typer.Exit(code=2)
 
 
 def _usage_error(message: str) -> typer.Exit:
-    error_console.print(f"[red]✗ {message}[/red]")
+    error_console.print(f"[red]Error: {message}[/red]")
     return typer.Exit(code=2)
 
 
@@ -124,12 +125,14 @@ def _preflight_gate(session_mgr: AwsSessionManager, bundle: ConfigBundle, json_o
     if report.failures:
         failures = [c for c in report.checks if c.status == PreflightCheckStatus.FAIL]
         raise GovernanceError(
-            f"Pre-flight found {report.failures} blocking problem(s); nothing was deployed.",
+            f"Pre-flight found {plural(report.failures, 'blocking problem')}; nothing was deployed.",
             details="\n".join(f"{c.name}: {c.action_required}" for c in failures)
             + "\nRun `tarmac preflight` for the full report, or re-run with --skip-preflight to bypass.",
         )
     if report.warnings and not json_output:
-        print_warning(f"Pre-flight passed with {report.warnings} warning(s); `tarmac preflight` lists them.")
+        print_warning(
+            f"Pre-flight passed with {plural(report.warnings, 'warning')}; `tarmac preflight` lists them."
+        )
 
 
 def _check_deploy_options(
@@ -256,7 +259,7 @@ def deploy_command(
             payload = {"status": "COMPLETED", "phases_executed": phases, "management_account_id": mgmt_id}
             print(json.dumps(payload, indent=2))
         else:
-            print_success("Deployment completed successfully!")
+            print_success("Deployment complete.")
     except GovernanceError as e:
         if json_output:
             print(json.dumps({"status": "FAILED", "error": str(e)}, indent=2))
@@ -316,7 +319,7 @@ def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None
     is_prod = any(_is_production_tagged(tags) for tags in sources)
     if is_prod and not dry_run and not force:
         error_console.print(
-            "[bold red]⛔ SAFETY LOCK: Organization is tagged as 'production'.[/bold red]\n"
+            "[bold red]Teardown blocked: the organization is tagged as production.[/bold red]\n"
             "[red]Teardown would destroy production infrastructure and logs. "
             "To proceed, re-run with --force.[/red]"
         )
@@ -331,21 +334,21 @@ def _print_teardown_item(item: TeardownItemReport) -> None:
     msg = escape(item.message)
     if item.action in ("DELETED", "EMPTY"):
         console.print(
-            f"  [bold green]✓[/bold green] [green]{item.action}[/green] {r_type} "
+            f"  [bold green]{item.action:<12}[/bold green] {r_type} "
             f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
         )
     elif item.action == "SIMULATED":
         console.print(
-            f"  [bold yellow]⚡[/bold yellow] [yellow]WOULD DELETE[/yellow] {r_type} "
+            f"  [bold yellow]{'WOULD DELETE':<12}[/bold yellow] {r_type} "
             f"[bold]{r_name}[/bold] ({acct}): [dim]{msg}[/dim]"
         )
     elif item.action == "NOT_FOUND":
-        console.print(f"  [dim]• NOT FOUND {r_type} {r_name} ({acct})[/dim]")
+        console.print(f"  [dim]{'NOT FOUND':<12} {r_type} {r_name} ({acct})[/dim]")
     elif item.action == "SKIPPED":
-        console.print(f"  [yellow]• SKIPPED {r_type} {r_name} ({acct}): {msg}[/yellow]")
+        console.print(f"  [yellow]{'SKIPPED':<12} {r_type} {r_name} ({acct}): {msg}[/yellow]")
     elif item.action == "FAILED":
         console.print(
-            f"  [bold red]✗ FAILED[/bold red] {r_type} [bold]{r_name}[/bold] ({acct}): [red]{msg}[/red]"
+            f"  [bold red]{'FAILED':<12}[/bold red] {r_type} [bold]{r_name}[/bold] ({acct}): [red]{msg}[/red]"
         )
 
 
@@ -375,10 +378,10 @@ def _load_inventory(
     inv = inventory_mod.connect(session_mgr, org.name, org.primary_region, bundle.config_dir)
     if from_log is not None:
         if not from_log.is_file():
-            error_console.print(f"[red]✗[/red] Log file not found: {from_log}")
+            error_console.print(f"[red]Error:[/red] Log file not found: {from_log}")
             raise typer.Exit(code=1)
         found = inv.ingest_log(from_log)
-        print_info(f"Read {found} change(s) tarmac made from {from_log}.")
+        print_info(f"Read {plural(found, 'change')} tarmac made from {from_log}.")
     return inv
 
 
@@ -393,7 +396,7 @@ def _confirm_everything(bundle: Any, inv: inventory_mod.Inventory) -> None:
             "organization settings will be left alone. Rebuild it with --inventory-from-log <run log>."
         )
     else:
-        console.print(f"[dim]Inventory: {inv.count()} item(s) recorded at {inv.location}[/dim]")
+        console.print(f"[dim]Inventory: {plural(inv.count(), 'item')} recorded at {inv.location}[/dim]")
     expected = bundle.org.organization.name
     typed = typer.prompt(
         f"Type the organization name ({expected}) to confirm", default="", show_default=False
@@ -417,7 +420,7 @@ def _confirm_teardown(
         _confirm_everything(bundle, inv)
         return
     confirm = typer.confirm(
-        "⚠️  This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
+        "This will delete all deployed CloudFormation stacks, purge associated S3 log/state buckets, "
         "remove AWS Budgets, and detach SCPs"
         + (
             ", and DISABLE GuardDuty/Security Hub/Config delegation (finding history is deleted)"
@@ -498,7 +501,7 @@ def destroy_command(
         console.print(f"\n[bold blue]─── {phase_title} ───[/bold blue]")
 
     def _cli_on_progress(msg: str) -> None:
-        console.print(f"  [dim cyan]⏳ {escape(msg)}[/dim cyan]")
+        console.print(f"  [dim cyan]{escape(msg)}[/dim cyan]")
 
     on_phase_cb = _cli_on_phase if not json_output else None
     on_progress_cb = _cli_on_progress if not json_output else None
@@ -565,12 +568,14 @@ def destroy_command(
 
     console.print(table)
     if report.status == "FAILED":
-        print_warning(f"Teardown finished with {report.failed_count} failure(s).")
+        error_console.print(
+            f"[red]Error: Teardown finished with {plural(report.failed_count, 'failure')}.[/red]"
+        )
         raise typer.Exit(code=1)
     if dry_run:
         print_info("Teardown dry-run simulation complete.")
     else:
-        print_success(f"Teardown complete: {report.deleted_count} resource(s) removed.")
+        print_success(f"Teardown complete: {plural(report.deleted_count, 'resource')} removed.")
         if phase is None and not everything:
             _print_teardown_retained_notice(security_disabled=disable_security_services)
             print_info("Add --everything to also remove OUs, users, groups, settings and the access role.")

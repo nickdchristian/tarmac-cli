@@ -21,6 +21,7 @@ from ..core.models import (
     TAG_VERSION,
 )
 from ..core.org_accounts import active_account_ids
+from ..core.text import plural
 
 logger = logging.getLogger(__name__)
 
@@ -440,7 +441,7 @@ class OrganizationService:
         if failures:
             raise GovernanceError(
                 f"Could not register account {account_id} as delegated administrator for "
-                f"{len(failures)} service(s).",
+                f"{plural(len(failures), 'service')}.",
                 details="\n".join(failures),
             )
         return registered
@@ -541,7 +542,7 @@ class OrganizationService:
                 "activate",
                 "cost-allocation-tags",
                 Outcome.SUCCEEDED,
-                f"Activated {len(to_activate)} cost allocation tag(s): {', '.join(to_activate)}",
+                f"Activated {plural(len(to_activate), 'cost allocation tag')}: {', '.join(to_activate)}",
                 tag_keys=to_activate,
             )
             return to_activate

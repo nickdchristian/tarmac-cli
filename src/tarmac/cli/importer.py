@@ -46,7 +46,7 @@ def import_command(
         service = ImportService(session_mgr, region or session_mgr.default_region)
         report = service.discover_and_write(config_dir, name=name, include_identity=not no_identity)
     except AWS_ERRORS as exc:
-        error_console.print(f"[red]✗ Could not read the organization:[/red] {exc}")
+        error_console.print(f"[red]Error: Could not read the organization:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     print_success(

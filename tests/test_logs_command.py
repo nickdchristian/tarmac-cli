@@ -159,7 +159,7 @@ def test_corrupt_lines_are_skipped_and_reported(log_file):
 
     assert skipped == 2
     assert records
-    assert "2 line(s)" in res.output
+    assert "Skipped 2 lines" in res.output
 
 
 def test_incomplete_run_is_reported(log_file):

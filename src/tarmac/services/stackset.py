@@ -11,6 +11,7 @@ from ..core.audit import Outcome, audit
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code
 from ..core.models import TAG_MANAGED_BY
 from ..core.tagging import to_cfn_tags
+from ..core.text import plural
 
 TERMINAL_OPERATION_STATUSES = frozenset({"SUCCEEDED", "FAILED", "STOPPED"})
 # Failures in one account or Region must not stop the others; they are collected and reported together.
@@ -154,7 +155,7 @@ class StackSetService:
             "create",
             f"stackset-instances:{name}",
             Outcome.SUCCEEDED,
-            f"Deployed StackSet '{name}' to Region(s) {', '.join(regions)}",
+            f"Deployed StackSet '{name}' to {', '.join(regions)}",
             regions=regions,
         )
 
@@ -171,7 +172,7 @@ class StackSetService:
             "delete",
             f"stackset-instances:{name}",
             Outcome.SUCCEEDED,
-            f"Removed StackSet '{name}' from Region(s) {', '.join(regions)}",
+            f"Removed StackSet '{name}' from {', '.join(regions)}",
             regions=regions,
         )
 
@@ -189,7 +190,7 @@ class StackSetService:
                 "create",
                 f"stackset-instances:{name}",
                 Outcome.FAILED,
-                f"{len(failures)} instance(s) of StackSet '{name}' are not current",
+                f"StackSet '{name}' has {plural(len(failures), 'out-of-date instance')}",
                 failures=failures,
             )
         return failures
@@ -239,9 +240,13 @@ class StackSetService:
                 self.wait(cf, name, response["OperationId"])
                 left = self.list_instances(cf, name)
                 if left:
-                    return (resource, "FAILED", f"{len(left)} stack instance(s) could not be deleted")
+                    return (resource, "FAILED", f"{plural(len(left), 'stack instance')} could not be deleted")
             cf.delete_stack_set(StackSetName=name)
             audit("delete", f"stackset:{name}", Outcome.SUCCEEDED, f"Deleted StackSet '{name}'")
-            return (resource, "DELETED", f"Deleted the StackSet and {len(instances)} stack instance(s)")
+            return (
+                resource,
+                "DELETED",
+                f"Deleted the StackSet and {plural(len(instances), 'stack instance')}",
+            )
         except AWS_ERRORS as e:
             return (resource, "FAILED", str(e))

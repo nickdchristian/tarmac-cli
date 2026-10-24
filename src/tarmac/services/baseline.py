@@ -22,6 +22,7 @@ from ..core.models import (
     VpcCleanupReport,
 )
 from ..core.templates import resolve_resource_path
+from ..core.text import plural
 from .cloudformation import CloudFormationService
 
 logger = logging.getLogger(__name__)
@@ -89,10 +90,10 @@ class BaselineService:
         reports: list[VpcCleanupReport] = []
 
         logger.debug(
-            "Scanning for default VPCs in account '%s' (%s) across %d region(s)...",
+            "Scanning for default VPCs in account '%s' (%s) across %s...",
             account_name,
             account_id,
-            len(target_regions),
+            plural(len(target_regions), "region"),
         )
 
         if len(target_regions) <= 1:
@@ -151,7 +152,7 @@ class BaselineService:
                 f"default-vpc:{account_id}:{region}",
                 Outcome.SUCCEEDED,
                 f"Deleted default VPC {vpc_id} in {region} "
-                f"({len(detached_igws)} internet gateway(s), {len(deleted_subnets)} subnet(s))",
+                f"({plural(len(detached_igws), 'internet gateway')}, {plural(len(deleted_subnets), 'subnet')})",
                 vpc_id=vpc_id,
                 internet_gateways=detached_igws,
                 subnets=deleted_subnets,

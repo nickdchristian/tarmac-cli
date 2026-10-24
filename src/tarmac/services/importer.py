@@ -24,6 +24,7 @@ from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
 from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
+from ..core.text import plural
 from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
 from .preflight import _LIVE_STACK_STATUSES
 
@@ -217,7 +218,7 @@ class ImportService:
         foreign = [n for n in names if n not in ours]
         if foreign:
             self.report.todos.append(
-                f"Organization trail(s) already exist: {', '.join(foreign)}. Tarmac creates its own trail and log "
+                f"Found {plural(len(foreign), 'existing organization trail')}: {', '.join(foreign)}. Tarmac creates its own trail and log "
                 "bucket in phase 3, which AWS rejects while another organization trail exists. Delete or "
                 "replace the old trail first, or disable CloudTrail management for this deployment."
             )
@@ -466,13 +467,13 @@ class ImportService:
                         _add_assignment(group, ps["definition"]["name"], account_names[account_id])
         if outside:
             self.report.todos.append(
-                f"{sum(outside.values())} group assignment(s) on {len(outside)} account(s) that are not in "
-                f"accounts.yaml were left out ({', '.join(sorted(outside))}), usually the management account. "
+                f"Left out {plural(sum(outside.values()), 'group assignment')} on accounts not in accounts.yaml "
+                f"({', '.join(sorted(outside))}), usually the management account. "
                 "Tarmac only assigns permission sets on the member accounts it manages."
             )
         if user_assignments:
             self.report.todos.append(
-                f"{user_assignments} permission-set assignment(s) made directly to users were left out: tarmac "
+                f"Left out {plural(user_assignments, 'permission-set assignment')} made directly to users: tarmac "
                 "assigns through groups only."
             )
 

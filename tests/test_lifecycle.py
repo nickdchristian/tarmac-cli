@@ -392,7 +392,7 @@ def test_phase_4_stops_when_an_ou_does_not_exist_yet(bundle, tmp_path):
         patch("tarmac.cli.deploy_phases.OUService", return_value=ou_service),
         patch("tarmac.cli.deploy_phases.AccountService", return_value=accounts),
         patch("tarmac.cli.deploy_phases.BaselineService"),
-        pytest.raises(GovernanceError, match="do not exist yet"),
+        pytest.raises(GovernanceError, match="not created yet"),
     ):
         deploy_phases._run_phase_4_accounts(MagicMock(), bundle, tmp_path)
 
