@@ -178,7 +178,7 @@ security_services:
     features: {s3_data_events: true}   # optional paid protections stay off unless listed
   securityhub:
     enabled: true
-    standards: [aws-foundational-security-best-practices]   # applied to every account
+    standards: [aws-foundational-security-best-practices]   # every account; newest version unless you add /v/X.Y.Z
   config_recorder:
     enabled: true                    # AWS Config in every account; Security Hub needs it
     recording_frequency: CONTINUOUS  # usually cheaper than DAILY
