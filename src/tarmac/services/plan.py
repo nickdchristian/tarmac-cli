@@ -19,9 +19,9 @@ from ..core import inventory
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
-from ..core.config_schema import BaselineStackDef, GroupDef, OUDef, ServiceControlPoliciesConfig
+from ..core.config_schema import AccountDef, BaselineStackDef, GroupDef, OUDef, ServiceControlPoliciesConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code
-from ..core.models import TAG_MANAGED_BY, TeardownItemReport
+from ..core.models import TAG_MANAGED_BY, AccountPlanItem, TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
@@ -540,6 +540,34 @@ class Planner:
         ou = find(self.bundle.org.ou_structure)
         return ou is not None and bool(homes & ({ou.name} | ConfigBundle._collect_ou_names(ou.children)))
 
+    def _account_removals(
+        self, phase: PhasePlan, declared: list[AccountDef], planned: dict[str, AccountPlanItem]
+    ) -> None:
+        """Budgets and cost anomaly monitors of accounts whose config no longer declares them."""
+        live = {
+            a.name: str(planned[a.name].account_id)
+            for a in declared
+            if a.name in planned and planned[a.name].account_id and planned[a.name].action != "SUSPENDED"
+        }
+        for acct in (a for a in declared if a.name in live and a.baseline.budget is None):
+            self._removals(
+                phase,
+                "no budget declared",
+                lambda t, a=acct.name: t.teardown_account_budget(a, live[a], dry_run=True),
+            )
+        anomaly_off = {
+            a.name: live[a.name]
+            for a in declared
+            if a.name in live
+            and (a.baseline.anomaly_detection is None or not a.baseline.anomaly_detection.enabled)
+        }
+        if anomaly_off:
+            self._removals(
+                phase,
+                "anomaly_detection is off",
+                lambda t: t.teardown_anomaly_monitors(anomaly_off, dry_run=True),
+            )
+
     def _phase_4(self, phase: PhasePlan) -> None:
         declared = [
             a
@@ -592,6 +620,7 @@ class Planner:
                 template=BUDGET_TEMPLATE,
                 account_tags=acct.tags,
             )
+        self._account_removals(phase, declared, planned)
         if self.only_accounts:
             phase.notes.append(
                 "--account is set, so accounts missing from accounts.yaml are not quarantined."

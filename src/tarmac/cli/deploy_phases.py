@@ -8,7 +8,7 @@ from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
-from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport
+from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport, TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
@@ -364,6 +364,9 @@ def _run_phase_4_accounts(
     acct_def_map = {a.name: a for a in declared}
 
     baseline_problems: list[str] = []
+    teardown = TeardownService(session_mgr)
+    removed: list[TeardownItemReport] = []
+    anomaly_off: dict[str, str] = {}
     for result in results:
         acct_def = acct_def_map.get(result.name)
         if result.status == "SKIPPED":
@@ -384,6 +387,19 @@ def _run_phase_4_accounts(
                 org_service.set_account_contacts(bundle.org.contacts, result.account_id)
             except GovernanceError as e:
                 baseline_problems.append(f"{result.name} ({result.account_id}) {e.message}: {e.details}")
+            if acct_def.baseline.budget is None:
+                removed.extend(
+                    teardown.teardown_account_budget(result.name, result.account_id, dry_run=False)
+                )
+            anomaly = acct_def.baseline.anomaly_detection
+            if anomaly is None or not anomaly.enabled:
+                anomaly_off[result.name] = result.account_id
+
+    removed.extend(teardown.teardown_anomaly_monitors(anomaly_off, dry_run=False))
+    try:
+        apply_removals("budgets and cost anomaly monitors", removed)
+    except GovernanceError as e:
+        baseline_problems.append(f"{e.message} {e.details}")
 
     failed_results = [r for r in results if r.status == "FAILED"]
     if failed_results:

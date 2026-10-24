@@ -887,21 +887,38 @@ def test_teardown_budgets_only_deletes_exact_tarmac_monitors(tmp_path: Path):
 
     mgr = MagicMock()
     mgr.get_caller_identity.return_value = {"Account": "111122223333"}
-    mock_ce = MagicMock()
-    mock_ce.get_anomaly_monitors.return_value = {
+    # Phase 4 creates the account's monitor and alert subscription in the management account, and a services
+    # monitor in the account itself.
+    management_ce = MagicMock()
+    management_ce.get_anomaly_monitors.return_value = {
         "AnomalyMonitors": [
             {"MonitorName": f"{acct.name}-cost-anomaly-monitor", "MonitorArn": "arn:ours"},
             {"MonitorName": f"{acct.name}-team-spend-watch", "MonitorArn": "arn:theirs"},
             {"MonitorName": "my-tarmac-notes", "MonitorArn": "arn:theirs2"},
         ]
     }
+    management_ce.get_anomaly_subscriptions.return_value = {
+        "AnomalySubscriptions": [
+            {"SubscriptionName": f"{acct.name}-anomaly-alerts", "SubscriptionArn": "arn:sub"}
+        ]
+    }
+    member_ce = MagicMock()
+    member_ce.get_anomaly_monitors.return_value = {
+        "AnomalyMonitors": [
+            {"MonitorName": f"{acct.name}-services-monitor", "MonitorArn": "arn:member"},
+            {"MonitorName": "their-own-monitor", "MonitorArn": "arn:theirs3"},
+        ]
+    }
     cfn = MagicMock()
     cfn.describe_stacks.side_effect = ClientError(
         {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
     )
-    mgr.get_member_client.side_effect = lambda _id, svc, **_: mock_ce if svc == "ce" else cfn
+    mgr.get_client.side_effect = lambda svc, **_: management_ce if svc == "ce" else MagicMock()
+    mgr.get_member_client.side_effect = lambda _id, svc, **_: member_ce if svc == "ce" else cfn
 
     TeardownService(mgr).teardown_budgets(bundle, dry_run=False, account_id_map={acct.name: "444455556666"})
 
-    deleted = [c.kwargs["MonitorArn"] for c in mock_ce.delete_anomaly_monitor.call_args_list]
-    assert deleted == ["arn:ours"]
+    deleted = [c.kwargs["MonitorArn"] for c in management_ce.delete_anomaly_monitor.call_args_list]
+    deleted += [c.kwargs["MonitorArn"] for c in member_ce.delete_anomaly_monitor.call_args_list]
+    assert deleted == ["arn:ours", "arn:member"]
+    management_ce.delete_anomaly_subscription.assert_called_once_with(SubscriptionArn="arn:sub")
