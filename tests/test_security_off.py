@@ -54,17 +54,35 @@ def test_guardduty_already_suspended_or_not_run_by_tarmac_is_left_alone():
 def test_turning_guardduty_back_on_resumes_suspended_members():
     gd = MagicMock()
     gd.get_paginator.return_value.paginate.return_value = [
-        {"Members": [{"AccountId": "111", "RelationshipStatus": "Disabled"}]}
-    ]
-    mgr = MagicMock()
-    mgr.get_client.return_value.get_paginator.return_value.paginate.return_value = [
-        {"Accounts": [{"Id": "111", "Email": "a@example.com", "Status": "ACTIVE", "State": "ACTIVE"}]}
+        {
+            "Members": [
+                {"AccountId": "111", "RelationshipStatus": "Disabled"},
+                {"AccountId": "222", "RelationshipStatus": "Enabled"},
+            ]
+        }
     ]
 
-    SecurityServicesService(mgr)._add_existing_guardduty_members(gd, "det-1", AUDIT, "us-east-1")
+    SecurityServicesService(MagicMock())._resume_suspended_members(gd, "det-1", AUDIT, "us-east-1")
 
+    # AWS rejects StartMonitoringMembers while auto-enable covers all accounts, so it is turned off first.
+    assert [c[0] for c in gd.method_calls if c[0] != "get_paginator"] == [
+        "update_organization_configuration",
+        "start_monitoring_members",
+    ]
+    gd.update_organization_configuration.assert_called_once_with(
+        DetectorId="det-1", AutoEnableOrganizationMembers="NONE"
+    )
     gd.start_monitoring_members.assert_called_once_with(DetectorId="det-1", AccountIds=["111"])
-    gd.create_members.assert_not_called()
+
+
+def test_nothing_is_resumed_when_no_member_is_suspended():
+    gd = MagicMock()
+    gd.get_paginator.return_value.paginate.return_value = [
+        {"Members": [{"AccountId": "222", "RelationshipStatus": "Enabled"}]}
+    ]
+    SecurityServicesService(MagicMock())._resume_suspended_members(gd, "det-1", AUDIT, "us-east-1")
+    gd.update_organization_configuration.assert_not_called()
+    gd.start_monitoring_members.assert_not_called()
 
 
 def test_security_hub_is_disabled_after_a_warning(monkeypatch, capsys):
