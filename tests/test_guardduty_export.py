@@ -183,3 +183,16 @@ def test_template_creates_the_bucket_and_key_for_the_audit_detectors():
     )
     assert guardduty["Action"] == "kms:GenerateDataKey"
     assert set(doc["Outputs"]) >= {"GuardDutyFindingsBucketArn", "GuardDutyFindingsKmsKeyArn"}
+
+
+def test_buckets_already_in_the_log_archive_stack_stay_when_their_feature_is_off():
+    """Both are retained with fixed names: dropped from the stack, they could never be created again."""
+    off = _bundle({"enabled": True})
+    params = log_archive_parameters(off, "o-abc1234567", "999988887777", "111122223333")  # type: ignore[arg-type]
+    assert (params["EnableConfigDelivery"], params["GuardDutyFindingsAccountId"]) == ("false", "")
+
+    kept = {"ConfigLogsBucket", "GuardDutyFindingsBucket"}
+    params = log_archive_parameters(off, "o-abc1234567", "999988887777", "111122223333", kept=kept)  # type: ignore[arg-type]
+    assert params["EnableConfigDelivery"] == "true"
+    assert params["ManagementAccountId"] == "999988887777"
+    assert params["GuardDutyFindingsAccountId"] == "111122223333"

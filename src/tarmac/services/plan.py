@@ -443,9 +443,10 @@ class Planner:
             self._missing_account(phase, name, stack_name)
             return
         resolve_log_encryption(self.session_mgr, self.bundle, self.region, account_id)
+        cfn = self._member_cfn(account_id)
         self._stack(
             phase,
-            self._member_cfn(account_id),
+            cfn,
             stack_name,
             name,
             log_archive_parameters(
@@ -453,6 +454,7 @@ class Planner:
                 self.org_id,
                 self.management_id,
                 self._account_id(self.bundle.get_audit_account_name() or "audit"),
+                kept=self.cfn.live_resource_ids(cfn, stack_name),
             ),
             template="cloudformation/log-archive-hardening.yaml",
             account_tags=self.bundle.get_account_tags(name),

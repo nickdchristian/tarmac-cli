@@ -249,13 +249,18 @@ def _deploy_log_archive_hardening_stack(
     )
 
     resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
+    stack_name = Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name)
 
     return cfn_service.deploy_stack(
         cfn_client,
-        Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
+        stack_name,
         template_file,
         log_archive_parameters(
-            bundle, org_id, str(session_mgr.get_caller_identity().get("Account", "")), audit_id
+            bundle,
+            org_id,
+            str(session_mgr.get_caller_identity().get("Account", "")),
+            audit_id,
+            kept=cfn_service.live_resource_ids(cfn_client, stack_name),
         ),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
