@@ -501,11 +501,13 @@ class IdentityService(PermissionSetMixin):
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
         managed_accounts: list[str] | None = None,
+        owned_groups: set[str] | None = None,
     ) -> IdentitySyncReport:
         """Complete end-to-end synchronization of permission sets, users, groups, assignments, and memberships.
 
-        Declared groups end up with exactly the declared members, and exactly the declared assignments on
-        ``managed_accounts`` (account names from accounts.yaml): anything else is removed.
+        ``owned_groups`` are the groups tarmac created or imported (the inventory's identity-group entries). They
+        end up with exactly the declared members, and exactly the declared assignments on ``managed_accounts``
+        (account names from accounts.yaml): anything else is removed. Other declared groups only get additions.
         """
         report = IdentitySyncReport()
 
@@ -547,7 +549,7 @@ class IdentityService(PermissionSetMixin):
         failed: list[str] = []
         for group in id_cfg.groups:
             group_id = group_map.get(group.name)
-            if not group_id:
+            if not group_id or group.name not in (owned_groups or set()):
                 continue
             assignments, members = self.undeclared_access(
                 instance_arn, group, group_id, ps_map, accts, managed_ids

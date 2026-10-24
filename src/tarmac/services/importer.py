@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 from botocore.exceptions import BotoCoreError, ClientError
 
+from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
 from ..core.exceptions import AWS_ERRORS
@@ -46,6 +47,7 @@ class ImportReport:
     scps: list[str] = field(default_factory=list)
     permission_sets: list[str] = field(default_factory=list)
     groups: list[str] = field(default_factory=list)
+    adopted_groups: list[str] = field(default_factory=list)
     users: list[str] = field(default_factory=list)
     existing_trails: list[str] = field(default_factory=list)
     existing_stacks: list[str] = field(default_factory=list)
@@ -586,8 +588,42 @@ class ImportService:
                 "Identity Center placeholders (import skipped)",
             )
 
+        if identity is not None:
+            self._adopt_groups(org_name, config_dir)
         self._validate(config_dir)
         return self.report
+
+    def _adopt_groups(self, org_name: str, config_dir: Path) -> None:
+        """Record the imported groups in the inventory, so deploys manage their members and assignments fully.
+
+        Without this, tarmac only adds to groups it did not create. Groups it already records are left as they are.
+        """
+        if not self.report.groups:
+            return
+        try:
+            bucket = inventory.find_bucket(
+                self.session_mgr.get_client("cloudformation", region_name=self.region), org_name
+            )
+            if not bucket:
+                self.report.todos.append(
+                    "The imported groups were not recorded as managed: the inventory bucket doesn't exist until "
+                    "the first deploy, and until then tarmac only adds to existing groups. Run `tarmac import` "
+                    "again after it to have deploys remove members and assignments identity.yaml leaves out."
+                )
+                return
+            inv = inventory.Inventory()
+            inv.connect(
+                self.session_mgr.get_client("s3", region_name=self.region),
+                bucket,
+                config_dir / inventory.LOCAL_FILE,
+            )
+            known = inv.get("identity-group")
+            for name in self.report.groups:
+                if name not in known:
+                    inv.record(f"identity-group:{name}", {"imported": True})
+                    self.report.adopted_groups.append(name)
+        except AWS_ERRORS as exc:
+            self.report.todos.append(f"Could not record the imported groups in the inventory: {exc}")
 
     def _dump(self, path: Path, data: dict[str, Any], title: str) -> None:
         header = (

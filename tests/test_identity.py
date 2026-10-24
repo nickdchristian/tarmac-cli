@@ -816,13 +816,25 @@ def test_sync_identity_removes_what_identity_yaml_no_longer_declares(monkeypatch
         groups=[GroupDef(name="Admins", members=[], assignments=[])],
     )
 
-    report = service.sync_identity(cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"])
+    report = service.sync_identity(
+        cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"], owned_groups={"Admins"}
+    )
 
     assert removed == [("111", "arn:read")]
     assert (report.assignments_removed, report.memberships_removed) == (1, 1)
     service.identitystore_client.delete_group_membership.assert_called_once_with(
         IdentityStoreId="d-1", MembershipId="m-bob"
     )
+
+    # A group tarmac didn't create (or import) is only added to.
+    removed.clear()
+    service.identitystore_client.delete_group_membership.reset_mock()
+    report = service.sync_identity(
+        cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"], owned_groups=set()
+    )
+    assert removed == []
+    assert (report.assignments_removed, report.memberships_removed) == (0, 0)
+    service.identitystore_client.delete_group_membership.assert_not_called()
 
 
 def test_an_assignment_that_cannot_be_removed_fails_the_sync(monkeypatch):
@@ -838,4 +850,21 @@ def test_an_assignment_that_cannot_be_removed_fails_the_sync(monkeypatch):
         groups=[GroupDef(name="Admins")],
     )
     with pytest.raises(IdentityCenterError, match="Could not remove 1 undeclared assignment"):
-        service.sync_identity(cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"])
+        service.sync_identity(
+            cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"], owned_groups={"Admins"}
+        )
+
+
+def test_phase_6_owns_only_the_groups_the_inventory_records():
+    from tarmac.cli.deploy_phases import owned_groups
+    from tarmac.core import inventory
+
+    inventory.deactivate()
+    assert owned_groups() == set()
+    inv = inventory.activate()
+    try:
+        inv.record("identity-group:Admins", {"group_id": "g-1"})
+        inv.record("identity-group:Ops", {"imported": True})
+        assert owned_groups() == {"Admins", "Ops"}
+    finally:
+        inventory.deactivate()

@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 from botocore.exceptions import ClientError
 
+from ..core import inventory
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
@@ -230,6 +231,11 @@ class Planner:
     @cached_property
     def root_id(self) -> str:
         return OUService(self.session_mgr).get_root_id() if self.org_id else ""
+
+    @cached_property
+    def recorded(self) -> inventory.Inventory:
+        """What tarmac recorded creating, read without writing it back."""
+        return inventory.read(self.session_mgr, self.org_name, self.bundle.org.organization.primary_region)
 
     @cached_property
     def ou_map(self) -> dict[str, str]:
@@ -784,6 +790,8 @@ class Planner:
                 )
             )
         permission_sets = identity.list_permission_sets(instance_arn)
+        owned = set(self.recorded.get("identity-group"))
+        adopted: list[str] = []
         for group in cfg.groups:
             try:
                 group_id = identity.get_group_id_by_name(group.name)
@@ -814,8 +822,15 @@ class Planner:
                         else ("CREATE", "")
                     ),
                 )
-            if group_id:
+            if group_id and group.name in owned:
                 self._undeclared_access(phase, identity, instance_arn, group, group_id, permission_sets)
+            elif group_id:
+                adopted.append(group.name)
+        if adopted:
+            phase.notes.append(
+                f"Not created by tarmac, so only added to: {', '.join(adopted)}. Their other members and "
+                "assignments stay. `tarmac import` records them so tarmac manages them fully."
+            )
 
     def _undeclared_access(
         self,

@@ -227,6 +227,22 @@ def test_group_assignments_are_removed_before_the_group(inv: Inventory, monkeypa
     assert inv.get("identity-user") == {}
 
 
+def test_imported_groups_are_left_in_place(inv: Inventory, monkeypatch: pytest.MonkeyPatch):
+    inv.record("identity-group:Ops", {"imported": True})
+    identity = MagicMock()
+    identity.return_value.get_instance_details.return_value = ("arn:inst", "d-1")
+    identity.return_value.identitystore_client.get_group_id.return_value = {"GroupId": "g1"}
+    monkeypatch.setattr("tarmac.services.teardown_everything.IdentityService", identity)
+
+    items = _service({}).teardown_identity_principals("us-east-1", inv)
+
+    assert [(i.action, i.message) for i in items] == [
+        ("SKIPPED", "Imported, not created by tarmac; left in place")
+    ]
+    identity.return_value.identitystore_client.delete_group.assert_not_called()
+    assert inv.get("identity-group") == {}
+
+
 # ---------------------------------------------------------------- deployment permission set
 
 

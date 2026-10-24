@@ -601,6 +601,12 @@ def _run_phase_5_hardening(
     print_success("Phase 5 complete: Foundation stacks deployed and security services delegated.")
 
 
+def owned_groups() -> set[str]:
+    """Groups tarmac created or `tarmac import` recorded; only these lose undeclared members and assignments."""
+    recorder = inventory.active()
+    return set(recorder.get("identity-group")) if recorder else set()
+
+
 def _run_phase_6_identity(
     session_mgr: AwsSessionManager,
     bundle: ConfigBundle,
@@ -625,6 +631,7 @@ def _run_phase_6_identity(
         org_tags=bundle.get_organization_tags(),
         custom_tags=custom_tags,
         managed_accounts=[a.name for a in bundle.accounts.accounts],
+        owned_groups=owned_groups(),
     )
 
     _record_phase(session_mgr, "identity")

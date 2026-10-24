@@ -242,8 +242,8 @@ def test_cli_command_is_registered_and_reports(monkeypatch, tmp_path: Path):
     assert (tmp_path / "out" / "organization.yaml").is_file()
 
 
-def test_identity_center_is_imported(monkeypatch, tmp_path: Path):
-    session = FakeSession()
+def _fake_identity_center(monkeypatch) -> None:
+    """Identity Center with users alice-admin and breakglass, and group Admins (alice-admin, Admin on Audit)."""
     sso, store = MagicMock(), MagicMock()
     pages = {
         "list_users": [
@@ -296,6 +296,11 @@ def test_identity_center_is_imported(monkeypatch, tmp_path: Path):
             return "arn:instance", "d-123"
 
     monkeypatch.setattr("tarmac.services.importer.IdentityService", FakeIdentity)
+
+
+def test_identity_center_is_imported(monkeypatch, tmp_path: Path):
+    session = FakeSession()
+    _fake_identity_center(monkeypatch)
     report = ImportService(session, "us-east-1").discover_and_write(tmp_path / "cfg")  # type: ignore[arg-type]
 
     ident = yaml.safe_load((tmp_path / "cfg" / "identity.yaml").read_text())["identity_center"]
@@ -464,3 +469,34 @@ def test_no_trail_warning_when_only_tarmacs_trail_exists(tmp_path: Path):
     )
 
     assert not any("existing organization trail" in t for t in report.todos)
+
+
+def test_imported_groups_are_recorded_as_managed_once_the_inventory_exists(monkeypatch, tmp_path: Path):
+    session = FakeSession()
+    _fake_identity_center(monkeypatch)
+    session.clients["cloudformation"].describe_stacks.return_value = {
+        "Stacks": [{"Outputs": [{"OutputKey": "BucketName", "OutputValue": "acme-tarmac-inventory"}]}]
+    }
+    s3 = MagicMock()
+    s3.get_object.side_effect = ClientError({"Error": {"Code": "NoSuchKey", "Message": "none"}}, "GetObject")
+    session.clients["s3"] = s3
+
+    report = ImportService(session, "us-east-1").discover_and_write(tmp_path / "cfg")  # type: ignore[arg-type]
+
+    assert report.adopted_groups == ["Admins"]
+    stored = json.loads(s3.put_object.call_args.kwargs["Body"])
+    assert stored["entries"]["identity-group"] == {"Admins": {"imported": True}}
+
+
+def test_imported_groups_are_not_recorded_before_the_inventory_exists(monkeypatch, tmp_path: Path):
+    session = FakeSession()
+    _fake_identity_center(monkeypatch)
+    session.clients["cloudformation"].describe_stacks.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "Stack acme-tarmac-inventory does not exist"}},
+        "DescribeStacks",
+    )
+
+    report = ImportService(session, "us-east-1").discover_and_write(tmp_path / "cfg")  # type: ignore[arg-type]
+
+    assert report.adopted_groups == []
+    assert any("not recorded as managed" in todo for todo in report.todos)
