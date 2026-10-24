@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.2...v0.5.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove leftovers and tidy wording for a cleaner release ([#108](https://github.com/nickdchristian/tarmac-cli/issues/108))
+
+### Features
+
+* deploy your own CloudFormation templates to OUs with baseline_stacks ([#106](https://github.com/nickdchristian/tarmac-cli/issues/106)) ([099de33](https://github.com/nickdchristian/tarmac-cli/commit/099de334aaedd9b22808c87727fbbb889cb912bc))
+* let GitHub Actions deploy with bootstrap --github-repo ([#107](https://github.com/nickdchristian/tarmac-cli/issues/107)) ([5b40902](https://github.com/nickdchristian/tarmac-cli/commit/5b4090294eb60841bffc4498aba33b417dc45c4c))
+* set alternate contacts on member accounts ([#104](https://github.com/nickdchristian/tarmac-cli/issues/104)) ([f3ca233](https://github.com/nickdchristian/tarmac-cli/commit/f3ca23323699ce416ad22d506312fe48409e4e79))
+
+
+### Bug Fixes
+
+* remove leftovers and tidy wording for a cleaner release ([#108](https://github.com/nickdchristian/tarmac-cli/issues/108)) ([8382b2a](https://github.com/nickdchristian/tarmac-cli/commit/8382b2a028c68c16738a8b16ec5002ac466372ee))
+
 ## [0.4.2](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.1...v0.4.2) (2026-10-23)
 
 
