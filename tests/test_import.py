@@ -500,3 +500,22 @@ def test_imported_groups_are_not_recorded_before_the_inventory_exists(monkeypatc
 
     assert report.adopted_groups == []
     assert any("not recorded as managed" in todo for todo in report.todos)
+
+
+def test_scim_groups_keep_their_members_in_the_idp(monkeypatch, tmp_path: Path):
+    session = FakeSession()
+    _fake_identity_center(monkeypatch)
+    service = ImportService(session, "us-east-1")  # type: ignore[arg-type]
+    real_list_groups = service._list_groups
+
+    def scim_groups(store: Any, store_id: str) -> list[dict[str, Any]]:
+        return [{**g, "_external": True} for g in real_list_groups(store, store_id)]
+
+    monkeypatch.setattr(service, "_list_groups", scim_groups)
+    report = service.discover_and_write(tmp_path / "cfg")
+
+    ident = yaml.safe_load((tmp_path / "cfg" / "identity.yaml").read_text())["identity_center"]
+    assert ident["groups"][0]["members"] == []
+    assert "_external" not in ident["groups"][0]
+    assert report.adopted_groups == []
+    assert any("provisioned by your identity provider" in todo for todo in report.todos)
