@@ -310,6 +310,29 @@ def test_changed_template_updates_the_stack_set_and_waits_for_the_operation():
     assert report.stack_set_action == "UPDATED"
 
 
+def test_a_failed_stack_set_update_is_recorded_as_failed(monkeypatch: pytest.MonkeyPatch):
+    from tarmac.core.audit import Outcome
+    from tarmac.services.stackset import StackSetService
+
+    recorded: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        "tarmac.services.stackset.audit",
+        lambda action, resource, outcome, message, **_: recorded.append((message, outcome)),
+    )
+    cf = _client("cloudformation")
+    with Stubber(cf) as cfs:
+        cfs.add_response("describe_stack_set", _existing("# older template"), {"StackSetName": NAME})
+        cfs.add_response("update_stack_set", {"OperationId": "op-3"}, None)
+        cfs.add_response(
+            "describe_stack_set_operation",
+            {"StackSetOperation": {"Status": "FAILED"}},
+            {"StackSetName": NAME, "OperationId": "op-3"},
+        )
+        action = StackSetService(sleep=lambda _s: None).ensure(cf, NAME, "d", "# new", {}, {})
+    assert action == "FAILED"
+    assert recorded == [(f"StackSet operation op-3 on '{NAME}' ended FAILED", Outcome.FAILED)]
+
+
 def test_a_stack_set_tarmac_did_not_create_is_never_touched():
     cf, org, _iam, mgr = _setup()
     with Stubber(cf) as cfs, Stubber(org) as orgs:
