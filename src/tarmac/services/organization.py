@@ -37,6 +37,10 @@ DEFAULT_TRUSTED_SERVICES = [
 ]
 
 
+def contact_types(contacts: ContactsConfig) -> dict[str, Any]:
+    return {"BILLING": contacts.billing, "OPERATIONS": contacts.operations, "SECURITY": contacts.security}
+
+
 class OrganizationService:
     """Manages AWS Organizations creation, trusted services, contacts, and root access."""
 
@@ -93,14 +97,9 @@ class OrganizationService:
         target = {"AccountId": account_id} if account_id else {}
         where = f"account {account_id}" if account_id else "the management account"
         prefix = f"member-contact:{account_id}" if account_id else "alternate-contact"
-        contact_map = {
-            "BILLING": contacts.billing,
-            "OPERATIONS": contacts.operations,
-            "SECURITY": contacts.security,
-        }
         updated = []
 
-        for contact_type, contact_data in contact_map.items():
+        for contact_type, contact_data in contact_types(contacts).items():
             previous = self._current_contact(contact_type, account_id)
             if self._contact_matches(previous, contact_data):
                 audit(
@@ -143,6 +142,14 @@ class OrganizationService:
                 ) from e
 
         return updated
+
+    def stale_contacts(self, contacts: ContactsConfig, account_id: str | None = None) -> list[str]:
+        """The contact types (BILLING, ...) the account does not have as configured."""
+        return [
+            contact_type
+            for contact_type, contact in contact_types(contacts).items()
+            if not self._contact_matches(self._current_contact(contact_type, account_id), contact)
+        ]
 
     def _current_contact(self, contact_type: str, account_id: str | None = None) -> dict[str, Any] | None:
         """The alternate contact now set on the account, or None (not set, or not readable)."""
