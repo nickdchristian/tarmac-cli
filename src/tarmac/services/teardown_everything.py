@@ -102,6 +102,17 @@ class EverythingTeardown(TeardownBase):
                 inventory.forget("identity-group", name)
                 return _item("Identity Group", name, "NOT_FOUND", "Already gone", account_id=mgmt_id)
             return _item("Identity Group", name, "FAILED", aws_error_message(exc), account_id=mgmt_id)
+        if inventory.get("identity-group").get(name, {}).get("imported"):
+            # Imported groups are managed while identity.yaml declares them, but tarmac didn't create them.
+            if not dry_run:
+                inventory.forget("identity-group", name)
+            return _item(
+                "Identity Group",
+                name,
+                "SKIPPED",
+                "Imported, not created by tarmac; left in place",
+                account_id=mgmt_id,
+            )
         if dry_run:
             return _item(
                 "Identity Group",

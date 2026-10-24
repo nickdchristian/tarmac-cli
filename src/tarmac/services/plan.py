@@ -15,10 +15,11 @@ from typing import Any
 import yaml
 from botocore.exceptions import ClientError
 
+from ..core import inventory
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
-from ..core.config_schema import BaselineStackDef, OUDef, ServiceControlPoliciesConfig
+from ..core.config_schema import BaselineStackDef, GroupDef, OUDef, ServiceControlPoliciesConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code
 from ..core.models import TAG_MANAGED_BY
 from ..core.org_accounts import get_active_account_id_map
@@ -230,6 +231,11 @@ class Planner:
     @cached_property
     def root_id(self) -> str:
         return OUService(self.session_mgr).get_root_id() if self.org_id else ""
+
+    @cached_property
+    def recorded(self) -> inventory.Inventory:
+        """What tarmac recorded creating, read without writing it back."""
+        return inventory.read(self.session_mgr, self.org_name, self.bundle.org.organization.primary_region)
 
     @cached_property
     def ou_map(self) -> dict[str, str]:
@@ -784,6 +790,8 @@ class Planner:
                 )
             )
         permission_sets = identity.list_permission_sets(instance_arn)
+        owned = set(self.recorded.get("identity-group"))
+        adopted: list[str] = []
         for group in cfg.groups:
             try:
                 group_id = identity.get_group_id_by_name(group.name)
@@ -814,6 +822,45 @@ class Planner:
                         else ("CREATE", "")
                     ),
                 )
+            if group_id and group.name in owned:
+                self._undeclared_access(phase, identity, instance_arn, group, group_id, permission_sets)
+            elif group_id:
+                adopted.append(group.name)
+        if adopted:
+            phase.notes.append(
+                f"Not created by tarmac, so only added to: {', '.join(adopted)}. Their other members and "
+                "assignments stay. `tarmac import` records them so tarmac manages them fully."
+            )
+
+    def _undeclared_access(
+        self,
+        phase: PhasePlan,
+        identity: IdentityService,
+        instance_arn: str,
+        group: GroupDef,
+        group_id: str,
+        permission_sets: dict[str, str],
+    ) -> None:
+        """What a deploy removes from the group because identity.yaml no longer declares it."""
+        managed = {normalize_account_name(a.name) for a in self.bundle.accounts.accounts}
+        managed_ids = {i for name, i in self.accounts.items() if normalize_account_name(name) in managed}
+        try:
+            assignments, members = identity.undeclared_access(
+                instance_arn, group, group_id, permission_sets, self.accounts, managed_ids
+            )
+        except AWS_ERRORS as e:
+            phase.items.append(PlanItem("group", group.name, UNKNOWN, f"could not read its access: {e}"))
+            return
+        set_names = {arn: name for name, arn in permission_sets.items()}
+        account_names = {i: name for name, i in self.accounts.items()}
+        for account_id, ps_arn in assignments:
+            account = account_names.get(account_id, account_id)
+            name = f"{group.name} -> {set_names.get(ps_arn, ps_arn)}"
+            phase.items.append(PlanItem("assignment", name, "DELETE", "not in identity.yaml", account))
+        for username in members:
+            phase.items.append(
+                PlanItem("membership", f"{username} in {group.name}", "DELETE", "not in identity.yaml")
+            )
 
     def _permission_sets(
         self, identity: IdentityService, session: AwsSessionManager, instance_arn: str

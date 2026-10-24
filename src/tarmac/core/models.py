@@ -130,6 +130,8 @@ class IdentitySyncReport:
     groups_synced: list[str] = field(default_factory=list)
     assignments_created: int = 0
     memberships_added: int = 0
+    assignments_removed: int = 0
+    memberships_removed: int = 0
 
 
 @dataclass(frozen=True)
