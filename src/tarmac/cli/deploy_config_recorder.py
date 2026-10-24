@@ -15,6 +15,8 @@ from ..services.stack_parameters import (
     config_recorder_parameters,
     config_recorder_regions,
 )
+from ..services.teardown import TeardownService
+from .removals import apply_removals
 from .ui import print_info, print_success, print_warning
 
 
@@ -33,6 +35,10 @@ def deploy_config_recorder(
         print_warning(advice)
     settings = bundle.org.security_services.config_recorder
     if not settings.enabled:
+        apply_removals(
+            "AWS Config recorders",
+            TeardownService(session_mgr).teardown_config_recorder(bundle, target_region),
+        )
         return
 
     org_name = bundle.org.organization.name
