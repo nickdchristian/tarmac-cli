@@ -6,27 +6,42 @@ ROOT_SIGN_IN_REGION = "us-east-1"
 
 
 def log_archive_parameters(
-    bundle: ConfigBundle, org_id: str, management_account_id: str = ""
+    bundle: ConfigBundle,
+    org_id: str,
+    management_account_id: str = "",
+    audit_account_id: str = "",
+    kept: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, str]:
     """Parameters for log-archive-hardening.yaml.
 
     ``management_account_id`` is needed only when AWS Config recorders are enabled: the log archive creates a
     separate bucket for Config history and lets the management account's recorder write to it.
+    ``audit_account_id`` is needed only for GuardDuty findings export: its detectors may write to the bucket.
+    ``kept`` is the stack's current resources: a Config or findings bucket already in it stays when the feature is
+    turned off, with its policy; the recorders and the export are what turning it off removes. Both buckets are
+    retained and have fixed names, so one dropped from the stack would block creating it again.
     """
     cloudtrail = bundle.org.cloudtrail
-    config_recorder = bundle.org.security_services.config_recorder
+    config_bucket = bundle.org.security_services.config_recorder.enabled or "ConfigLogsBucket" in kept
+    findings_bucket = exports_guardduty_findings(bundle) or "GuardDutyFindingsBucket" in kept
     params = {
         "OrganizationId": org_id,
         "OrgName": bundle.org.organization.name,
         "EnableKmsEncryption": "true" if cloudtrail.enable_kms else "false",
         "LogRetentionDays": str(cloudtrail.retention_days or 0),
-        "EnableConfigDelivery": "true" if config_recorder.enabled else "false",
-        "ManagementAccountId": management_account_id if config_recorder.enabled else "",
+        "EnableConfigDelivery": "true" if config_bucket else "false",
+        "ManagementAccountId": management_account_id if config_bucket else "",
+        "GuardDutyFindingsAccountId": audit_account_id if findings_bucket else "",
     }
     if cloudtrail.object_lock:
         params["ObjectLockMode"] = cloudtrail.object_lock.mode
         params["ObjectLockRetentionDays"] = str(cloudtrail.object_lock.retention_days)
     return params
+
+
+def exports_guardduty_findings(bundle: ConfigBundle) -> bool:
+    guardduty = bundle.org.security_services.guardduty
+    return guardduty.enabled and guardduty.export_findings
 
 
 def cloudtrail_parameters(

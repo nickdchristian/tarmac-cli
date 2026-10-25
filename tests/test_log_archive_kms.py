@@ -39,8 +39,9 @@ def test_template_can_skip_the_kms_key_and_use_sse_s3():
     assert param["AllowedValues"] == ["true", "false"]
     assert "UseKmsEncryption" in doc["Conditions"]
 
-    assert res["LogArchiveKmsKey"]["Condition"] == "UseKmsEncryption"
-    assert res["LogArchiveKmsAlias"]["Condition"] == "UseKmsEncryption"
+    # GuardDuty findings export needs the key too, so it is created when either asks for it.
+    assert res["LogArchiveKmsKey"]["Condition"] == "CreateKmsKey"
+    assert res["LogArchiveKmsAlias"]["Condition"] == "CreateKmsKey"
 
     enc = res["OrganizationCloudTrailBucket"]["Properties"]["BucketEncryption"][
         "ServerSideEncryptionConfiguration"

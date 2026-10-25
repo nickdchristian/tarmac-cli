@@ -224,6 +224,10 @@ class CloudFormationService:
         status = self._get_stack_status(cfn_client, stack_name)
         return status not in (None, "DELETE_COMPLETE") and status not in UNUSABLE_STACK_STATES
 
+    def live_resource_ids(self, cfn_client: Any, stack_name: str) -> set[str]:
+        """Logical IDs of the stack's resources, or none while it doesn't exist or can't be updated."""
+        return self.resource_ids(cfn_client, stack_name) if self.is_usable(cfn_client, stack_name) else set()
+
     @staticmethod
     def resource_ids(cfn_client: Any, stack_name: str) -> set[str]:
         """Logical IDs of the resources the stack manages."""

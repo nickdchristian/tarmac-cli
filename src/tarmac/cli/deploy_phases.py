@@ -18,6 +18,7 @@ from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.baseline_stacks import BaselineStacksService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
+from ..services.guardduty_export import findings_export
 from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
@@ -30,6 +31,7 @@ from ..services.stack_parameters import (
     audit_hardening_parameters,
     backend_parameters,
     cloudtrail_parameters,
+    exports_guardduty_findings,
     log_archive_parameters,
     object_lock_advice,
 )
@@ -232,10 +234,12 @@ def _deploy_log_archive_hardening_stack(
     project_root: Path,
     org_id: str,
     log_archive_id: str,
+    accts: dict[str, str],
     custom_tags: dict[str, str] | None = None,
 ) -> StackDeployReport:
     """Deploy the Log Archive account hardening stack containing the centralized S3 sink & KMS key."""
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
+    audit_id = bundle.resolve_account_id(bundle.get_audit_account_name() or "audit", accts) or ""
     advice = object_lock_advice(bundle)
     if advice:
         print_warning(advice)
@@ -245,12 +249,19 @@ def _deploy_log_archive_hardening_stack(
     )
 
     resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
+    stack_name = Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name)
 
     return cfn_service.deploy_stack(
         cfn_client,
-        Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
+        stack_name,
         template_file,
-        log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", ""))),
+        log_archive_parameters(
+            bundle,
+            org_id,
+            str(session_mgr.get_caller_identity().get("Account", "")),
+            audit_id,
+            kept=cfn_service.live_resource_ids(cfn_client, stack_name),
+        ),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
@@ -319,6 +330,7 @@ def _run_phase_3_cloudtrail(
         project_root,
         org_id,
         log_archive_id,
+        accts,
         custom_tags=custom_tags,
     )
     print_success(f"Phase 3: Log Archive hardening stack {log_archive_report.action}.")
@@ -510,7 +522,8 @@ def _deploy_hardening_stacks(
 ) -> None:
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     log_archive_id = bundle.resolve_account_id(log_archive_name, accts)
-    if log_archive_id and not skip_log_archive_hardening:
+    # Phase 3 may have run before phase 4 created the audit account, so the findings bucket needs this second pass.
+    if log_archive_id and (not skip_log_archive_hardening or exports_guardduty_findings(bundle)):
         _deploy_log_archive_hardening_stack(
             cfn_service,
             session_mgr,
@@ -519,6 +532,7 @@ def _deploy_hardening_stacks(
             project_root,
             org_id,
             log_archive_id,
+            accts,
             custom_tags=custom_tags,
         )
 
@@ -581,11 +595,18 @@ def _delegate_security_services(
     if not (sec_cfg.guardduty.enabled or sec_cfg.securityhub.enabled):
         return
 
+    export = findings_export(session_mgr, bundle, target_region, accts) if sec_cfg.guardduty.enabled else None
+    if sec_cfg.guardduty.enabled and export is None:
+        raise GovernanceError(
+            "Phase 5 failed: the log archive has no GuardDuty findings bucket yet.",
+            details="The log archive stack creates it when guardduty.export_findings is on and the audit account exists.",
+        )
     reports = SecurityServicesService(session_mgr).configure_security_services(
         config=sec_cfg,
         primary_region=target_region,
         all_regions=[target_region, *bundle.org.organization.additional_regions],
         account_id_map=accts,
+        findings_export=export,
     )
     failed: list[str] = []
     for rep in reports:
