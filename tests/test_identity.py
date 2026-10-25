@@ -868,3 +868,43 @@ def test_phase_6_owns_only_the_groups_the_inventory_records():
         assert owned_groups() == {"Admins", "Ops"}
     finally:
         inventory.deactivate()
+
+
+def test_a_new_assignment_in_the_management_account_is_left_for_an_administrator(monkeypatch, caplog):
+    """Identity Center needs IAM role-creation rights the deployment role deliberately lacks there."""
+    session = MagicMock()
+    session.get_caller_identity.return_value = {"Account": "999"}
+    service = IdentityService(session)
+    monkeypatch.setattr(service, "get_or_create_group", lambda g: "g-1")
+    monkeypatch.setattr(service, "get_instance_details", lambda: ("arn:i", "d-1"))
+    monkeypatch.setattr(service, "_assignment_exists", lambda inst, acct, ps, gid: False)
+    assigned: list[list[str]] = []
+    monkeypatch.setattr(
+        service,
+        "assign_group_to_accounts",
+        lambda **kw: assigned.append(kw["account_ids"]) or len(kw["account_ids"]),
+    )
+    group = GroupDef(name="Admins", assignments=[AssignmentDef(permission_set="Admin", accounts=["all"])])
+
+    service.sync_groups_and_assignments([group], {"Admin": "arn:ps"}, {"dev": "111", "management": "999"})
+
+    assert assigned == [["111"]]
+    assert "Skipped giving 'Admins' Admin in the management account" in caplog.text
+
+
+def test_an_existing_management_account_assignment_is_kept(monkeypatch):
+    session = MagicMock()
+    session.get_caller_identity.return_value = {"Account": "999"}
+    service = IdentityService(session)
+    monkeypatch.setattr(service, "get_or_create_group", lambda g: "g-1")
+    monkeypatch.setattr(service, "get_instance_details", lambda: ("arn:i", "d-1"))
+    monkeypatch.setattr(service, "_assignment_exists", lambda inst, acct, ps, gid: True)
+    assigned: list[list[str]] = []
+    monkeypatch.setattr(
+        service, "assign_group_to_accounts", lambda **kw: assigned.append(kw["account_ids"]) or 0
+    )
+    group = GroupDef(name="Admins", assignments=[AssignmentDef(permission_set="Admin", accounts=["all"])])
+
+    service.sync_groups_and_assignments([group], {"Admin": "arn:ps"}, {"dev": "111", "management": "999"})
+
+    assert assigned == [["111", "999"]]
