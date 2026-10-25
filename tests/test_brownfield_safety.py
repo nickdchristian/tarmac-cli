@@ -74,6 +74,9 @@ def test_existing_organization_trail_is_flagged(bundle: ConfigBundle):
             {"Name": "member-trail", "IsOrganizationTrail": False},
         ]
     }
+    cloudtrail.describe_stack_resources.return_value = {
+        "StackResources": [{"StackName": f"{bundle.org.organization.name}-organization-cloudtrail"}]
+    }
 
     result = PreflightService(_session(cloudtrail), bundle).check_existing_organization_trail("us-east-1")
 
@@ -81,6 +84,28 @@ def test_existing_organization_trail_is_flagged(bundle: ConfigBundle):
     assert result.live_value == "old-org-trail"
     assert "second copy" in (result.action_required or "")
     cloudtrail.describe_trails.assert_called_once_with(includeShadowTrails=True)
+
+
+@pytest.mark.parametrize(
+    ("owner", "where"), [("oldname-organization-cloudtrail", "stack 'oldname"), (None, "no CloudFormation")]
+)
+def test_a_declared_trail_outside_tarmacs_stack_stops_the_deploy(bundle: ConfigBundle, owner, where):
+    client = MagicMock()
+    client.describe_trails.return_value = {
+        "trailList": [{"Name": bundle.org.cloudtrail.trail_name, "IsOrganizationTrail": True}]
+    }
+    if owner:
+        client.describe_stack_resources.return_value = {"StackResources": [{"StackName": owner}]}
+    else:
+        client.describe_stack_resources.side_effect = ClientError(
+            {"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStackResources"
+        )
+
+    result = PreflightService(_session(client), bundle).check_existing_organization_trail("us-east-1")
+
+    assert result.status is PreflightCheckStatus.FAIL
+    assert where in result.live_value
+    assert "cloudtrail.trail_name" in (result.action_required or "")
 
 
 def test_no_other_organization_trail_passes(bundle: ConfigBundle):
@@ -112,9 +137,17 @@ def test_stacks_named_for_a_different_organization_name_are_flagged(bundle: Conf
 
     result = PreflightService(_session(cfn), bundle).check_stack_name_prefix("us-east-1")
 
-    assert result.status is PreflightCheckStatus.WARN
+    # The deploy would duplicate the trail, buckets and recorders before failing, so it is stopped instead.
+    assert result.status is PreflightCheckStatus.FAIL
     assert "oldname" in result.live_value
     assert "Set organization.name back to 'oldname'" in (result.action_required or "")
+
+
+def test_leftover_stacks_under_another_name_only_warn(bundle: ConfigBundle):
+    name = bundle.org.organization.name
+    cfn = _stacks(f"{name}-organization-scps", "oldname-organization-scps")
+    result = PreflightService(_session(cfn), bundle).check_stack_name_prefix("us-east-1")
+    assert result.status is PreflightCheckStatus.WARN
 
 
 def test_stacks_matching_the_organization_name_pass(bundle: ConfigBundle):

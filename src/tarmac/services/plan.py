@@ -21,7 +21,7 @@ from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.config_schema import AccountDef, BaselineStackDef, GroupDef, OUDef, ServiceControlPoliciesConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code
-from ..core.models import TAG_MANAGED_BY, AccountPlanItem, TeardownItemReport
+from ..core.models import TAG_MANAGED_BY, AccountPlanItem, PreflightCheckStatus, TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
@@ -37,6 +37,7 @@ from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
 from .ou import OUService
+from .preflight import PreflightService
 from .scp import SCPService
 from .security_off import SECURITY_HUB_WARNING, SecurityServicesOff
 from .settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
@@ -261,6 +262,13 @@ class Planner:
 
     def _phase_1(self, phase: PhasePlan) -> None:
         org = OrganizationService(self.session_mgr)
+        checks = PreflightService(self.session_mgr, self.bundle)
+        for check in (
+            checks.check_stack_name_prefix(self.region),
+            checks.check_existing_organization_trail(self.region),
+        ):
+            if check.status is PreflightCheckStatus.FAIL:
+                phase.notes.append(f"The deploy would stop here: {check.action_required}")
         self._stack(
             phase,
             self.session_mgr.get_client(

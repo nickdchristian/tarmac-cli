@@ -98,6 +98,7 @@ def test_teardown_cloudtrail(test_bundle):
     mock_trail = MagicMock()
 
     mock_cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+    mock_cfn.describe_stack_resources.return_value = {"StackResources": []}
     mock_session_mgr.get_client.side_effect = lambda svc, **kwargs: (
         mock_cfn if svc == "cloudformation" else mock_trail
     )
@@ -117,6 +118,26 @@ def test_teardown_cloudtrail(test_bundle):
         StackName=f"{test_bundle.org.organization.name}-organization-cloudtrail"
     )
     mock_trail.delete_trail.assert_called_once()
+
+
+def test_teardown_leaves_a_trail_another_tarmac_deployment_owns(test_bundle):
+    mgr = MagicMock(spec=AwsSessionManager)
+    cfn, trail = MagicMock(), MagicMock()
+    cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
+    cfn.describe_stack_resources.return_value = {
+        "StackResources": [{"StackName": "other-organization-cloudtrail"}]
+    }
+    mgr.get_client.side_effect = lambda svc, **kwargs: cfn if svc == "cloudformation" else trail
+    mgr.get_caller_identity.return_value = {"Account": "111122223333"}
+    trail.get_trail.return_value = {"Trail": {"TrailARN": "arn:aws:cloudtrail:us-east-1:1:trail/t"}}
+    trail.list_tags.return_value = {
+        "ResourceTagList": [{"TagsList": [{"Key": "tarmac:managed-by", "Value": "tarmac"}]}]
+    }
+
+    reports = TeardownService(mgr).teardown_cloudtrail(test_bundle, "us-east-1", dry_run=False)
+
+    trail.delete_trail.assert_not_called()
+    assert any(r.action == "SKIPPED" and "other-organization-cloudtrail" in r.message for r in reports)
 
 
 def test_teardown_log_archive(test_bundle):
@@ -692,6 +713,7 @@ def _no_stack_cfn() -> MagicMock:
     cfn.describe_stacks.side_effect = ClientError(
         {"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStacks"
     )
+    cfn.describe_stack_resources.return_value = {"StackResources": []}  # no stack owns the trail
     return cfn
 
 

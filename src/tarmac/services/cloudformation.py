@@ -109,6 +109,17 @@ def _stack_parameter(cfn_client: Any, stack_name: str, key: str) -> str | None:
     return None
 
 
+def resource_owner(cfn_client: Any, physical_id: str) -> str | None:
+    """The stack that owns a resource (a trail's name, for example), or None when no stack does."""
+    try:
+        resources = cfn_client.describe_stack_resources(PhysicalResourceId=physical_id).get(
+            "StackResources", []
+        )
+    except ClientError:
+        return None
+    return str(resources[0]["StackName"]) if resources else None
+
+
 class CloudFormationService:
     """Deploys and manages foundational CloudFormation stacks with robust waiters and output retrieval."""
 
