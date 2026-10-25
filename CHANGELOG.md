@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.6.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.5.0...v0.6.0) (2026-10-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* revert root access, cost tag and group settings the config no longer declares ([#118](https://github.com/nickdchristian/tarmac-cli/issues/118))
+* suspend GuardDuty and disable Security Hub when the config turns them off ([#117](https://github.com/nickdchristian/tarmac-cli/issues/117))
+* remove what the config turns off: SCPs, Config recorders, root alert, budgets and anomaly monitors ([#116](https://github.com/nickdchristian/tarmac-cli/issues/116))
+* revoke undeclared members and assignments on groups tarmac created or imported ([#115](https://github.com/nickdchristian/tarmac-cli/issues/115))
+
+### Features
+
+* export GuardDuty findings to the log archive ([#119](https://github.com/nickdchristian/tarmac-cli/issues/119)) ([9d16062](https://github.com/nickdchristian/tarmac-cli/commit/9d16062d87cdecfe9e223e0549a2020f6a68f65d))
+* remove what the config turns off: SCPs, Config recorders, root alert, budgets and anomaly monitors ([#116](https://github.com/nickdchristian/tarmac-cli/issues/116)) ([8d97cb1](https://github.com/nickdchristian/tarmac-cli/commit/8d97cb1971382a6f2e9dd9a53d4ff2a0f2f3dc80))
+* revert root access, cost tag and group settings the config no longer declares ([#118](https://github.com/nickdchristian/tarmac-cli/issues/118)) ([a73eff1](https://github.com/nickdchristian/tarmac-cli/commit/a73eff1118e384b737deb775cb93d842e4ae7b6b))
+* revoke undeclared members and assignments on groups tarmac created or imported ([#115](https://github.com/nickdchristian/tarmac-cli/issues/115)) ([7c07f14](https://github.com/nickdchristian/tarmac-cli/commit/7c07f1443f815a5f50ca7aa496fc65506a3e5492))
+* suspend GuardDuty and disable Security Hub when the config turns them off ([#117](https://github.com/nickdchristian/tarmac-cli/issues/117)) ([a884f72](https://github.com/nickdchristian/tarmac-cli/commit/a884f721cb90217bdbe7b7e0914d19c8ef58029b))
+
+
+### Bug Fixes
+
+* clearer deploy and plan wording ([#124](https://github.com/nickdchristian/tarmac-cli/issues/124)) ([4706002](https://github.com/nickdchristian/tarmac-cli/commit/47060028258d8e00fc389e9eada0a481725152e3))
+* name each Security Hub standard's version in the deploy message, and reject duplicates ([#123](https://github.com/nickdchristian/tarmac-cli/issues/123)) ([fcbf06c](https://github.com/nickdchristian/tarmac-cli/commit/fcbf06c68152d38add51feda9ce731d713685b4a))
+* say tarmac is retrying instead of warning on each failed attempt ([#125](https://github.com/nickdchristian/tarmac-cli/issues/125)) ([de0105e](https://github.com/nickdchristian/tarmac-cli/commit/de0105e1cc37e7f77b7be70f117d6d29a82b714b))
+* skip new management-account assignments that tarmac's role can't create ([#121](https://github.com/nickdchristian/tarmac-cli/issues/121)) ([57c7c5f](https://github.com/nickdchristian/tarmac-cli/commit/57c7c5f78096382a3d624044129424d2695d18ee))
+* stop deploys and destroys that would clash with another tarmac deployment ([#122](https://github.com/nickdchristian/tarmac-cli/issues/122)) ([7ad9bf8](https://github.com/nickdchristian/tarmac-cli/commit/7ad9bf825c75a7edb7e234b66ce0a013b5787626))
+* use the newest version of a Security Hub standard, such as CIS 5.0.0 ([#114](https://github.com/nickdchristian/tarmac-cli/issues/114)) ([82dd2cf](https://github.com/nickdchristian/tarmac-cli/commit/82dd2cfc825dedeab4e68b8031f22ed3f4076c60))
+
 ## [0.5.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.4.2...v0.5.0) (2026-10-24)
 
 
