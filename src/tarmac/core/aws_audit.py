@@ -5,8 +5,11 @@ Each record carries the service, operation, Region, outcome, duration, request i
 summary of the request parameters, which is enough to match a Tarmac run against CloudTrail.
 """
 
+import contextlib
+import contextvars
 import logging
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from .logging import current_context, redact, redact_value
@@ -60,6 +63,26 @@ _SESSION_UNIQUE_ID = "tarmac-aws-audit"
 
 def is_read_only(operation: str) -> bool:
     return operation.startswith(READ_ONLY_PREFIXES)
+
+
+_retrying: contextvars.ContextVar[bool] = contextvars.ContextVar("tarmac_retrying", default=False)
+
+
+@contextlib.contextmanager
+def retrying() -> Iterator[None]:
+    """An AWS call tarmac will retry if it fails: the failure is logged quietly, since `retry_notice` says what's
+    happening instead. A failure that ends the retries is raised and reported by the caller as usual."""
+    token = _retrying.set(True)
+    try:
+        yield
+    finally:
+        _retrying.reset(token)
+
+
+def retry_notice(what: str, why: str, delay: float) -> None:
+    """Tell the person running tarmac that it is waiting on AWS and trying again, rather than warning of a failure.
+    Callers say it once per wait, not on every attempt."""
+    logger.warning("%s: %s; retrying every %.0fs...", what, why, delay)
 
 
 def is_benign_error(error: dict[str, Any]) -> bool:
@@ -149,7 +172,7 @@ def _log_call(
     where = f" in {data['region']}" if data["region"] else ""
     detail = f": {data['error_code']} {data.get('error_message', '')}".rstrip() if error else ""
     message = f"{service}.{operation} {outcome}{where}{detail}"
-    if read_only or (error and is_benign_error(error)):
+    if read_only or (error and (is_benign_error(error) or _retrying.get())):
         level = logging.DEBUG
     else:
         level = logging.WARNING if outcome == "failed" else logging.INFO

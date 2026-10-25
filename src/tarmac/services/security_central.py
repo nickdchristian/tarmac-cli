@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 
 from ..core.adoption import ADOPT_HINT, adopt_existing
 from ..core.audit import Outcome, audit
+from ..core.aws_audit import retry_notice, retrying
 from ..core.exceptions import GovernanceError
 
 logger = logging.getLogger(__name__)
@@ -128,13 +129,20 @@ class SecurityHubCentralConfiguration:
         waited = 0.0
         while True:
             try:
-                self.sh.update_organization_configuration(
-                    AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
-                )
+                with retrying():
+                    self.sh.update_organization_configuration(
+                        AutoEnable=False, OrganizationConfiguration={"ConfigurationType": "CENTRAL"}
+                    )
                 return
             except ClientError as e:
                 if "still syncing" not in str(e) or waited >= self._timeout:
                     raise
+            if not waited:
+                retry_notice(
+                    "Switching Security Hub to central configuration",
+                    "it is still syncing the organization",
+                    15.0,
+                )
             self._sleep(15.0)
             waited += 15.0
 
@@ -178,14 +186,21 @@ class SecurityHubCentralConfiguration:
         waited = 0.0
         while True:
             try:
-                for page in self.sh.get_paginator("list_configuration_policies").paginate():
-                    for summary in page.get("ConfigurationPolicySummaries", []):
-                        if summary.get("Name") == self.policy_name:
-                            return str(summary["Id"])
+                with retrying():
+                    for page in self.sh.get_paginator("list_configuration_policies").paginate():
+                        for summary in page.get("ConfigurationPolicySummaries", []):
+                            if summary.get("Name") == self.policy_name:
+                                return str(summary["Id"])
                 return None
             except ClientError as e:
                 if "Central Configuration enabled" not in str(e) or waited >= self._timeout:
                     raise
+            if not waited:
+                retry_notice(
+                    "Reading Security Hub configuration policies",
+                    "central configuration is still starting",
+                    10.0,
+                )
             self._sleep(10.0)
             waited += 10.0
 

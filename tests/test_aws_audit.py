@@ -254,3 +254,23 @@ def test_clients_from_assumed_role_sessions_report_their_calls(info_log: Path):
         client.create_policy(Name="Guard", Description="d", Type="SERVICE_CONTROL_POLICY", Content="{}")
 
     assert [r["data"]["operation"] for r in _records(info_log)] == ["CreatePolicy"]
+
+
+def test_a_failure_tarmac_will_retry_is_logged_quietly(info_log: Path):
+    from tarmac.core.aws_audit import retry_notice, retrying
+
+    client = _client("organizations")
+    with Stubber(client) as stub:
+        stub.add_client_error(
+            "attach_policy", service_error_code="ConcurrentModificationException", service_message="busy"
+        )
+        with retrying(), pytest.raises(client.exceptions.ConcurrentModificationException):
+            client.attach_policy(PolicyId="p-1", TargetId="r-root")
+    retry_notice("Attaching the policy", "another change is in progress", 5)
+
+    records = _records(info_log)
+    assert all(r["level"] != "WARNING" for r in records if r.get("event") == "aws_call")
+    assert any(
+        "Attaching the policy: another change is in progress; retrying every 5s..." in r["message"]
+        for r in records
+    )

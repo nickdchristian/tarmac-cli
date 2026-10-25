@@ -13,7 +13,7 @@ from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.session import get_session as get_botocore_session
 
-from .aws_audit import instrument_session
+from .aws_audit import instrument_session, retry_notice, retrying
 from .exceptions import AWSAuthenticationError, aws_error_message
 from .logging import current_context
 
@@ -138,23 +138,27 @@ class AwsSessionManager:
 
     def _assume_role_with_propagation_retry(self, role_arn: str, session_name: str) -> dict[str, Any]:
         deadline = time.monotonic() + self.ASSUME_ROLE_RETRY_SECONDS
+        noticed = False
         while True:
             try:
-                return cast(
-                    dict[str, Any],
-                    self._sts_client.assume_role(
-                        RoleArn=role_arn, RoleSessionName=session_name, DurationSeconds=3600
-                    ),
-                )
+                with retrying():
+                    return cast(
+                        dict[str, Any],
+                        self._sts_client.assume_role(
+                            RoleArn=role_arn, RoleSessionName=session_name, DurationSeconds=3600
+                        ),
+                    )
             except ClientError as e:
                 code = e.response.get("Error", {}).get("Code", "")
                 if code != "AccessDenied" or time.monotonic() + self.ASSUME_ROLE_RETRY_DELAY > deadline:
                     raise
-                logger.info(
-                    "AssumeRole into %s denied (role may still be propagating); retrying in %.0fs...",
-                    role_arn,
-                    self.ASSUME_ROLE_RETRY_DELAY,
-                )
+                if not noticed:
+                    retry_notice(
+                        f"Signing in to {role_arn}",
+                        "access was denied, which is normal while a new account's role is still being created",
+                        self.ASSUME_ROLE_RETRY_DELAY,
+                    )
+                    noticed = True
                 time.sleep(self.ASSUME_ROLE_RETRY_DELAY)
 
     def get_member_client(

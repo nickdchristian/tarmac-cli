@@ -12,6 +12,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from ..core.aws_audit import retry_notice, retrying
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.models import TeardownItemReport
@@ -266,13 +267,19 @@ class SecurityServicesTeardown:
         """Delete a Security Hub configuration policy, retrying while async disassociation finishes."""
         for attempt in range(max_attempts):
             try:
-                sh.delete_configuration_policy(Identifier=policy_id)
+                with retrying():
+                    sh.delete_configuration_policy(Identifier=policy_id)
                 return
             except ClientError as e:
-                if _code(e) == "ResourceConflictException" and attempt < max_attempts - 1:
-                    time.sleep(poll_interval)
-                    continue
-                raise
+                if _code(e) != "ResourceConflictException" or attempt == max_attempts - 1:
+                    raise
+                if attempt == 0:
+                    retry_notice(
+                        "Deleting the Security Hub configuration policy",
+                        "AWS is still detaching it from the organization",
+                        poll_interval,
+                    )
+                time.sleep(poll_interval)
 
     def _disable_hub(self, account_id: str, region: str) -> bool:
         sh = self.session_mgr.get_member_client(account_id, "securityhub", region_name=region)
