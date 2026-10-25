@@ -327,3 +327,10 @@ def test_a_baseline_stack_whose_instances_match_is_unchanged(bundle):
             {"OrganizationalUnitId": "ou-s", "Region": "eu-west-1"}
         ]
         assert planner._baseline_stack("acme-baseline-p", stack) == ("NO CHANGE", "in eu-west-1")
+
+
+def test_preview_shows_an_empty_value_as_quotes():
+    service = CloudFormationService(MagicMock())
+    cfn = _cfn("CREATE_COMPLETE", {"A": "1", "B": ""}, "old", merge_tags())
+    _, detail = service.preview_stack(cfn, "s", template_body="old", parameters={"A": "", "B": "x"})
+    assert detail == "A: 1 -> ''; B: '' -> x"

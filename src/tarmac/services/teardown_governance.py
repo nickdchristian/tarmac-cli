@@ -77,7 +77,7 @@ class GovernanceTeardown(TeardownBase):
                                 logger.warning("Could not detach policy %s from %s: %s", pol_id, t, e)
                         try:
                             org_client.delete_policy(PolicyId=pol_id)
-                            message = f"Detached from {len(targets)} targets and deleted"
+                            message = f"Detached from {plural(len(targets), 'target')} and deleted"
                             results.append(
                                 TeardownItemReport(SCP, p_name, "Management", mgmt_id, "DELETED", message)
                             )
