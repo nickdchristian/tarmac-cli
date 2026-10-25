@@ -10,6 +10,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TAG_MANAGED_BY, TeardownItemReport
 from ..core.stack_names import Stack
+from .cloudformation import resource_owner
 from .teardown_base import STACK, TeardownBase
 from .teardown_s3 import empty_s3_bucket, normalize_bucket_name
 
@@ -51,7 +52,26 @@ class LoggingTeardown(TeardownBase):
         try:
             trail_client = self.session_mgr.get_client("cloudtrail", region_name=target_region)
             trail_arn = self._find_tarmac_trail_arn(trail_client, trail_name)
-            if trail_arn == "":
+            owner = (
+                resource_owner(
+                    self.session_mgr.get_client("cloudformation", region_name=target_region), trail_name
+                )
+                if trail_arn
+                else None
+            )
+            if owner and owner != stack_name:
+                # Another tarmac deployment (a different organization.name) owns it: its tag looks the same.
+                results.append(
+                    TeardownItemReport(
+                        TRAIL,
+                        trail_name,
+                        "Management",
+                        mgmt_id,
+                        "SKIPPED",
+                        f"Belongs to stack '{owner}'; not deleting it",
+                    )
+                )
+            elif trail_arn == "":
                 results.append(
                     TeardownItemReport(
                         TRAIL,
