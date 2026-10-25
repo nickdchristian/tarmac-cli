@@ -354,6 +354,15 @@ class ConfigBundle:
                 return acct_id
         return None
 
+    def declared_account_ids(self, live_accounts: dict[str, str], management_id: str) -> dict[str, str]:
+        """The live accounts that accounts.yaml lists, by name, leaving out the management account even if it's listed."""
+        declared = {normalize_account_name(a.name) for a in self.accounts.accounts}
+        return {
+            name: i
+            for name, i in live_accounts.items()
+            if normalize_account_name(name) in declared and i != management_id
+        }
+
     def get_account(self, account_name: str | None) -> AccountDef | None:
         """Find an AccountDef by name (case-insensitive and hyphen-agnostic)."""
         if not account_name:

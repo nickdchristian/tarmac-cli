@@ -533,7 +533,13 @@ class PermissionSetDef(BaseModel):
 
 class AssignmentDef(BaseModel):
     permission_set: str
-    accounts: list[str]  # Account names or ["all"]
+    accounts: list[str] = Field(
+        description=(
+            "Account names from accounts.yaml, or ['all'] for every account in accounts.yaml. Accounts that aren't "
+            "listed, including the management account, are never assigned: Identity Center needs IAM rights in the "
+            "management account that tarmac's role deliberately lacks, so an administrator assigns access there."
+        )
+    )
 
 
 class GroupDef(BaseModel):

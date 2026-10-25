@@ -234,6 +234,26 @@ class Planner:
         return get_active_account_id_map(self.session_mgr) if self.org_id else {}
 
     @cached_property
+    def declared_accounts(self) -> dict[str, str]:
+        """The live accounts accounts.yaml lists: the only ones identity assignments touch."""
+        return self.bundle.declared_account_ids(self.accounts, self.management_id)
+
+    def _all_accounts_note(self) -> str:
+        """What `all` covers, and which accounts it leaves out, so nobody assumes it means the whole organization."""
+        unlisted = sorted(
+            name
+            for name, account_id in self.accounts.items()
+            if name not in self.declared_accounts and account_id != self.management_id
+        )
+        note = (
+            f"`all` means the {plural(len(self.bundle.accounts.accounts), 'account')} in accounts.yaml. The management "
+            "account is never included; an administrator assigns access there."
+        )
+        if unlisted:
+            note += f" Accounts not in accounts.yaml get no access from it: {', '.join(unlisted)}."
+        return note
+
+    @cached_property
     def root_id(self) -> str:
         return OUService(self.session_mgr).get_root_id() if self.org_id else ""
 
@@ -982,6 +1002,8 @@ class Planner:
                 f"Not created by tarmac, so only added to: {', '.join(adopted)}. Their other members and "
                 "assignments stay. `tarmac import` records them so tarmac manages them fully."
             )
+        if any("all" in a.accounts for g in cfg.groups for a in g.assignments):
+            phase.notes.append(self._all_accounts_note())
 
         self._removals(
             phase,
@@ -1001,11 +1023,9 @@ class Planner:
         permission_sets: dict[str, str],
     ) -> None:
         """What a deploy removes from the group because identity.yaml no longer declares it."""
-        managed = {normalize_account_name(a.name) for a in self.bundle.accounts.accounts}
-        managed_ids = {i for name, i in self.accounts.items() if normalize_account_name(name) in managed}
         try:
             assignments, members = identity.undeclared_access(
-                instance_arn, group, group_id, permission_sets, self.accounts, managed_ids
+                instance_arn, group, group_id, permission_sets, self.declared_accounts
             )
         except AWS_ERRORS as e:
             phase.items.append(PlanItem("group", group.name, UNKNOWN, f"could not read its access: {e}"))
@@ -1058,9 +1078,7 @@ class Planner:
         permission_set_arn: str | None,
         targets: list[str],
     ) -> tuple[str, str]:
-        account_ids = identity._resolve_target_account_ids(
-            targets, self.accounts, list(self.accounts.values())
-        )
+        account_ids = identity._resolve_target_account_ids(targets, self.declared_accounts)
         if not group_id or not permission_set_arn:
             return "CREATE", f"{plural(len(account_ids), 'account')}"
         missing = [

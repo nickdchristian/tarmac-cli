@@ -334,3 +334,29 @@ def test_preview_shows_an_empty_value_as_quotes():
     cfn = _cfn("CREATE_COMPLETE", {"A": "1", "B": ""}, "old", merge_tags())
     _, detail = service.preview_stack(cfn, "s", template_body="old", parameters={"A": "", "B": "x"})
     assert detail == "A: 1 -> ''; B: '' -> x"
+
+
+def test_phase_6_says_what_all_covers_and_names_the_accounts_it_leaves_out(bundle):
+    planner = _planner(bundle)
+    declared = bundle.accounts.accounts[0].name
+    live = {declared: "222222222222", "partner-x": "333333333333", "management": "111111111111"}
+    with (
+        patch("tarmac.services.plan.IdentityService") as identity,
+        patch("tarmac.services.plan.inventory") as inv,
+        patch("tarmac.services.plan.TeardownService"),
+        patch("tarmac.services.plan.get_active_account_id_map", return_value=live),
+        patch.object(CloudFormationService, "preview_stack", return_value=("NO CHANGE", "")),
+    ):
+        identity.return_value.get_instance_details.return_value = ("arn:i", "d-1")
+        identity.return_value.synthesize_permission_sets_template.return_value = {}
+        identity.return_value.get_group_id_by_name.return_value = None
+        identity.return_value._resolve_target_account_ids.return_value = []
+        inv.read.return_value.get.return_value = []
+        plan = planner.build([6])
+
+    (phase,) = [p for p in plan.phases if p.phase == 6]
+    (note,) = [n for n in phase.notes if n.startswith("`all` means")]
+    # Counted from accounts.yaml, not from what exists yet: phase 4 may still be creating some.
+    assert f"the {len(bundle.accounts.accounts)} accounts in accounts.yaml" in note
+    assert "management account is never included" in note
+    assert note.endswith("get no access from it: partner-x.")
