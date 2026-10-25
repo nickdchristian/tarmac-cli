@@ -80,8 +80,6 @@ def load_configs_or_exit(config_dir: Path | None = None) -> ConfigBundle:
         if not errors:
             error_console.print("[red]•[/red] Failed to load configuration files.")
         raise typer.Exit(code=1)
-    for message in bundle.deprecated_settings():
-        error_console.print(f"[yellow]Warning: {message}[/yellow]")
     inventory.activate()
     return bundle
 

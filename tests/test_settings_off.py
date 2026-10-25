@@ -34,7 +34,8 @@ def test_root_access_settings_follow_root_access_management(bundle):
     off = settings_off(bundle)
     assert off("root-sessions", "")
     assert not off("root-credentials-management", "")
-    root.enabled = False
+    root.enable_root_credentials_management = False
+    root.delegate_to_audit = False
     off = settings_off(bundle)
     assert off("root-credentials-management", "")
     assert off("delegated-admin", "iam.amazonaws.com:222")

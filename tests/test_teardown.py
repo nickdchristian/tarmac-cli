@@ -762,7 +762,7 @@ def test_scp_template_carries_ownership_tag(tmp_path):
 
     (tmp_path / "p.json").write_text('{"Version": "2012-10-17", "Statement": []}')
     config = ServiceControlPoliciesConfig(
-        enabled=True, policies=[SCPDef(name="N", policy_file=str(tmp_path / "p.json"), targets=["root"])]
+        policies=[SCPDef(name="N", policy_file=str(tmp_path / "p.json"), targets=["root"])]
     )
 
     resources = SCPService(MagicMock(spec=AwsSessionManager)).synthesize_template(
@@ -789,7 +789,7 @@ def _mgr_of(svc: TeardownService) -> MagicMock:
 
 
 def _audit_accounts(bundle) -> dict[str, str]:
-    return {bundle.get_audit_account_name() or "audit": "444455556666"}
+    return {bundle.get_audit_account_name(): "444455556666"}
 
 
 def test_teardown_audit_deletes_stack_in_the_audit_account(test_bundle):
