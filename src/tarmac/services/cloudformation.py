@@ -109,6 +109,17 @@ def _stack_parameter(cfn_client: Any, stack_name: str, key: str) -> str | None:
     return None
 
 
+def resource_owner(cfn_client: Any, physical_id: str) -> str | None:
+    """The stack that owns a resource (a trail's name, for example), or None when no stack does."""
+    try:
+        resources = cfn_client.describe_stack_resources(PhysicalResourceId=physical_id).get(
+            "StackResources", []
+        )
+    except ClientError:
+        return None
+    return str(resources[0]["StackName"]) if resources else None
+
+
 class CloudFormationService:
     """Deploys and manages foundational CloudFormation stacks with robust waiters and output retrieval."""
 
@@ -227,6 +238,10 @@ class CloudFormationService:
         """Whether the stack exists in a state that can be updated or imported into."""
         status = self._get_stack_status(cfn_client, stack_name)
         return status not in (None, "DELETE_COMPLETE") and status not in UNUSABLE_STACK_STATES
+
+    def live_resource_ids(self, cfn_client: Any, stack_name: str) -> set[str]:
+        """Logical IDs of the stack's resources, or none while it doesn't exist or can't be updated."""
+        return self.resource_ids(cfn_client, stack_name) if self.is_usable(cfn_client, stack_name) else set()
 
     @staticmethod
     def resource_ids(cfn_client: Any, stack_name: str) -> set[str]:

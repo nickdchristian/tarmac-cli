@@ -145,8 +145,8 @@ class PermissionSetMixin(IdentityBase):
         permission_set_arn: str,
         principal_type: str,
         principal_id: str,
-    ) -> None:
-        """Delete an account assignment in IAM Identity Center."""
+    ) -> bool:
+        """Delete an account assignment in IAM Identity Center; False when it was not removed."""
         try:
             resp = self.sso_client.delete_account_assignment(
                 InstanceArn=instance_arn,
@@ -172,6 +172,7 @@ class PermissionSetMixin(IdentityBase):
                 else f"Removing {principal_type.lower()} {principal_id} from account {account_id} did not complete",
                 account_id=account_id,
             )
+            return succeeded
         except ClientError as e:
             if "ConflictException" not in e.response.get("Error", {}).get("Code", ""):
                 audit(
@@ -181,6 +182,7 @@ class PermissionSetMixin(IdentityBase):
                     f"Could not remove {principal_type.lower()} {principal_id} from account {account_id}: {e}",
                     account_id=account_id,
                 )
+            return False
 
     def get_assignments_for_permission_set(
         self, instance_arn: str, permission_set_arn: str

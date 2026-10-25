@@ -53,13 +53,7 @@ class SecurityServicesTeardown:
         sec = bundle.org.security_services
         audit_id = bundle.resolve_account_id(sec.delegated_account, accounts)
         regions = [primary_region, *bundle.org.organization.additional_regions]
-        member_ids = {
-            acct_id
-            for a in bundle.accounts.accounts
-            if (acct_id := bundle.resolve_account_id(a.name, accounts)) and acct_id != audit_id
-        }
-        if mgmt_id:
-            member_ids.add(mgmt_id)
+        member_ids = self.member_ids(bundle, accounts, audit_id, mgmt_id)
 
         if not audit_id:
             results.append(
@@ -76,7 +70,9 @@ class SecurityServicesTeardown:
 
         for region in regions:
             if sec.securityhub.enabled:
-                self._securityhub(results, region, region == primary_region, audit_id, member_ids, dry_run)
+                self.disable_securityhub(
+                    results, region, region == primary_region, audit_id, member_ids, dry_run
+                )
             if sec.guardduty.enabled:
                 self._guardduty(results, region, audit_id, member_ids, dry_run)
 
@@ -88,6 +84,18 @@ class SecurityServicesTeardown:
                 self._deregister(results, iam_admin, rm.delegated_admin_account, [IAM_PRINCIPAL], dry_run)
         self._deregister(results, audit_id, sec.delegated_account, principals, dry_run)
         return results
+
+    @staticmethod
+    def member_ids(
+        bundle: ConfigBundle, accounts: dict[str, str], audit_id: str | None, mgmt_id: str
+    ) -> set[str]:
+        """The declared accounts and the management account, without the audit account."""
+        ids = {
+            acct_id
+            for a in bundle.accounts.accounts
+            if (acct_id := bundle.resolve_account_id(a.name, accounts)) and acct_id != audit_id
+        }
+        return ids | {mgmt_id} if mgmt_id else ids
 
     @staticmethod
     def _item(
@@ -126,7 +134,7 @@ class SecurityServicesTeardown:
             )
         )
 
-    def _securityhub(
+    def disable_securityhub(
         self,
         results: list[TeardownItemReport],
         region: str,

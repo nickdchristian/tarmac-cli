@@ -86,7 +86,8 @@ def test_first_run_switches_to_central_creates_the_policy_and_applies_it_to_the_
             {**_ASSOC_KEYS, "AssociationStatus": "PENDING"},
             {"ConfigurationPolicyIdentifier": "pol-1", "Target": {"RootId": ROOT}},
         )
-        _central(sh).apply()
+        # The deploy message names each standard with the version it resolved to.
+        assert _central(sh).apply() == [STD.split("/", 1)[1]]
         stub.assert_no_pending_responses()
 
 
@@ -545,3 +546,57 @@ def test_policy_calls_wait_until_central_configuration_takes_effect():
         stub.add_response("list_configuration_policies", {"ConfigurationPolicySummaries": []})
         assert _central(sh)._find_policy_id() is None
         stub.assert_no_pending_responses()
+
+
+CIS_VERSIONS = [
+    {"StandardsArn": CIS, "Name": "CIS AWS Foundations Benchmark v1.2.0"},
+    {
+        "StandardsArn": "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/5.0.0",
+        "Name": "x",
+    },
+    {
+        "StandardsArn": "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/1.4.0",
+        "Name": "x",
+    },
+    {
+        "StandardsArn": "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/3.0.0",
+        "Name": "x",
+    },
+]
+
+
+@pytest.mark.parametrize(
+    ("desired", "version"),
+    [("cis-aws-foundations-benchmark", "5.0.0"), ("cis-aws-foundations-benchmark/v/3.0.0", "3.0.0")],
+)
+def test_a_standard_with_several_versions_resolves_to_the_newest_unless_one_is_named(desired, version):
+    from tarmac.services.security_central import resolve_standard_arn
+
+    assert resolve_standard_arn(CIS_VERSIONS, desired).endswith(f"/v/{version}")
+
+
+def test_every_page_of_standards_is_read_so_the_newest_cis_is_found():
+    from tarmac.services.security_central import all_standards, resolve_standard_arn
+
+    cis = "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/{}"
+    sh = MagicMock()
+    sh.describe_standards.side_effect = [
+        {
+            "Standards": [
+                {"StandardsArn": "arn:aws:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.2.0"}
+            ],
+            "NextToken": "t1",
+        },
+        {"Standards": [{"StandardsArn": cis.format("5.0.0")}, {"StandardsArn": cis.format("3.0.0")}]},
+    ]
+
+    standards = all_standards(sh)
+
+    assert len(standards) == 3
+    assert sh.describe_standards.call_args_list[1].kwargs == {"NextToken": "t1"}
+    assert resolve_standard_arn(standards, "cis-aws-foundations-benchmark") == cis.format("5.0.0")
+
+
+def test_a_standard_listed_twice_is_rejected():
+    with pytest.raises(ValueError, match="listed more than once"):
+        SecurityHubConfig(standards=["cis-aws-foundations-benchmark", "CIS_AWS_Foundations_Benchmark"])

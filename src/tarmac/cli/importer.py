@@ -7,6 +7,7 @@ import typer
 
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS
+from ..core.text import plural
 from ..services.importer import ImportService
 from .common import require_credentials_or_exit
 from .ui import console, error_console, print_header, print_info, print_success, print_warning
@@ -57,6 +58,11 @@ def import_command(
         print_info(f"Wrote {path}")
     for path in report.backups:
         print_warning(f"Kept the previous version as {path}")
+    if report.adopted_groups:
+        print_info(
+            f"Recorded {plural(len(report.adopted_groups), 'group')} as managed by tarmac: deploys will remove "
+            "members and assignments identity.yaml doesn't list. Destroy leaves them in place."
+        )
     for skipped in report.skipped_accounts:
         print_warning(f"Skipped account: {skipped}")
     if report.todos:

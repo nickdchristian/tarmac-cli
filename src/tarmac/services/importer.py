@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 from botocore.exceptions import BotoCoreError, ClientError
 
+from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import load_all_configs
 from ..core.exceptions import AWS_ERRORS
@@ -46,6 +47,7 @@ class ImportReport:
     scps: list[str] = field(default_factory=list)
     permission_sets: list[str] = field(default_factory=list)
     groups: list[str] = field(default_factory=list)
+    adopted_groups: list[str] = field(default_factory=list)
     users: list[str] = field(default_factory=list)
     existing_trails: list[str] = field(default_factory=list)
     existing_stacks: list[str] = field(default_factory=list)
@@ -81,6 +83,7 @@ class ImportService:
         self.region = region
         self.project_root = Path(".")
         self.imported_accounts: dict[str, str] = {}  # {AccountId: Name} of accounts written to accounts.yaml
+        self.external_groups: set[str] = set()  # groups provisioned from an external IdP over SCIM
         self.org: Any = session_mgr.get_client("organizations")
         self.report = ImportReport()
 
@@ -310,10 +313,14 @@ class ImportService:
             groups = self._list_groups(store, store_id)
             permission_sets = self._permission_sets(sso, instance_arn)
             for group in groups:
-                group["members"] = self._members(store, store_id, group["_id"], users)
+                # Members of a group an IdP provisions over SCIM belong to the IdP: leave them out of the config.
+                if not group["_external"]:
+                    group["members"] = self._members(store, store_id, group["_id"], users)
             self._assignments(sso, instance_arn, groups, permission_sets, account_names)
+            self.external_groups = {g["name"] for g in groups if g["_external"]}
             for group in groups:
                 group.pop("_id", None)
+                group.pop("_external", None)
         except _READ_ERRORS as exc:
             self.report.todos.append(f"Identity Center could only be partly read ({exc}).")
             return None
@@ -374,6 +381,7 @@ class ImportService:
                 groups.append(
                     {
                         "_id": g["GroupId"],
+                        "_external": bool(g.get("ExternalIds")),
                         "name": g["DisplayName"],
                         "description": g.get("Description", "") or "",
                         "members": [],
@@ -586,8 +594,51 @@ class ImportService:
                 "Identity Center placeholders (import skipped)",
             )
 
+        if identity is not None:
+            self._adopt_groups(org_name, config_dir)
         self._validate(config_dir)
         return self.report
+
+    def _adopt_groups(self, org_name: str, config_dir: Path) -> None:
+        """Record the imported groups in the inventory, so deploys manage their members and assignments fully.
+
+        Without this, tarmac only adds to groups it did not create. Groups it already records are left as they are.
+        Groups an external IdP provisions over SCIM are never recorded: AWS warns that changing them through the
+        Identity Store API makes the directory drift from the IdP, and SCIM may not correct it.
+        """
+        if self.external_groups:
+            self.report.todos.append(
+                f"{', '.join(sorted(self.external_groups))}: provisioned by your identity provider over SCIM, so "
+                "their members were left out of identity.yaml and stay managed in the IdP. Tarmac only adds their "
+                "account assignments."
+            )
+        candidates = [name for name in self.report.groups if name not in self.external_groups]
+        if not candidates:
+            return
+        try:
+            bucket = inventory.find_bucket(
+                self.session_mgr.get_client("cloudformation", region_name=self.region), org_name
+            )
+            if not bucket:
+                self.report.todos.append(
+                    "The imported groups were not recorded as managed: the inventory bucket doesn't exist until "
+                    "the first deploy, and until then tarmac only adds to existing groups. Run `tarmac import` "
+                    "again after it to have deploys remove members and assignments identity.yaml leaves out."
+                )
+                return
+            inv = inventory.Inventory()
+            inv.connect(
+                self.session_mgr.get_client("s3", region_name=self.region),
+                bucket,
+                config_dir / inventory.LOCAL_FILE,
+            )
+            known = inv.get("identity-group")
+            for name in candidates:
+                if name not in known:
+                    inv.record(f"identity-group:{name}", {"imported": True})
+                    self.report.adopted_groups.append(name)
+        except AWS_ERRORS as exc:
+            self.report.todos.append(f"Could not record the imported groups in the inventory: {exc}")
 
     def _dump(self, path: Path, data: dict[str, Any], title: str) -> None:
         header = (

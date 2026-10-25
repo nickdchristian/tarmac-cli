@@ -115,6 +115,13 @@ account.
 | 5 | Terraform state backend, audit account, AWS Config, GuardDuty, Security Hub, root user alert |
 | 6 | Identity Center permission sets, users, groups and assignments |
 
+Tarmac only takes away access it manages. Groups it created get exactly the members and account assignments
+`identity.yaml` lists: phase 6 removes anyone else from the group, and the group's other assignments on the
+accounts in `accounts.yaml`. A group that already existed is only added to, until `tarmac import` records it as
+managed (once the inventory bucket exists); destroy still leaves imported groups in place. Assignments on the
+management account and other accounts not in `accounts.yaml` are left alone, as are users and groups that aren't
+in `identity.yaml`. The dry run lists every removal.
+
 Following AWS's guidance, the management account holds only what has to live there:
 
 - **Management account:** Organizations, SCPs, Identity Center, the trail's stack, the AWS Config StackSet, and
@@ -122,7 +129,7 @@ Following AWS's guidance, the management account holds only what has to live the
   tarmac shares it.
 - **Audit account:** delegated administrator for CloudTrail, AWS Config, GuardDuty, Security Hub and IAM root
   access management.
-- **Log archive account:** the CloudTrail and Config log buckets.
+- **Log archive account:** the CloudTrail and Config log buckets, and GuardDuty's exported findings.
 
 `tarmac init` starts you with the OUs AWS recommends: Security, Infrastructure, Workloads (Prod and Test),
 Deployments, Sandbox, Policy Staging and Suspended.
@@ -134,6 +141,21 @@ project; tarmac then uses your copies, so you can review and version them.
 Tarmac itself runs with the least-privilege policy in
 [`tarmac-deployment.json`](src/tarmac/templates/policies/iam/tarmac-deployment.json). After upgrading tarmac,
 run `tarmac bootstrap` again to update it; `tarmac preflight` warns when it's out of date.
+
+**The config is the source of truth.** Turning something off, or removing it, makes the next deploy remove what
+tarmac created for it, and the dry run lists each removal first: service control policies
+(`service_control_policies.enabled: false` or no policies), AWS Config recorders, the root activity alert, an
+account's budget, and its cost anomaly monitors. Log buckets and the history in them are kept.
+
+Settings tarmac turned on are turned back off when the config no longer asks for them: root access management
+features and its IAM delegated administrator, and cost allocation tags. Groups tarmac created are deleted when they
+leave `identity.yaml`, after their assignments are removed. Users are never deleted for being left out, and anything
+tarmac didn't create is left alone.
+
+Turning off GuardDuty suspends it in the member accounts: monitoring and charges stop, its findings are kept, and
+turning it back on resumes it. It stays on in the audit account, because AWS only suspends an administrator's own
+detector once its members are disassociated. Security Hub can't be suspended, so turning it off disables it, and AWS deletes its findings after
+90 days (archived ones after 30) unless you turn it back on first; the dry run and the deploy both warn about this.
 
 ## Commands
 
@@ -176,9 +198,10 @@ security_services:
   guardduty:
     enabled: true
     features: {s3_data_events: true}   # optional paid protections stay off unless listed
+    export_findings: true            # keep findings past GuardDuty's 90 days in a log archive bucket (SSE-KMS)
   securityhub:
     enabled: true
-    standards: [aws-foundational-security-best-practices]   # applied to every account
+    standards: [aws-foundational-security-best-practices]   # every account; newest version unless you add /v/X.Y.Z
   config_recorder:
     enabled: true                    # AWS Config in every account; Security Hub needs it
     recording_frequency: CONTINUOUS  # usually cheaper than DAILY
