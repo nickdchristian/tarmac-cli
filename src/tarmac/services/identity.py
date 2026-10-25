@@ -437,6 +437,7 @@ class IdentityService(PermissionSetMixin):
         total_assignments = 0
         group_map: dict[str, str] = {}
         synced_groups: list[str] = []
+        management_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
 
         for grp_def in groups:
             group_id = self.get_or_create_group(grp_def)
@@ -450,6 +451,11 @@ class IdentityService(PermissionSetMixin):
                 if not ps_arn:
                     continue
                 target_ids = self._resolve_target_account_ids(assignment.accounts, active_accts, all_acct_ids)
+                if management_id in target_ids and not self._assignment_exists(
+                    self.get_instance_details()[0], management_id, ps_arn, group_id
+                ):
+                    target_ids = [a for a in target_ids if a != management_id]
+                    self._skip_management_assignment(grp_def.name, assignment.permission_set, management_id)
                 total_assignments += self.assign_group_to_accounts(
                     group_id=group_id,
                     group_name=grp_def.name,
@@ -458,6 +464,26 @@ class IdentityService(PermissionSetMixin):
                 )
 
         return total_assignments, group_map, synced_groups
+
+    @staticmethod
+    def _skip_management_assignment(group_name: str, permission_set: str, management_id: str) -> None:
+        """Identity Center creates the management account's role with the caller's own IAM rights. Tarmac's role is
+        deliberately not allowed to create IAM roles, so that one assignment is left for an administrator."""
+        audit(
+            "create",
+            f"sso-assignment:{management_id}:{permission_set}:{group_name}",
+            Outcome.SKIPPED,
+            f"Not giving '{group_name}' {permission_set} in the management account: tarmac's role can't create the "
+            "IAM role Identity Center needs there. Assign it once as an administrator (AWSSSOMasterAccountAdministrator "
+            "and IAMFullAccess); tarmac leaves it in place after that.",
+            account_id=management_id,
+        )
+        logger.warning(
+            "Skipped giving '%s' %s in the management account %s: assign it once as an administrator.",
+            group_name,
+            permission_set,
+            management_id,
+        )
 
     def sync_group_memberships(
         self,
