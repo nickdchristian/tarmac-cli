@@ -25,6 +25,7 @@ from ..services.ou import OUService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
 from ..services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff
+from ..services.settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from ..services.stack_parameters import (
     audit_hardening_parameters,
     backend_parameters,
@@ -162,6 +163,15 @@ def _run_phase_1_org(
             print_success(
                 f"Activated {plural(len(activated_tags), 'cost allocation tag')}: {', '.join(activated_tags)}"
             )
+
+    recorded = inventory.active()
+    if recorded is not None and recorded.bucket:
+        if turns_off_root_sessions(bundle, recorded):
+            print_warning(ROOT_SESSIONS_WARNING)
+        apply_removals(
+            "organization settings",
+            TeardownService(session_mgr).teardown_org_settings(recorded, only=settings_off(bundle)),
+        )
 
     if bundle.org.organization.delete_default_vpc:
         _cleanup_management_default_vpcs(session_mgr)
@@ -677,6 +687,15 @@ def _run_phase_6_identity(
         managed_accounts=[a.name for a in bundle.accounts.accounts],
         owned_groups=owned_groups(),
     )
+
+    recorded = inventory.active()
+    if recorded is not None and recorded.bucket:
+        apply_removals(
+            "Identity Center groups",
+            TeardownService(sso_session_mgr).teardown_identity_principals(
+                target_region, recorded, only=settings_off(bundle)
+            ),
+        )
 
     _record_phase(session_mgr, "identity")
     print_success(

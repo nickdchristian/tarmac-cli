@@ -38,6 +38,7 @@ from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact
 from .ou import OUService
 from .scp import SCPService
 from .security_off import SECURITY_HUB_WARNING, SecurityServicesOff
+from .settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from .stack_parameters import (
     audit_hardening_parameters,
     backend_parameters,
@@ -299,6 +300,16 @@ class Planner:
         if cost_tags:
             self._check(
                 phase, "cost allocation tags", ", ".join(cost_tags), lambda: self._cost_tags(org, cost_tags)
+            )
+        if self.org_id:
+            if turns_off_root_sessions(self.bundle, self.recorded):
+                phase.notes.append(ROOT_SESSIONS_WARNING)
+            self._removals(
+                phase,
+                "turned off in the config",
+                lambda t: t.teardown_org_settings(
+                    self.recorded, dry_run=True, only=settings_off(self.bundle)
+                ),
             )
         if self.bundle.org.organization.delete_default_vpc:
             phase.items.append(
@@ -931,6 +942,14 @@ class Planner:
                 f"Not created by tarmac, so only added to: {', '.join(adopted)}. Their other members and "
                 "assignments stay. `tarmac import` records them so tarmac manages them fully."
             )
+
+        self._removals(
+            phase,
+            "not in identity.yaml",
+            lambda _t: TeardownService(session).teardown_identity_principals(
+                self.identity_region, self.recorded, dry_run=True, only=settings_off(self.bundle)
+            ),
+        )
 
     def _undeclared_access(
         self,
