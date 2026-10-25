@@ -841,7 +841,7 @@ def test_teardown_audit_reports_failure_instead_of_raising(test_bundle):
 def test_reset_milestones_untags_exactly_the_tags_tarmac_writes():
     from botocore.stub import Stubber
 
-    from tarmac.core.models import TAG_COMPLETED_PHASES, TAG_STATUS, TAG_VERSION
+    from tarmac.core.models import TAG_COMPLETED_PHASES, TAG_HOME_REGION, TAG_NAME, TAG_STATUS, TAG_VERSION
 
     org = boto3.client(
         "organizations", region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x"
@@ -856,7 +856,14 @@ def test_reset_milestones_untags_exactly_the_tags_tarmac_writes():
             {},
             {
                 "ResourceId": "111122223333",
-                "TagKeys": [TAG_COMPLETED_PHASES, TAG_STATUS, TAG_VERSION, "tarmac:deployment-ready"],
+                "TagKeys": [
+                    TAG_COMPLETED_PHASES,
+                    TAG_STATUS,
+                    TAG_VERSION,
+                    "tarmac:deployment-ready",
+                    TAG_NAME,
+                    TAG_HOME_REGION,
+                ],
             },
         )
         reports = svc.reset_milestones("111122223333")

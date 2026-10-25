@@ -235,3 +235,20 @@ def test_production_lock_is_not_hidden_by_a_higher_precedence_tag():
     with pytest.raises(typer.Exit):
         _enforce_production_lock(bundle, dry_run=False, force=False)
     _enforce_production_lock(bundle, dry_run=False, force=True)
+
+
+def test_a_refused_deploy_stops_before_asking_for_confirmation(tmp_path: Path, monkeypatch):
+    """A config that doesn't match the deployment must stop the run before anyone confirms a live deploy."""
+    import typer
+
+    def refuse(_mgr, _bundle):
+        raise typer.Exit(code=1)
+
+    confirm = MagicMock()
+    monkeypatch.setattr("tarmac.cli.deploy.check_deployment_or_exit", refuse)
+    monkeypatch.setattr("tarmac.cli.deploy.confirm_or_exit", confirm)
+    cfg = make_config(tmp_path, None)
+    with patch("tarmac.cli.deploy.AwsSessionManager"):
+        res = runner.invoke(app, ["deploy", "--phase", "6", "-c", str(cfg)])
+    assert res.exit_code == 1
+    confirm.assert_not_called()

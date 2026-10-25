@@ -12,7 +12,7 @@ DEFAULT_ORGANIZATION_YAML = """# Organization Master Configuration
 organization:
   name: "myorg"                          # Tarmac names its CloudFormation stacks after this. Do not change it after the first deploy.
   domain: "myorg.example.com"
-  primary_region: "us-east-1"
+  primary_region: "us-east-1"           # Tarmac keeps its state here. Fixed after the first deploy, like name.
   additional_regions:
     - "us-east-2"
     - "eu-west-1"

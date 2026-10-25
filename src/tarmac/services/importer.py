@@ -23,11 +23,10 @@ from ..core.config_loader import load_all_configs
 from ..core.exceptions import AWS_ERRORS
 from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
-from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
+from ..core.stack_names import LIVE_STACK_STATUSES, TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
 from ..core.text import plural
 from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
-from .preflight import _LIVE_STACK_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +247,7 @@ class ImportService:
         try:
             cfn = self.session_mgr.get_client("cloudformation", region_name=self.region)
             found: dict[str, int] = {}
-            for page in cfn.get_paginator("list_stacks").paginate(StackStatusFilter=_LIVE_STACK_STATUSES):
+            for page in cfn.get_paginator("list_stacks").paginate(StackStatusFilter=LIVE_STACK_STATUSES):
                 for summary in page.get("StackSummaries", []):
                     stack = str(summary.get("StackName", ""))
                     for suffix in TARMAC_STACK_SUFFIXES:

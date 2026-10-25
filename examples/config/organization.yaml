@@ -3,7 +3,7 @@
 organization:
   name: "myorg"                          # Lowercase prefix for stack and bucket names. Do not change it after the first deploy.
   domain: "example.com"
-  primary_region: "us-east-2"
+  primary_region: "us-east-2"            # Tarmac keeps its state here. Fixed after the first deploy, like name.
   additional_regions: []                 # Additional regions for multi-region security services (GuardDuty, Security Hub)
   delete_default_vpc: true               # Purge default VPCs across all enabled AWS regions in the management account
   # Organization-wide Governance Tags

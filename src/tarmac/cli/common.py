@@ -12,6 +12,7 @@ from ..core import inventory
 from ..core.config_loader import ConfigBundle, get_default_config_dir, load_all_configs
 from ..core.exceptions import AWSAuthenticationError, GovernanceError
 from ..core.tagging import parse_cli_tags
+from ..services import deployment_identity
 from .ui import error_console, print_info
 
 ConfigDirOption = Annotated[
@@ -41,6 +42,12 @@ def exit_on_error(title: str) -> Iterator[None]:
     except GovernanceError as e:
         error_console.print(Panel(str(e), title=f"[bold red]{title}[/bold red]", border_style="red"))
         raise typer.Exit(code=1) from e
+
+
+def check_deployment_or_exit(session_mgr: Any, bundle: ConfigBundle) -> None:
+    """Stop before any AWS work when organization.yaml names a different deployment than the one in AWS."""
+    with exit_on_error("Configuration Mismatch"):
+        deployment_identity.check(session_mgr, bundle)
 
 
 def confirm_or_exit(prompt: str, *, yes: bool, dry_run: bool, cancelled: str) -> None:
