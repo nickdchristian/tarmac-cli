@@ -8,7 +8,7 @@ from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.exceptions import AccountProvisioningError, GovernanceError
-from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport
+from ..core.models import TAG_MANAGED_BY, BaselineReport, StackDeployReport, TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
@@ -18,21 +18,27 @@ from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.baseline_stacks import BaselineStacksService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
+from ..services.guardduty_export import findings_export
 from ..services.identity import IdentityService
 from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
+from ..services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff
+from ..services.settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from ..services.stack_parameters import (
     audit_hardening_parameters,
     backend_parameters,
     cloudtrail_parameters,
+    exports_guardduty_findings,
     log_archive_parameters,
     object_lock_advice,
 )
+from ..services.teardown import TeardownService
 from .deploy_config_recorder import deploy_config_recorder
 from .deploy_root_alert import deploy_management_root_alert
+from .removals import apply_removals
 from .ui import print_info, print_step, print_success, print_warning
 
 logger = logging.getLogger(__name__)
@@ -160,6 +166,15 @@ def _run_phase_1_org(
                 f"Activated {plural(len(activated_tags), 'cost allocation tag')}: {', '.join(activated_tags)}"
             )
 
+    recorded = inventory.active()
+    if recorded is not None and recorded.bucket:
+        if turns_off_root_sessions(bundle, recorded):
+            print_warning(ROOT_SESSIONS_WARNING)
+        apply_removals(
+            "organization settings",
+            TeardownService(session_mgr).teardown_org_settings(recorded, only=settings_off(bundle)),
+        )
+
     if bundle.org.organization.delete_default_vpc:
         _cleanup_management_default_vpcs(session_mgr)
 
@@ -186,7 +201,8 @@ def _run_phase_2_ou(
         f"({len(report.created_ous)} created, {len(report.existing_ous)} already existed)."
     )
 
-    if bundle.org.service_control_policies and bundle.org.service_control_policies.enabled:
+    scps = bundle.org.service_control_policies
+    if scps and scps.enabled and scps.policies:
         results = SCPService(session_mgr).reconcile_via_cloudformation(
             bundle.org.service_control_policies,
             root_id,
@@ -202,8 +218,12 @@ def _run_phase_2_ou(
                 "Phase 2 failed: SCP targets not found in the organization.",
                 details="; ".join(f"{name}: {', '.join(targets)}" for name, targets in unresolved.items()),
             )
-        print_success(f"Phase 2 complete: Reconciled {len(results)} Service Control Policies.")
+        count = len(results)
+        print_success(
+            f"Phase 2 complete: Reconciled {count} Service Control {'Policy' if count == 1 else 'Policies'}."
+        )
     else:
+        apply_removals("service control policies", TeardownService(session_mgr).teardown_scps(bundle))
         print_success("Phase 2 complete: OUs synchronized.")
 
     _record_phase(session_mgr, "ou")
@@ -217,10 +237,12 @@ def _deploy_log_archive_hardening_stack(
     project_root: Path,
     org_id: str,
     log_archive_id: str,
+    accts: dict[str, str],
     custom_tags: dict[str, str] | None = None,
 ) -> StackDeployReport:
     """Deploy the Log Archive account hardening stack containing the centralized S3 sink & KMS key."""
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
+    audit_id = bundle.resolve_account_id(bundle.get_audit_account_name() or "audit", accts) or ""
     advice = object_lock_advice(bundle)
     if advice:
         print_warning(advice)
@@ -230,12 +252,19 @@ def _deploy_log_archive_hardening_stack(
     )
 
     resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
+    stack_name = Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name)
 
     return cfn_service.deploy_stack(
         cfn_client,
-        Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name),
+        stack_name,
         template_file,
-        log_archive_parameters(bundle, org_id, str(session_mgr.get_caller_identity().get("Account", ""))),
+        log_archive_parameters(
+            bundle,
+            org_id,
+            str(session_mgr.get_caller_identity().get("Account", "")),
+            audit_id,
+            kept=cfn_service.live_resource_ids(cfn_client, stack_name),
+        ),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
         account_tags=bundle.get_account_tags(log_archive_name),
@@ -304,6 +333,7 @@ def _run_phase_3_cloudtrail(
         project_root,
         org_id,
         log_archive_id,
+        accts,
         custom_tags=custom_tags,
     )
     print_success(f"Phase 3: Log Archive hardening stack {log_archive_report.action}.")
@@ -360,6 +390,9 @@ def _run_phase_4_accounts(
     acct_def_map = {a.name: a for a in declared}
 
     baseline_problems: list[str] = []
+    teardown = TeardownService(session_mgr)
+    removed: list[TeardownItemReport] = []
+    anomaly_off: dict[str, str] = {}
     for result in results:
         acct_def = acct_def_map.get(result.name)
         if result.status == "SKIPPED":
@@ -380,6 +413,19 @@ def _run_phase_4_accounts(
                 org_service.set_account_contacts(bundle.org.contacts, result.account_id)
             except GovernanceError as e:
                 baseline_problems.append(f"{result.name} ({result.account_id}) {e.message}: {e.details}")
+            if acct_def.baseline.budget is None:
+                removed.extend(
+                    teardown.teardown_account_budget(result.name, result.account_id, dry_run=False)
+                )
+            anomaly = acct_def.baseline.anomaly_detection
+            if anomaly is None or not anomaly.enabled:
+                anomaly_off[result.name] = result.account_id
+
+    removed.extend(teardown.teardown_anomaly_monitors(anomaly_off, dry_run=False))
+    try:
+        apply_removals("budgets and cost anomaly monitors", removed)
+    except GovernanceError as e:
+        baseline_problems.append(f"{e.message} {e.details}")
 
     failed_results = [r for r in results if r.status == "FAILED"]
     if failed_results:
@@ -479,7 +525,8 @@ def _deploy_hardening_stacks(
 ) -> None:
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
     log_archive_id = bundle.resolve_account_id(log_archive_name, accts)
-    if log_archive_id and not skip_log_archive_hardening:
+    # Phase 3 may have run before phase 4 created the audit account, so the findings bucket needs this second pass.
+    if log_archive_id and (not skip_log_archive_hardening or exports_guardduty_findings(bundle)):
         _deploy_log_archive_hardening_stack(
             cfn_service,
             session_mgr,
@@ -488,6 +535,7 @@ def _deploy_hardening_stacks(
             project_root,
             org_id,
             log_archive_id,
+            accts,
             custom_tags=custom_tags,
         )
 
@@ -516,22 +564,52 @@ def _deploy_hardening_stacks(
     )
 
 
+def _turn_off_security_services(
+    session_mgr: AwsSessionManager, bundle: ConfigBundle, target_region: str, accts: dict[str, str]
+) -> None:
+    """Suspend GuardDuty and disable Security Hub where tarmac runs them but the config turns them off."""
+    sec_cfg = bundle.org.security_services
+    audit_id = bundle.resolve_account_id(sec_cfg.delegated_account, accts)
+    if not audit_id or (sec_cfg.guardduty.enabled and sec_cfg.securityhub.enabled):
+        return
+    regions = [target_region, *bundle.org.organization.additional_regions]
+    off = SecurityServicesOff(session_mgr)
+    if not sec_cfg.guardduty.enabled:
+        apply_removals("GuardDuty", off.suspend_guardduty(audit_id, regions, dry_run=False))
+    if not sec_cfg.securityhub.enabled:
+        mgmt_id = str(session_mgr.get_caller_identity().get("Account", ""))
+        if off.disable_securityhub(bundle, audit_id, regions, accts, mgmt_id, dry_run=True):
+            print_warning(SECURITY_HUB_WARNING)
+            apply_removals(
+                "Security Hub",
+                off.disable_securityhub(bundle, audit_id, regions, accts, mgmt_id, dry_run=False),
+            )
+
+
 def _delegate_security_services(
     session_mgr: AwsSessionManager,
     bundle: ConfigBundle,
     target_region: str,
     accts: dict[str, str],
 ) -> None:
-    """Delegate GuardDuty and Security Hub to Audit account if configured."""
+    """Delegate GuardDuty and Security Hub to Audit account if configured, and turn off the ones the config turns off."""
     sec_cfg = bundle.org.security_services
+    _turn_off_security_services(session_mgr, bundle, target_region, accts)
     if not (sec_cfg.guardduty.enabled or sec_cfg.securityhub.enabled):
         return
 
+    export = findings_export(session_mgr, bundle, target_region, accts) if sec_cfg.guardduty.enabled else None
+    if sec_cfg.guardduty.enabled and export is None:
+        raise GovernanceError(
+            "Phase 5 failed: the log archive has no GuardDuty findings bucket yet.",
+            details="The log archive stack creates it when guardduty.export_findings is on and the audit account exists.",
+        )
     reports = SecurityServicesService(session_mgr).configure_security_services(
         config=sec_cfg,
         primary_region=target_region,
         all_regions=[target_region, *bundle.org.organization.additional_regions],
         account_id_map=accts,
+        findings_export=export,
     )
     failed: list[str] = []
     for rep in reports:
@@ -601,6 +679,12 @@ def _run_phase_5_hardening(
     print_success("Phase 5 complete: Foundation stacks deployed and security services delegated.")
 
 
+def owned_groups() -> set[str]:
+    """Groups tarmac created or `tarmac import` recorded; only these lose undeclared members and assignments."""
+    recorder = inventory.active()
+    return set(recorder.get("identity-group")) if recorder else set()
+
+
 def _run_phase_6_identity(
     session_mgr: AwsSessionManager,
     bundle: ConfigBundle,
@@ -624,7 +708,18 @@ def _run_phase_6_identity(
         org_name=bundle.org.organization.name,
         org_tags=bundle.get_organization_tags(),
         custom_tags=custom_tags,
+        managed_accounts=[a.name for a in bundle.accounts.accounts],
+        owned_groups=owned_groups(),
     )
+
+    recorded = inventory.active()
+    if recorded is not None and recorded.bucket:
+        apply_removals(
+            "Identity Center groups",
+            TeardownService(sso_session_mgr).teardown_identity_principals(
+                target_region, recorded, only=settings_off(bundle)
+            ),
+        )
 
     _record_phase(session_mgr, "identity")
     print_success(
@@ -632,3 +727,8 @@ def _run_phase_6_identity(
         f"{plural(len(report.users_synced), 'user')}, {plural(report.assignments_created, 'assignment')}, "
         f"and {plural(report.memberships_added, 'membership')}."
     )
+    if report.assignments_removed or report.memberships_removed:
+        print_success(
+            f"Removed {plural(report.assignments_removed, 'assignment')} and "
+            f"{plural(report.memberships_removed, 'membership')} that identity.yaml no longer declares."
+        )

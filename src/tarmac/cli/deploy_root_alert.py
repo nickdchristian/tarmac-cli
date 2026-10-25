@@ -8,6 +8,8 @@ from ..core.stack_names import Stack
 from ..core.templates import resolve_resource_path
 from ..services.cloudformation import CloudFormationService
 from ..services.stack_parameters import root_alert_parameters, root_alert_regions
+from ..services.teardown import TeardownService
+from .removals import apply_removals
 from .ui import print_info, print_warning
 
 TEMPLATE_PATH = "cloudformation/management-root-alert.yaml"
@@ -24,6 +26,9 @@ def deploy_management_root_alert(
     """Deploy the root activity alert to the management account in each Region it watches."""
     settings = bundle.org.security_services.root_alert
     if not settings.enabled:
+        apply_removals(
+            "root activity alert", TeardownService(session_mgr).teardown_root_alert(bundle, target_region)
+        )
         return
 
     parameters = root_alert_parameters(bundle)

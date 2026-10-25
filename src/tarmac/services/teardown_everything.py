@@ -6,6 +6,7 @@ accounts are never closed here: ``tarmac account suspend --close`` does that one
 
 import logging
 import shlex
+from collections.abc import Callable
 from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -26,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 # Disabling this would delete the Identity Center instance created through Organizations.
 NEVER_AUTO_DISABLE = frozenset({"sso.amazonaws.com"})
+# What reverting each recorded setting did, as the deploy and destroy report it.
+_REVERTED = {
+    "delegated-admin": "Deregistered the delegated administrator tarmac registered",
+    "root-sessions": "Turned off; tarmac had turned it on",
+    "root-credentials-management": "Turned off; tarmac had turned it on",
+    "trusted-access": "Turned off trusted access tarmac had turned on",
+    "alternate-contact": "Removed the contact tarmac set",
+    "cost-allocation-tags": "Deactivated the tags tarmac activated",
+}
+
 _MISSING = {
     "NoSuchEntity",
     "NoSuchEntityException",
@@ -51,10 +62,15 @@ class EverythingTeardown(TeardownBase):
     """Identity principals, OUs, organization settings and the access role that Tarmac created."""
 
     def teardown_identity_principals(
-        self, target_region: str, inventory: Inventory, dry_run: bool = False
+        self,
+        target_region: str,
+        inventory: Inventory,
+        dry_run: bool = False,
+        only: Callable[[str, str], bool] = lambda _kind, _key: True,
     ) -> list[TeardownItemReport]:
         results: list[TeardownItemReport] = self._new_results_list()
-        users, groups = inventory.get("identity-user"), inventory.get("identity-group")
+        users = [u for u in inventory.get("identity-user") if only("identity-user", u)]
+        groups = [g for g in inventory.get("identity-group") if only("identity-group", g)]
         if not users and not groups:
             return results
         mgmt_id = self._get_management_account_id()
@@ -102,6 +118,17 @@ class EverythingTeardown(TeardownBase):
                 inventory.forget("identity-group", name)
                 return _item("Identity Group", name, "NOT_FOUND", "Already gone", account_id=mgmt_id)
             return _item("Identity Group", name, "FAILED", aws_error_message(exc), account_id=mgmt_id)
+        if inventory.get("identity-group").get(name, {}).get("imported"):
+            # Imported groups are managed while identity.yaml declares them, but tarmac didn't create them.
+            if not dry_run:
+                inventory.forget("identity-group", name)
+            return _item(
+                "Identity Group",
+                name,
+                "SKIPPED",
+                "Imported, not created by tarmac; left in place",
+                account_id=mgmt_id,
+            )
         if dry_run:
             return _item(
                 "Identity Group",
@@ -263,13 +290,21 @@ class EverythingTeardown(TeardownBase):
                 names.extend(c["Id"] for c in page.get("Children", []))
         return names
 
-    def teardown_org_settings(self, inventory: Inventory, dry_run: bool = False) -> list[TeardownItemReport]:
-        """Undo phase 1: delegation, root-access features, trusted access, contacts and cost tags."""
+    def teardown_org_settings(
+        self,
+        inventory: Inventory,
+        dry_run: bool = False,
+        only: Callable[[str, str], bool] = lambda _kind, _key: True,
+    ) -> list[TeardownItemReport]:
+        """Undo phase 1: delegation, root-access features, trusted access, contacts and cost tags.
+
+        ``only(kind, key)`` limits it to some recorded settings; for cost tags the key is one tag.
+        """
         results: list[TeardownItemReport] = self._new_results_list()
         mgmt_id = self._get_management_account_id()
         org: Any = self.session_mgr.get_client("organizations")
 
-        for key in inventory.get("delegated-admin"):
+        for key in (k for k in inventory.get("delegated-admin") if only("delegated-admin", k)):
             service, _, account_id = key.rpartition(":")
             results.append(
                 self._act(
@@ -295,7 +330,7 @@ class EverythingTeardown(TeardownBase):
                 "Root credentials management",
             ),
         ):
-            for key in inventory.get(kind):
+            for key in (k for k in inventory.get(kind) if only(kind, k)):
                 results.append(
                     self._act(
                         inventory,
@@ -309,7 +344,7 @@ class EverythingTeardown(TeardownBase):
                     )
                 )
 
-        for key in inventory.get("trusted-access"):
+        for key in (k for k in inventory.get("trusted-access") if only("trusted-access", k)):
             if key in NEVER_AUTO_DISABLE:
                 results.append(
                     _item(
@@ -337,6 +372,8 @@ class EverythingTeardown(TeardownBase):
 
         account: Any = self.session_mgr.get_client("account")
         for key, details in inventory.get("alternate-contact").items():
+            if not only("alternate-contact", key):
+                continue
             if details.get("replaced_existing"):
                 if not dry_run:
                     inventory.forget("alternate-contact", key)
@@ -364,25 +401,28 @@ class EverythingTeardown(TeardownBase):
             )
 
         for key, details in inventory.get("cost-allocation-tags").items():
-            tags = [str(t) for t in details.get("tag_keys", [])]
+            recorded = [str(t) for t in details.get("tag_keys", [])]
+            tags = [t for t in recorded if only("cost-allocation-tag", t)]
             if not tags:
                 continue
-            results.append(
-                self._act(
-                    inventory,
-                    "cost-allocation-tags",
-                    key,
-                    "Cost Allocation Tags",
-                    ", ".join(tags),
-                    dry_run,
-                    lambda t=tags: self.session_mgr.get_client(
-                        "ce", region_name="us-east-1"
-                    ).update_cost_allocation_tags_status(
-                        CostAllocationTagsStatus=[{"TagKey": k, "Status": "Inactive"} for k in t]
-                    ),
-                    mgmt_id,
-                )
+            item = self._act(
+                inventory,
+                "cost-allocation-tags",
+                key,
+                "Cost Allocation Tags",
+                ", ".join(tags),
+                dry_run,
+                lambda t=tags: self.session_mgr.get_client(
+                    "ce", region_name="us-east-1"
+                ).update_cost_allocation_tags_status(
+                    CostAllocationTagsStatus=[{"TagKey": k, "Status": "Inactive"} for k in t]
+                ),
+                mgmt_id,
             )
+            kept = [t for t in recorded if t not in tags]
+            if item.action in ("DELETED", "NOT_FOUND") and kept:
+                inventory.record(f"cost-allocation-tags:{key}", {"tag_keys": kept})
+            results.append(item)
         return results
 
     def _act(
@@ -410,7 +450,7 @@ class EverythingTeardown(TeardownBase):
             return _item(label, name, "FAILED", str(exc), account_id=mgmt_id)
         audit("delete", f"{kind}:{key}", Outcome.SUCCEEDED, f"Reverted {label.lower()} '{name}'")
         inventory.forget(kind, key)
-        return _item(label, name, "DELETED", "Reverted a setting tarmac enabled", account_id=mgmt_id)
+        return _item(label, name, "DELETED", _REVERTED.get(kind, "Reverted"), account_id=mgmt_id)
 
     def report_accounts_kept(self) -> list[TeardownItemReport]:
         """List the member accounts tarmac manages; closing them stays a deliberate, per-account step."""

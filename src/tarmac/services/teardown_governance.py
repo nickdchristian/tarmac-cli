@@ -57,7 +57,8 @@ class GovernanceTeardown(TeardownBase):
 
             org_client = self.session_mgr.get_client("organizations")
             for p_name in sorted(declared_names):
-                if p_name in existing:
+                # A policy that only shares a declared name was not made by tarmac: leave it.
+                if p_name in existing and scp_service.is_tarmac_managed(str(existing[p_name]["Id"])):
                     pol_id = str(existing[p_name]["Id"])
                     targets = scp_service.list_targets_for_policy(pol_id)
                     if dry_run:
@@ -76,7 +77,7 @@ class GovernanceTeardown(TeardownBase):
                                 logger.warning("Could not detach policy %s from %s: %s", pol_id, t, e)
                         try:
                             org_client.delete_policy(PolicyId=pol_id)
-                            message = f"Detached from {len(targets)} targets and deleted"
+                            message = f"Detached from {plural(len(targets), 'target')} and deleted"
                             results.append(
                                 TeardownItemReport(SCP, p_name, "Management", mgmt_id, "DELETED", message)
                             )

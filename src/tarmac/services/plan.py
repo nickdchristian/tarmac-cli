@@ -15,12 +15,13 @@ from typing import Any
 import yaml
 from botocore.exceptions import ClientError
 
+from ..core import inventory
 from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
-from ..core.config_schema import BaselineStackDef, OUDef, ServiceControlPoliciesConfig
+from ..core.config_schema import AccountDef, BaselineStackDef, GroupDef, OUDef, ServiceControlPoliciesConfig
 from ..core.exceptions import AWS_ERRORS, aws_error_code
-from ..core.models import TAG_MANAGED_BY
+from ..core.models import TAG_MANAGED_BY, AccountPlanItem, PreflightCheckStatus, TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
@@ -31,11 +32,15 @@ from .baseline import BUDGET_TEMPLATE, budget_parameters, budget_stack_name
 from .baseline_stacks import BaselineStacksService, stack_set_name
 from .cloudformation import CloudFormationService, lock_table_wanted
 from .config_recorder import service_linked_role_arn
+from .guardduty_export import FindingsExport, findings_export, reconcile_findings_export
 from .identity import IdentityService
 from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
 from .ou import OUService
+from .preflight import PreflightService
 from .scp import SCPService
+from .security_off import SECURITY_HUB_WARNING, SecurityServicesOff
+from .settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from .stack_parameters import (
     audit_hardening_parameters,
     backend_parameters,
@@ -49,6 +54,7 @@ from .stack_parameters import (
     root_alert_regions,
 )
 from .stackset import StackSetService
+from .teardown import TeardownService
 
 PHASE_TITLES = {
     1: "Organization",
@@ -232,6 +238,11 @@ class Planner:
         return OUService(self.session_mgr).get_root_id() if self.org_id else ""
 
     @cached_property
+    def recorded(self) -> inventory.Inventory:
+        """What tarmac recorded creating, read without writing it back."""
+        return inventory.read(self.session_mgr, self.org_name, self.bundle.org.organization.primary_region)
+
+    @cached_property
     def ou_map(self) -> dict[str, str]:
         return OUService(self.session_mgr).list_all_ous() if self.org_id else {}
 
@@ -251,6 +262,13 @@ class Planner:
 
     def _phase_1(self, phase: PhasePlan) -> None:
         org = OrganizationService(self.session_mgr)
+        checks = PreflightService(self.session_mgr, self.bundle)
+        for check in (
+            checks.check_stack_name_prefix(self.region),
+            checks.check_existing_organization_trail(self.region),
+        ):
+            if check.status is PreflightCheckStatus.FAIL:
+                phase.notes.append(f"The deploy would stop here: {check.action_required}")
         self._stack(
             phase,
             self.session_mgr.get_client(
@@ -291,6 +309,16 @@ class Planner:
         if cost_tags:
             self._check(
                 phase, "cost allocation tags", ", ".join(cost_tags), lambda: self._cost_tags(org, cost_tags)
+            )
+        if self.org_id:
+            if turns_off_root_sessions(self.bundle, self.recorded):
+                phase.notes.append(ROOT_SESSIONS_WARNING)
+            self._removals(
+                phase,
+                "turned off in the config",
+                lambda t: t.teardown_org_settings(
+                    self.recorded, dry_run=True, only=settings_off(self.bundle)
+                ),
             )
         if self.bundle.org.organization.delete_default_vpc:
             phase.items.append(
@@ -348,6 +376,35 @@ class Planner:
             self._check(
                 phase, "stack", Stack.ORGANIZATION_SCPS.for_org(self.org_name), lambda: self._scp_stack(scps)
             )
+        elif self.org_id:
+            self._removals(
+                phase,
+                "SCPs are off or none are declared",
+                lambda t: t.teardown_scps(self.bundle, dry_run=True),
+            )
+
+    def _removals(
+        self,
+        phase: PhasePlan,
+        why: str,
+        teardown: Callable[[TeardownService], list[TeardownItemReport]],
+        action: str = "DELETE",
+    ) -> None:
+        """What a deploy removes because the config turns it off: the teardown of it, simulated."""
+        try:
+            items = teardown(TeardownService(self.session_mgr))
+        except AWS_ERRORS as e:
+            phase.items.append(PlanItem("removal", why, UNKNOWN, f"could not read the current state: {e}"))
+            return
+        for item in items:
+            if item.action == "SIMULATED":
+                phase.items.append(
+                    PlanItem(item.resource_type, item.resource_name, action, why, item.account_name)
+                )
+            elif item.action == "FAILED":
+                phase.items.append(
+                    PlanItem(item.resource_type, item.resource_name, UNKNOWN, item.message, item.account_name)
+                )
 
     def _scp_stack(self, scps: ServiceControlPoliciesConfig) -> tuple[str, str]:
         names = ", ".join(p.name for p in scps.policies)
@@ -394,12 +451,19 @@ class Planner:
             self._missing_account(phase, name, stack_name)
             return
         resolve_log_encryption(self.session_mgr, self.bundle, self.region, account_id)
+        cfn = self._member_cfn(account_id)
         self._stack(
             phase,
-            self._member_cfn(account_id),
+            cfn,
             stack_name,
             name,
-            log_archive_parameters(self.bundle, self.org_id, self.management_id),
+            log_archive_parameters(
+                self.bundle,
+                self.org_id,
+                self.management_id,
+                self._account_id(self.bundle.get_audit_account_name() or "audit"),
+                kept=self.cfn.live_resource_ids(cfn, stack_name),
+            ),
             template="cloudformation/log-archive-hardening.yaml",
             account_tags=self.bundle.get_account_tags(name),
         )
@@ -508,6 +572,34 @@ class Planner:
         ou = find(self.bundle.org.ou_structure)
         return ou is not None and bool(homes & ({ou.name} | ConfigBundle._collect_ou_names(ou.children)))
 
+    def _account_removals(
+        self, phase: PhasePlan, declared: list[AccountDef], planned: dict[str, AccountPlanItem]
+    ) -> None:
+        """Budgets and cost anomaly monitors of accounts whose config no longer declares them."""
+        live = {
+            a.name: str(planned[a.name].account_id)
+            for a in declared
+            if a.name in planned and planned[a.name].account_id and planned[a.name].action != "SUSPENDED"
+        }
+        for acct in (a for a in declared if a.name in live and a.baseline.budget is None):
+            self._removals(
+                phase,
+                "no budget declared",
+                lambda t, a=acct.name: t.teardown_account_budget(a, live[a], dry_run=True),
+            )
+        anomaly_off = {
+            a.name: live[a.name]
+            for a in declared
+            if a.name in live
+            and (a.baseline.anomaly_detection is None or not a.baseline.anomaly_detection.enabled)
+        }
+        if anomaly_off:
+            self._removals(
+                phase,
+                "anomaly_detection is off",
+                lambda t: t.teardown_anomaly_monitors(anomaly_off, dry_run=True),
+            )
+
     def _phase_4(self, phase: PhasePlan) -> None:
         declared = [
             a
@@ -560,6 +652,7 @@ class Planner:
                 template=BUDGET_TEMPLATE,
                 account_tags=acct.tags,
             )
+        self._account_removals(phase, declared, planned)
         if self.only_accounts:
             phase.notes.append(
                 "--account is set, so accounts missing from accounts.yaml are not quarantined."
@@ -643,6 +736,58 @@ class Planner:
                     lambda principal=principal: self._security_service(org, principal, audit_name),
                     audit_name,
                 )
+        audit_id = self._account_id(audit_name)
+        if audit_id and not (security.guardduty.enabled and security.securityhub.enabled):
+            self._security_off(phase, audit_id)
+        if security.guardduty.enabled and audit_id:
+            self._findings_export(phase, audit_id, audit_name)
+
+    def _security_off(self, phase: PhasePlan, audit_id: str) -> None:
+        """GuardDuty and Security Hub that tarmac runs but the config turns off."""
+        security = self.bundle.org.security_services
+        regions = [self.region, *self.bundle.org.organization.additional_regions]
+        off = SecurityServicesOff(self.session_mgr)
+        if not security.guardduty.enabled:
+            self._removals(
+                phase,
+                "guardduty is off; findings are kept",
+                lambda _t: off.suspend_guardduty(audit_id, regions, dry_run=True),
+                action="SUSPEND",
+            )
+        if not security.securityhub.enabled:
+            mgmt_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
+            before = len(phase.items)
+            self._removals(
+                phase,
+                "securityhub is off",
+                lambda _t: off.disable_securityhub(
+                    self.bundle, audit_id, regions, self.accounts, mgmt_id, dry_run=True
+                ),
+            )
+            if len(phase.items) > before:
+                phase.notes.append(SECURITY_HUB_WARNING)
+
+    def _findings_export(self, phase: PhasePlan, audit_id: str, audit_name: str) -> None:
+        """The audit detectors' S3 export of GuardDuty findings, per Region."""
+        export = findings_export(self.session_mgr, self.bundle, self.region, self.accounts)
+        for region in config_recorder_regions(self.bundle, self.region):
+            name = f"GuardDuty findings ({region})"
+            if export is None:
+                phase.items.append(
+                    PlanItem(
+                        "findings export", name, "CREATE", "once the log archive has its findings bucket"
+                    )
+                )
+                continue
+
+            def check(region: str = region, export: FindingsExport = export) -> tuple[str, str]:
+                gd = self.session_mgr.get_member_client(audit_id, "guardduty", region_name=region)
+                detectors = gd.list_detectors().get("DetectorIds", [])
+                if not detectors:
+                    return ("CREATE", "with the detector") if export.bucket_arn else (NO_CHANGE, "")
+                return reconcile_findings_export(gd, str(detectors[0]), export, region, dry_run=True)
+
+            self._check(phase, "findings export", name, check, audit_name)
 
     def _security_service(self, org: OrganizationService, principal: str, audit_name: str) -> tuple[str, str]:
         action, detail = self._delegated(org, principal, audit_name)
@@ -656,6 +801,12 @@ class Planner:
         if advice:
             phase.notes.append(advice)
         if not self.bundle.org.security_services.config_recorder.enabled:
+            if self.org_id:
+                self._removals(
+                    phase,
+                    "config_recorder is off",
+                    lambda t: t.teardown_config_recorder(self.bundle, self.region, dry_run=True),
+                )
             return
         name = Stack.CONFIG_RECORDER.for_org(self.org_name)
         regions = config_recorder_regions(self.bundle, self.region)
@@ -726,6 +877,12 @@ class Planner:
 
     def _root_alert(self, phase: PhasePlan) -> None:
         if not self.bundle.org.security_services.root_alert.enabled:
+            if self.org_id:
+                self._removals(
+                    phase,
+                    "root_alert is off",
+                    lambda t: t.teardown_root_alert(self.bundle, self.region, dry_run=True),
+                )
             return
         name = Stack.ROOT_ALERT.for_org(self.org_name)
         parameters = root_alert_parameters(self.bundle)
@@ -784,6 +941,8 @@ class Planner:
                 )
             )
         permission_sets = identity.list_permission_sets(instance_arn)
+        owned = set(self.recorded.get("identity-group"))
+        adopted: list[str] = []
         for group in cfg.groups:
             try:
                 group_id = identity.get_group_id_by_name(group.name)
@@ -814,6 +973,53 @@ class Planner:
                         else ("CREATE", "")
                     ),
                 )
+            if group_id and group.name in owned:
+                self._undeclared_access(phase, identity, instance_arn, group, group_id, permission_sets)
+            elif group_id:
+                adopted.append(group.name)
+        if adopted:
+            phase.notes.append(
+                f"Not created by tarmac, so only added to: {', '.join(adopted)}. Their other members and "
+                "assignments stay. `tarmac import` records them so tarmac manages them fully."
+            )
+
+        self._removals(
+            phase,
+            "not in identity.yaml",
+            lambda _t: TeardownService(session).teardown_identity_principals(
+                self.identity_region, self.recorded, dry_run=True, only=settings_off(self.bundle)
+            ),
+        )
+
+    def _undeclared_access(
+        self,
+        phase: PhasePlan,
+        identity: IdentityService,
+        instance_arn: str,
+        group: GroupDef,
+        group_id: str,
+        permission_sets: dict[str, str],
+    ) -> None:
+        """What a deploy removes from the group because identity.yaml no longer declares it."""
+        managed = {normalize_account_name(a.name) for a in self.bundle.accounts.accounts}
+        managed_ids = {i for name, i in self.accounts.items() if normalize_account_name(name) in managed}
+        try:
+            assignments, members = identity.undeclared_access(
+                instance_arn, group, group_id, permission_sets, self.accounts, managed_ids
+            )
+        except AWS_ERRORS as e:
+            phase.items.append(PlanItem("group", group.name, UNKNOWN, f"could not read its access: {e}"))
+            return
+        set_names = {arn: name for name, arn in permission_sets.items()}
+        account_names = {i: name for name, i in self.accounts.items()}
+        for account_id, ps_arn in assignments:
+            account = account_names.get(account_id, account_id)
+            name = f"{group.name} -> {set_names.get(ps_arn, ps_arn)}"
+            phase.items.append(PlanItem("assignment", name, "DELETE", "not in identity.yaml", account))
+        for username in members:
+            phase.items.append(
+                PlanItem("membership", f"{username} in {group.name}", "DELETE", "not in identity.yaml")
+            )
 
     def _permission_sets(
         self, identity: IdentityService, session: AwsSessionManager, instance_arn: str

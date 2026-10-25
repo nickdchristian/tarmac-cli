@@ -11,8 +11,9 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 from ..core.placeholders import find_placeholder_values
-from ..core.stack_names import TARMAC_STACK_SUFFIXES
+from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
 from ..core.text import plural
+from .cloudformation import resource_owner
 from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService, deployment_policy
 from .preflight_billing import BillingChecks
 from .preflight_org import OrganizationChecks
@@ -151,6 +152,24 @@ class PreflightService(OrganizationChecks, BillingChecks):
                 status=PreflightCheckStatus.INFO,
                 live_value="Unavailable",
             )
+        if any(t.get("Name") == declared for t in trails):
+            owner = resource_owner(
+                self.session_mgr.get_client("cloudformation", region_name=target_region), declared
+            )
+            ours = Stack.CLOUDTRAIL.for_org(self.bundle.org.organization.name)
+            if owner != ours:
+                where = f"stack '{owner}'" if owner else "no CloudFormation stack"
+                return PreflightCheckResult(
+                    name="Existing Organization Trail",
+                    target="CloudTrail",
+                    status=PreflightCheckStatus.FAIL,
+                    live_value=f"'{declared}' belongs to {where}",
+                    action_required=(
+                        f"A trail named '{declared}' already exists outside '{ours}', so creating tarmac's trail would "
+                        "fail. If it is another tarmac deployment's, set organization.name to match it; otherwise "
+                        "set cloudtrail.trail_name to a different name."
+                    ),
+                )
         others = sorted(
             str(t.get("Name", ""))
             for t in trails
@@ -194,9 +213,14 @@ class PreflightService(OrganizationChecks, BillingChecks):
                 live_value="Unavailable",
             )
         prefixes: set[str] = set()
+        own = False
         for name in names:
             for suffix in TARMAC_STACK_SUFFIXES:
-                if name.endswith(f"-{suffix}") and not name.startswith(f"{org_name}-"):
+                if not name.endswith(f"-{suffix}"):
+                    continue
+                if name.startswith(f"{org_name}-"):
+                    own = True
+                else:
                     prefixes.add(name[: -len(suffix) - 1])
         if not prefixes:
             return PreflightCheckResult(
@@ -206,10 +230,12 @@ class PreflightService(OrganizationChecks, BillingChecks):
                 live_value="Consistent with organization.name",
             )
         found = ", ".join(sorted(prefixes))
+        # With no stack under the configured name, the deploy would duplicate the trail, log buckets and recorders,
+        # then stop: a failure. Stacks under both names are usually leftovers to clean up: a warning.
         return PreflightCheckResult(
             name="Existing Tarmac Stacks",
             target=f"Region {target_region}",
-            status=PreflightCheckStatus.WARN,
+            status=PreflightCheckStatus.WARN if own else PreflightCheckStatus.FAIL,
             live_value=f"Stacks named for: {found}",
             action_required=(
                 f"organization.name is '{org_name}', but Tarmac stacks already exist under '{found}'. Stacks are "

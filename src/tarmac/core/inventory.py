@@ -222,6 +222,17 @@ def connect(session_mgr: Any, org_name: str, region: str, config_dir: Path) -> I
     return inv
 
 
+def read(session_mgr: Any, org_name: str, region: str) -> Inventory:
+    """The stored inventory, read without ever writing it back (for the dry run)."""
+    inv = Inventory()
+    bucket = find_bucket(session_mgr.get_client("cloudformation", region_name=region), org_name)
+    if bucket:
+        inv._s3, inv.bucket = session_mgr.get_client("s3", region_name=region), bucket
+        inv._pull()
+        inv.bucket = None
+    return inv
+
+
 def activate() -> Inventory:
     """Start recording audit events; they are stored once the inventory is connected to its bucket."""
     global _active

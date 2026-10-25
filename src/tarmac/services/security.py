@@ -15,7 +15,13 @@ from ..core.logging import bind
 from ..core.models import SecurityServiceReport
 from ..core.org_accounts import is_active, iter_accounts
 from ..core.text import plural
-from .security_central import POLICY_NAME, SecurityHubCentralConfiguration, resolve_standard_arn
+from .guardduty_export import FindingsExport, reconcile_findings_export
+from .security_central import (
+    POLICY_NAME,
+    SecurityHubCentralConfiguration,
+    all_standards,
+    resolve_standard_arn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,7 @@ class SecurityServicesService:
         primary_region: str,
         all_regions: list[str],
         account_id_map: dict[str, str],
+        findings_export: FindingsExport | None = None,
     ) -> list[SecurityServiceReport]:
         """Configure all enabled security services (GuardDuty, Security Hub)."""
         reports: list[SecurityServiceReport] = []
@@ -78,7 +85,11 @@ class SecurityServicesService:
             return reports
 
         if config.guardduty.enabled:
-            reports.append(self.configure_guardduty(audit_id, primary_region, all_regions, config.guardduty))
+            reports.append(
+                self.configure_guardduty(
+                    audit_id, primary_region, all_regions, config.guardduty, findings_export
+                )
+            )
 
         if config.securityhub.enabled:
             reports.append(
@@ -102,8 +113,12 @@ class SecurityServicesService:
         primary_region: str,
         all_regions: list[str],
         config: GuardDutyConfig,
+        findings_export: FindingsExport | None = None,
     ) -> SecurityServiceReport:
-        """Delegate and configure GuardDuty across all designated regions."""
+        """Delegate and configure GuardDuty across all designated regions.
+
+        ``findings_export`` is reconciled on each Region's audit detector; None leaves exports untouched.
+        """
         try:
             self._ensure_guardduty_admin(audit_id, primary_region)
         except ClientError as e:
@@ -129,7 +144,7 @@ class SecurityServicesService:
                     # Region needs its own registration before the audit account may configure members there.
                     if reg != primary_region:
                         self._ensure_guardduty_admin(audit_id, reg)
-                    self._configure_guardduty_region(audit_id, reg, config)
+                    self._configure_guardduty_region(audit_id, reg, config, findings_export)
                 configured_regions.append(reg)
             except ClientError as e:
                 audit(
@@ -180,7 +195,13 @@ class SecurityServicesService:
                 region=region,
             )
 
-    def _configure_guardduty_region(self, audit_id: str, region: str, config: GuardDutyConfig) -> None:
+    def _configure_guardduty_region(
+        self,
+        audit_id: str,
+        region: str,
+        config: GuardDutyConfig,
+        findings_export: FindingsExport | None = None,
+    ) -> None:
         """Create detector and configure auto-enrollment in the Audit account for a single region."""
         gd_audit = self.session_mgr.get_member_client(audit_id, "guardduty", region_name=region)
         detectors = gd_audit.list_detectors().get("DetectorIds", [])
@@ -202,7 +223,11 @@ class SecurityServicesService:
             detector_id = str(detectors[0])
             self._reconcile_existing_detector(gd_audit, audit_id, region, detector_id, wanted)
 
+        if findings_export is not None and detector_id:
+            reconcile_findings_export(gd_audit, detector_id, findings_export, region)
+
         if config.auto_enable_members and detector_id:
+            self._resume_suspended_members(gd_audit, detector_id, audit_id, region)
             org_features = [
                 {"Name": f["Name"], "AutoEnable": "ALL" if f["Status"] == "ENABLED" else "NONE"}
                 for f in wanted
@@ -255,6 +280,41 @@ class SecurityServicesService:
             region=region,
         )
 
+    @staticmethod
+    def _member_status(gd_audit: Any, detector_id: str) -> dict[str, str]:
+        return {
+            str(m["AccountId"]): str(m.get("RelationshipStatus"))
+            for page in gd_audit.get_paginator("list_members").paginate(
+                DetectorId=detector_id, OnlyAssociated="false"
+            )
+            for m in page.get("Members", [])
+        }
+
+    def _resume_suspended_members(self, gd_audit: Any, detector_id: str, audit_id: str, region: str) -> None:
+        """Restart members suspended by turning GuardDuty off in the config, keeping their findings.
+
+        AWS rejects StartMonitoringMembers while auto-enable is set to all accounts, so it is turned off first; the
+        caller turns it back on straight after.
+        """
+        paused = [a for a, s in self._member_status(gd_audit, detector_id).items() if s == "Disabled"]
+        if not paused:
+            return
+        try:
+            gd_audit.update_organization_configuration(
+                DetectorId=detector_id, AutoEnableOrganizationMembers="NONE"
+            )
+        except ClientError:
+            gd_audit.update_organization_configuration(DetectorId=detector_id, AutoEnable=False)
+        for start in range(0, len(paused), 50):
+            gd_audit.start_monitoring_members(DetectorId=detector_id, AccountIds=paused[start : start + 50])
+        audit(
+            "configure",
+            f"guardduty-members:{audit_id}:{region}",
+            Outcome.SUCCEEDED,
+            f"Resumed GuardDuty in {plural(len(paused), 'member account')} in {region}",
+            region=region,
+        )
+
     def _add_existing_guardduty_members(
         self, gd_audit: Any, detector_id: str, audit_id: str, region: str
     ) -> None:
@@ -262,18 +322,11 @@ class SecurityServicesService:
 
         An account whose membership is not Enabled (for example Removed by an earlier teardown) is added again.
         """
-        enabled = {
-            m["AccountId"]
-            for page in gd_audit.get_paginator("list_members").paginate(
-                DetectorId=detector_id, OnlyAssociated="false"
-            )
-            for m in page.get("Members", [])
-            if m.get("RelationshipStatus") == "Enabled"
-        }
+        status = self._member_status(gd_audit, detector_id)
         missing = [
             {"AccountId": a["Id"], "Email": a["Email"]}
             for a in iter_accounts(self.session_mgr.get_client("organizations"))
-            if is_active(a) and a["Id"] != audit_id and a["Id"] not in enabled
+            if is_active(a) and a["Id"] != audit_id and status.get(a["Id"]) not in ("Enabled", "Disabled")
         ]
         refused: list[str] = []
         for start in range(0, len(missing), 50):
@@ -305,6 +358,16 @@ class SecurityServicesService:
         reports the optional features that are on but not requested.
         """
         response = gd_audit.get_detector(DetectorId=detector_id)
+        if isinstance(response, dict) and response.get("Status") == "DISABLED":
+            # Suspended by turning GuardDuty off in the config.
+            gd_audit.update_detector(DetectorId=detector_id, Enable=True)
+            audit(
+                "configure",
+                f"guardduty-detector:{audit_id}:{region}",
+                Outcome.SUCCEEDED,
+                f"Resumed GuardDuty in the audit account in {region}",
+                region=region,
+            )
         raw = response.get("Features", []) if isinstance(response, dict) else []
         current = (
             {f.get("Name"): f.get("Status") for f in raw if isinstance(f, dict)}
@@ -425,7 +488,7 @@ class SecurityServicesService:
                     self._ensure_hub_enabled(mgmt_sh, mgmt_id, region)
                 # Central policies take effect in every linked Region, so link only the declared ones.
                 self._ensure_finding_aggregator(sh, [r for r in all_regions if r != home_region])
-                SecurityHubCentralConfiguration(
+                enabled = SecurityHubCentralConfiguration(
                     sh,
                     policy_name=POLICY_NAME,
                     standards=config.standards,
@@ -452,8 +515,8 @@ class SecurityServicesService:
             status="ENABLED",
             regions=all_regions,
             message=(
-                f"Delegated to {audit_id}; central configuration from {home_region} applies standards "
-                f"{config.standards} to the organization in {', '.join(all_regions)}"
+                f"Delegated to {audit_id}; central configuration from {home_region} applies "
+                f"{', '.join(enabled) or 'no standards'} to the organization in {', '.join(all_regions)}"
             ),
         )
 
@@ -545,7 +608,7 @@ class SecurityServicesService:
         Raises ClientError if AWS rejects a call and GovernanceError if a declared standard does not
         exist, so the region is reported as failed instead of silently lacking its standards.
         """
-        available = sh_client.describe_standards().get("Standards", [])
+        available = all_standards(sh_client)
         enabled_resp = sh_client.get_enabled_standards().get("StandardsSubscriptions", [])
         enabled_arns = {s.get("StandardsArn") for s in enabled_resp}
 

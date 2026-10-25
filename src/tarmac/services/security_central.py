@@ -8,6 +8,7 @@ the finding aggregation Region.
 """
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -26,17 +27,42 @@ POLICY_NAME = "tarmac-security-baseline"
 SELF_MANAGED = "SELF_MANAGED_SECURITY_HUB"
 
 
+def all_standards(sh: Any) -> list[dict[str, Any]]:
+    """Every standard Security Hub offers. DescribeStandards is paged, and the newest CIS version can be past the
+    first page, so reading one page alone picks an older version."""
+    standards: list[dict[str, Any]] = []
+    token: str | None = None
+    while True:
+        resp = sh.describe_standards(**({"NextToken": token} if token else {}))
+        standards.extend(resp.get("Standards", []))
+        token = resp.get("NextToken")
+        if not token:
+            return standards
+
+
 def resolve_standard_arn(available: list[dict[str, Any]], desired: str) -> str:
-    """Find the ARN of a standard from a name like ``aws-foundational-security-best-practices``."""
+    """Find the ARN of a standard from a name like ``aws-foundational-security-best-practices``.
+
+    A name several versions match (CIS has 1.2.0 to 5.0.0) gets the newest; ``.../v/3.0.0`` picks one version.
+    """
     norm_desired = desired.lower().replace("_", "-")
-    for std in available:
-        std_arn = str(std.get("StandardsArn", ""))
-        if norm_desired in std_arn.lower() or norm_desired in str(std.get("Name", "")).lower():
-            return std_arn
+    matches = [
+        str(std.get("StandardsArn", ""))
+        for std in available
+        if norm_desired in str(std.get("StandardsArn", "")).lower()
+        or norm_desired in str(std.get("Name", "")).lower()
+    ]
+    if matches:
+        return max(matches, key=_standard_version)
     raise GovernanceError(
         f"Unknown Security Hub standard '{desired}'.",
         details="Check security_services.securityhub.standards in organization.yaml.",
     )
+
+
+def _standard_version(arn: str) -> tuple[int, ...]:
+    version = re.search(r"/v/([\d.]+)$", arn)
+    return tuple(int(part) for part in version.group(1).split(".") if part) if version else ()
 
 
 class SecurityHubCentralConfiguration:
@@ -59,10 +85,12 @@ class SecurityHubCentralConfiguration:
         self._sleep = sleep
         self._timeout = timeout_seconds
 
-    def apply(self) -> None:
+    def apply(self) -> list[str]:
+        """Apply the policy; returns the standards it enables, each with its version (``cis-.../v/5.0.0``)."""
         self._enable_central_mode()
         policy_id = self._ensure_policy()
         self._ensure_association(policy_id)
+        return [arn.split("/", 1)[1] for arn in self.enabled_standards]
 
     def _require_no_local_members(self) -> None:
         """Switching to central configuration makes the policy authoritative for member accounts.
@@ -142,7 +170,7 @@ class SecurityHubCentralConfiguration:
             waited += 5.0
 
     def _desired_policy(self) -> dict[str, Any]:
-        available = self.sh.describe_standards().get("Standards", [])
+        available = all_standards(self.sh)
         arns = sorted({resolve_standard_arn(available, s) for s in self.standards})
         # Disabling no controls enables all of them in the chosen standards, including ones AWS releases later.
         return {
@@ -187,6 +215,7 @@ class SecurityHubCentralConfiguration:
 
     def _ensure_policy(self) -> str:
         desired = self._desired_policy()
+        self.enabled_standards: list[str] = desired["SecurityHub"]["EnabledStandardIdentifiers"]
         policy_id = self._find_policy_id()
         if policy_id is None:
             resp = self.sh.create_configuration_policy(

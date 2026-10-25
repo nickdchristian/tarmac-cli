@@ -11,6 +11,7 @@ from ..core.exceptions import IdentityCenterError, aws_error_code
 from ..core.models import IdentitySyncReport
 from ..core.org_accounts import active_account_ids
 from ..core.templates import resolve_resource_path
+from ..core.text import plural
 from .identity_permission_sets import PermissionSetMixin
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,79 @@ class IdentityService(PermissionSetMixin):
                 return False
             raise
         return True
+
+    def group_members(self, group_id: str) -> dict[str, str]:
+        """{username: membership id} for every user in the group. AWS errors propagate."""
+        _, store_id = self.get_instance_details()
+        members: dict[str, str] = {}
+        pages = self.identitystore_client.get_paginator("list_group_memberships").paginate(
+            IdentityStoreId=store_id, GroupId=group_id
+        )
+        for membership in (m for page in pages for m in page.get("GroupMemberships", [])):
+            user_id = membership.get("MemberId", {}).get("UserId")
+            if user_id:
+                user = self.identitystore_client.describe_user(IdentityStoreId=store_id, UserId=user_id)
+                members[str(user["UserName"])] = str(membership["MembershipId"])
+        return members
+
+    def group_assignments(self, instance_arn: str, group_id: str) -> set[tuple[str, str]]:
+        """(account id, permission set ARN) for every assignment the group holds. AWS errors propagate."""
+        pages = self.sso_client.get_paginator("list_account_assignments_for_principal").paginate(
+            InstanceArn=instance_arn, PrincipalId=group_id, PrincipalType="GROUP"
+        )
+        return {
+            (str(a["AccountId"]), str(a["PermissionSetArn"]))
+            for page in pages
+            for a in page.get("AccountAssignments", [])
+        }
+
+    def undeclared_access(
+        self,
+        instance_arn: str,
+        group: GroupDef,
+        group_id: str,
+        ps_map: dict[str, str],
+        active_accts: dict[str, str],
+        managed_ids: set[str],
+    ) -> tuple[list[tuple[str, str]], dict[str, str]]:
+        """The group's assignments on ``managed_ids`` (the accounts in accounts.yaml) and its members that
+        identity.yaml does not declare. Assignments on other accounts, such as the management account, are left alone.
+        """
+        all_ids = list(active_accts.values())
+        wanted = {
+            (account_id, ps_map[a.permission_set])
+            for a in group.assignments
+            if a.permission_set in ps_map
+            for account_id in self._resolve_target_account_ids(a.accounts, active_accts, all_ids)
+        }
+        assignments = sorted(
+            a for a in self.group_assignments(instance_arn, group_id) - wanted if a[0] in managed_ids
+        )
+        members = {name: m for name, m in self.group_members(group_id).items() if name not in group.members}
+        return assignments, members
+
+    def remove_user_from_group(self, membership_id: str, group_name: str, username: str) -> None:
+        _, store_id = self.get_instance_details()
+        try:
+            self.identitystore_client.delete_group_membership(
+                IdentityStoreId=store_id, MembershipId=membership_id
+            )
+        except ClientError as e:
+            audit(
+                "remove-member",
+                f"identity-group:{group_name}",
+                Outcome.FAILED,
+                f"Could not remove user '{username}' from group '{group_name}': {e}",
+            )
+            raise IdentityCenterError(
+                f"Failed removing '{username}' from group '{group_name}'", details=str(e)
+            ) from e
+        audit(
+            "remove-member",
+            f"identity-group:{group_name}",
+            Outcome.SUCCEEDED,
+            f"Removed user '{username}' from group '{group_name}'",
+        )
 
     def get_user_id_by_username(self, username: str) -> str | None:
         """Fetch UserId for a given username from Identity Store."""
@@ -363,6 +437,7 @@ class IdentityService(PermissionSetMixin):
         total_assignments = 0
         group_map: dict[str, str] = {}
         synced_groups: list[str] = []
+        management_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
 
         for grp_def in groups:
             group_id = self.get_or_create_group(grp_def)
@@ -376,6 +451,11 @@ class IdentityService(PermissionSetMixin):
                 if not ps_arn:
                     continue
                 target_ids = self._resolve_target_account_ids(assignment.accounts, active_accts, all_acct_ids)
+                if management_id in target_ids and not self._assignment_exists(
+                    self.get_instance_details()[0], management_id, ps_arn, group_id
+                ):
+                    target_ids = [a for a in target_ids if a != management_id]
+                    self._skip_management_assignment(grp_def.name, assignment.permission_set, management_id)
                 total_assignments += self.assign_group_to_accounts(
                     group_id=group_id,
                     group_name=grp_def.name,
@@ -384,6 +464,26 @@ class IdentityService(PermissionSetMixin):
                 )
 
         return total_assignments, group_map, synced_groups
+
+    @staticmethod
+    def _skip_management_assignment(group_name: str, permission_set: str, management_id: str) -> None:
+        """Identity Center creates the management account's role with the caller's own IAM rights. Tarmac's role is
+        deliberately not allowed to create IAM roles, so that one assignment is left for an administrator."""
+        audit(
+            "create",
+            f"sso-assignment:{management_id}:{permission_set}:{group_name}",
+            Outcome.SKIPPED,
+            f"Not giving '{group_name}' {permission_set} in the management account: tarmac's role can't create the "
+            "IAM role Identity Center needs there. Assign it once as an administrator (AWSSSOMasterAccountAdministrator "
+            "and IAMFullAccess); tarmac leaves it in place after that.",
+            account_id=management_id,
+        )
+        logger.warning(
+            "Skipped giving '%s' %s in the management account %s: assign it once as an administrator.",
+            group_name,
+            permission_set,
+            management_id,
+        )
 
     def sync_group_memberships(
         self,
@@ -426,8 +526,15 @@ class IdentityService(PermissionSetMixin):
         org_name: str = "organization",
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
+        managed_accounts: list[str] | None = None,
+        owned_groups: set[str] | None = None,
     ) -> IdentitySyncReport:
-        """Complete end-to-end synchronization of permission sets, users, groups, assignments, and memberships."""
+        """Complete end-to-end synchronization of permission sets, users, groups, assignments, and memberships.
+
+        ``owned_groups`` are the groups tarmac created or imported (the inventory's identity-group entries). They
+        end up with exactly the declared members, and exactly the declared assignments on ``managed_accounts``
+        (account names from accounts.yaml): anything else is removed. Other declared groups only get additions.
+        """
         report = IdentitySyncReport()
 
         ps_map = self.sync_permission_sets_via_cloudformation(
@@ -461,5 +568,29 @@ class IdentityService(PermissionSetMixin):
         report.assignments_created = total_assignments
 
         report.memberships_added = self.sync_group_memberships(id_cfg.groups, user_map, group_map)
+
+        managed = {normalize_account_name(name) for name in managed_accounts or []}
+        managed_ids = {acct_id for name, acct_id in accts.items() if normalize_account_name(name) in managed}
+        instance_arn, _ = self.get_instance_details()
+        failed: list[str] = []
+        for group in id_cfg.groups:
+            group_id = group_map.get(group.name)
+            if not group_id or group.name not in (owned_groups or set()):
+                continue
+            assignments, members = self.undeclared_access(
+                instance_arn, group, group_id, ps_map, accts, managed_ids
+            )
+            for account_id, ps_arn in assignments:
+                if self.delete_account_assignment(instance_arn, account_id, ps_arn, "GROUP", group_id):
+                    report.assignments_removed += 1
+                else:
+                    failed.append(f"{group.name} on {account_id}")
+            for username, membership_id in members.items():
+                self.remove_user_from_group(membership_id, group.name, username)
+                report.memberships_removed += 1
+        if failed:
+            raise IdentityCenterError(
+                f"Could not remove {plural(len(failed), 'undeclared assignment')}", details="; ".join(failed)
+            )
 
         return report

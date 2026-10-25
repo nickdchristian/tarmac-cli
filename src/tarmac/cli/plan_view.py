@@ -25,6 +25,7 @@ _ACTION_STYLES = {
     "MOVE": "yellow",
     "REPLACE": "red",
     "SUSPEND": "red",
+    "DELETE": "red",
     "BLOCKED": "red",
     "UNKNOWN": "red",
 }
