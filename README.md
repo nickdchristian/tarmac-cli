@@ -122,6 +122,11 @@ managed (once the inventory bucket exists); destroy still leaves imported groups
 management account and other accounts not in `accounts.yaml` are left alone, as are users and groups that aren't
 in `identity.yaml`. The dry run lists every removal.
 
+`accounts: [all]` in an assignment means every account in `accounts.yaml`. Accounts tarmac doesn't manage get
+nothing from it, and the dry run names them. Nor does the management account: Identity Center creates the role
+there with the caller's own IAM rights, which tarmac's role deliberately doesn't have. `tarmac bootstrap` gives your
+admin user what it needs there; an administrator assigns anything else.
+
 Following AWS's guidance, the management account holds only what has to live there:
 
 - **Management account:** Organizations, SCPs, Identity Center, the trail's stack, the AWS Config StackSet, and

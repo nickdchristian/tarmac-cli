@@ -702,7 +702,9 @@ def _run_phase_6_identity(
         org_name=bundle.org.organization.name,
         org_tags=bundle.get_organization_tags(),
         custom_tags=custom_tags,
-        managed_accounts=[a.name for a in bundle.accounts.accounts],
+        accounts=bundle.declared_account_ids(
+            get_active_account_id_map(session_mgr), str(session_mgr.get_caller_identity().get("Account", ""))
+        ),
         owned_groups=owned_groups(),
     )
 
