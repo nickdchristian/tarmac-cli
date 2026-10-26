@@ -103,10 +103,10 @@ class IdentityService(PermissionSetMixin):
             logger.warning("Error checking group '%s': %s", group_def.name, e)
 
         try:
+            # Identity Store rejects an empty Description, so it is only sent when the group has one.
+            description = {"Description": group_def.description} if group_def.description else {}
             resp = self.identitystore_client.create_group(
-                IdentityStoreId=store_id,
-                DisplayName=group_def.name,
-                Description=group_def.description or "",
+                IdentityStoreId=store_id, DisplayName=group_def.name, **description
             )
             group_id: str = resp["GroupId"]
             audit(
