@@ -435,6 +435,32 @@ def _confirm_teardown(
         raise typer.Exit(code=0)
 
 
+def plan_command(
+    phase: Annotated[int | None, typer.Option("--phase", help="Plan only this phase (1-6)")] = None,
+    accounts: Annotated[
+        list[str] | None,
+        typer.Option("--account", "-a", help="With --phase 4: plan only this declared account (repeatable)"),
+    ] = None,
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    json_output: JsonOption = False,
+    tags: TagsOption = None,
+) -> None:
+    """Show what `tarmac deploy` would change, using read-only AWS calls (the same as `deploy --dry-run`)."""
+    deploy_command(
+        phase=phase,
+        accounts=accounts,
+        config_dir=config_dir,
+        region=region,
+        dry_run=True,
+        yes=False,
+        skip_preflight=False,
+        json_output=json_output,
+        tags=tags,
+        adopt_existing=False,
+    )
+
+
 def destroy_command(
     phase: Annotated[int | None, typer.Option("--phase", help="Tear down only this phase (2-6)")] = None,
     config_dir: ConfigDirOption = None,

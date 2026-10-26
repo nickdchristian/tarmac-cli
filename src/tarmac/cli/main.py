@@ -34,7 +34,7 @@ from .common import (
     load_configs_or_exit,
     warn_if_example_newer,
 )
-from .deploy import _refuse_root_identity, deploy_command, destroy_command, inventory_command
+from .deploy import _refuse_root_identity, deploy_command, destroy_command, inventory_command, plan_command
 from .importer import import_command
 from .logs import logs_command
 from .preflight import run_preflight_checks
@@ -57,6 +57,7 @@ app = typer.Typer(
 
 app.add_typer(account.app, name="account")
 app.command("bootstrap")(bootstrap_command)
+app.command("plan")(plan_command)
 app.command("deploy")(deploy_command)
 app.command("destroy")(destroy_command)
 app.command("inventory")(inventory_command)

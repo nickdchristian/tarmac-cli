@@ -45,7 +45,7 @@ jobs:
           role-to-assume: arn:aws:iam::111111111111:role/TarmacGitHubDeployment # printed by tarmac bootstrap
           aws-region: us-east-1 # organization.primary_region
           role-duration-seconds: 14400
-      - run: uvx --from "$TARMAC" tarmac deploy --dry-run --config-dir "$CONFIG_DIR"
+      - run: uvx --from "$TARMAC" tarmac plan --config-dir "$CONFIG_DIR"
       - run: uvx --from "$TARMAC" tarmac deploy --yes --config-dir "$CONFIG_DIR"
 
   drift:
