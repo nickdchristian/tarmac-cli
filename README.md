@@ -44,7 +44,7 @@ place to do this.
    ```bash
    export AWS_PROFILE=tarmac
    tarmac preflight           # checks the account is ready
-   tarmac deploy --dry-run    # shows what would change, changes nothing
+   tarmac plan                # shows what would change, changes nothing
    tarmac deploy
    ```
 
@@ -61,7 +61,7 @@ stops.
 tarmac import --config-dir my-org
 cd my-org
 tarmac status --detail
-tarmac deploy --dry-run
+tarmac plan
 ```
 
 Read what it reports, and check the dry run before the first real deploy. Keep in mind:
@@ -175,7 +175,8 @@ detector once its members are disassociated. Security Hub can't be suspended, so
 | `tarmac validate` | Check the config files, without AWS |
 | `tarmac bootstrap` | Once, as root: create your Identity Center login and the `tarmac` profile |
 | `tarmac preflight` | Check the management account is ready |
-| `tarmac deploy` | Apply the config (`--dry-run` to preview, `--phase N` for one phase) |
+| `tarmac plan` | Show what `deploy` would change, without changing it (same as `deploy --dry-run`) |
+| `tarmac deploy` | Apply the config (`--phase N` for one phase) |
 | `tarmac status` | Compare AWS with the config (`--detail` lists every difference) |
 | `tarmac import` | Write config files from an existing organization |
 | `tarmac destroy` | Remove what tarmac deployed (see [Tearing down](#tearing-down)) |
