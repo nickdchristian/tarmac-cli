@@ -11,6 +11,8 @@ SCPs, an organization CloudTrail, security services and IAM Identity Center. Cha
 
 ## Install
 
+Tarmac needs Python 3.11 or later, and is tested on 3.11 through 3.15.
+
 ```bash
 uv tool install tarmac-cli     # or: pip install tarmac-cli
 tarmac --help
