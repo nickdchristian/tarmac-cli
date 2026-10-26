@@ -305,23 +305,16 @@ class StackSetService:
         AWS runs one operation per StackSet at a time, and starts some itself: moving a new account into a
         targeted OU starts an automatic deployment to it.
         """
-        for attempt in range(3):
-            try:
-                return call()
-            except ClientError as e:
-                if aws_error_code(e) != "OperationInProgressException" or attempt == 2:
-                    raise
-                running = [
-                    str(o["OperationId"])
-                    for o in cf.list_stack_set_operations(StackSetName=name).get("Summaries", [])
-                    if o.get("Status") in ("RUNNING", "QUEUED", "STOPPING")
-                ]
-                retry_notice(
-                    f"StackSet '{name}'", "another operation on it is still running", self._poll_seconds
-                )
-                for operation_id in running:
-                    self.wait(cf, name, operation_id)
-        raise AssertionError("unreachable")
+        try:
+            return call()
+        except ClientError as e:
+            if aws_error_code(e) != "OperationInProgressException":
+                raise
+        retry_notice(f"StackSet '{name}'", "another operation on it is still running", self._poll_seconds)
+        for operation in cf.list_stack_set_operations(StackSetName=name).get("Summaries", []):
+            if operation.get("Status") in ("RUNNING", "QUEUED", "STOPPING"):
+                self.wait(cf, name, str(operation["OperationId"]))
+        return call()
 
     def wait(self, cf: Any, name: str, operation_id: str) -> str:
         deadline = time.monotonic() + self._timeout_seconds
