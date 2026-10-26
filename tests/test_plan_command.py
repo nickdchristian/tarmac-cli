@@ -23,3 +23,16 @@ def test_plan_is_deploy_dry_run(tmp_path: Path, monkeypatch):
     kwargs = deploy.call_args.kwargs
     assert kwargs["dry_run"] is True
     assert (kwargs["phase"], kwargs["json_output"], kwargs["yes"]) == (3, True, False)
+
+
+def test_a_plan_with_no_changes_does_not_suggest_deploying(capsys):
+    from tarmac.cli.plan_view import render_plan
+    from tarmac.services.plan import NO_CHANGE, DeploymentPlan, PhasePlan, PlanItem
+
+    phase = PhasePlan(1, "Organization")
+    phase.items.append(PlanItem("organization", "acme", NO_CHANGE, ""))
+    render_plan(DeploymentPlan(region="us-east-1", phases=[phase]))
+
+    out = capsys.readouterr().out
+    assert "no changes" in out
+    assert "tarmac deploy" not in out
