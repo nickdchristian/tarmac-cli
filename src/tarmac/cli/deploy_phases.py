@@ -14,6 +14,7 @@ from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
 from ..core.text import plural
+from ..services import deployment_identity
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.baseline_stacks import BaselineStacksService
@@ -122,6 +123,7 @@ def _deploy_inventory_stack(
         termination_protection=True,
     )
     inventory.connect(session_mgr, bundle.org.organization.name, region, bundle.config_dir)
+    deployment_identity.record(session_mgr, bundle)
 
 
 def connect_inventory_or_raise(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
@@ -134,6 +136,7 @@ def connect_inventory_or_raise(session_mgr: AwsSessionManager, bundle: ConfigBun
             "The bucket that records what tarmac creates does not exist yet.",
             details="Run `tarmac deploy --phase 1` first: it creates the bucket.",
         )
+    deployment_identity.record(session_mgr, bundle)
 
 
 def _run_phase_1_org(

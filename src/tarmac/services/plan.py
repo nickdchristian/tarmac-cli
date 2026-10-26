@@ -282,12 +282,9 @@ class Planner:
     def _phase_1(self, phase: PhasePlan) -> None:
         org = OrganizationService(self.session_mgr)
         checks = PreflightService(self.session_mgr, self.bundle)
-        for check in (
-            checks.check_stack_name_prefix(self.region),
-            checks.check_existing_organization_trail(self.region),
-        ):
-            if check.status is PreflightCheckStatus.FAIL:
-                phase.notes.append(f"The deploy would stop here: {check.action_required}")
+        check = checks.check_existing_organization_trail(self.region)
+        if check.status is PreflightCheckStatus.FAIL:
+            phase.notes.append(f"The deploy would stop here: {check.action_required}")
         self._stack(
             phase,
             self.session_mgr.get_client(

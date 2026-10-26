@@ -29,6 +29,7 @@ from .common import (
     RegionOption,
     TagsOption,
     YesOption,
+    check_deployment_or_exit,
     confirm_or_exit,
     load_configs_or_exit,
     parse_tags_or_exit,
@@ -215,18 +216,20 @@ def deploy_command(
     _require_yes_for_json(dry_run, yes, json_output)
     bundle = load_configs_or_exit(config_dir)
     _check_deploy_options(phase, accounts, skip_preflight, bundle)
+    custom_tags = parse_tags_or_exit(tags)
+
+    target_region = region or bundle.org.organization.primary_region
+    session_mgr = AwsSessionManager(region_name=target_region)
+    phases = [phase] if phase is not None else ALL_PHASES
+    # Before the prompt: nobody should confirm a live deploy that is then refused.
+    _refuse_root_identity(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
     confirm_or_exit(
         "Are you sure you want to run the live multi-account deployment?",
         yes=yes,
         dry_run=dry_run,
         cancelled="Deployment cancelled by user.",
     )
-    custom_tags = parse_tags_or_exit(tags)
-
-    target_region = region or bundle.org.organization.primary_region
-    session_mgr = AwsSessionManager(region_name=target_region)
-    phases = [phase] if phase is not None else ALL_PHASES
-    _refuse_root_identity(session_mgr)
 
     try:
         if dry_run:
@@ -484,6 +487,7 @@ def destroy_command(
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
     _refuse_root_identity(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
 
     inv = _load_inventory(session_mgr, bundle, inventory_from_log) if everything else None
     _confirm_teardown(
@@ -586,6 +590,7 @@ def inventory_command(
     bundle = load_configs_or_exit(config_dir)
     session_mgr = AwsSessionManager(region_name=bundle.org.organization.primary_region)
     require_credentials_or_exit(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
     inv = _load_inventory(session_mgr, bundle, from_log)
     if json_output:
         print(json.dumps(inv.entries, indent=2, sort_keys=True))

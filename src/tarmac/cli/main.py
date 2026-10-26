@@ -30,6 +30,7 @@ from .common import (
     ConfigDirOption,
     JsonOption,
     RegionOption,
+    check_deployment_or_exit,
     exit_on_error,
     load_configs_or_exit,
     warn_if_example_newer,
@@ -614,6 +615,7 @@ def show_status(
     with exit_on_error("Status Inspection Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         _refuse_root_identity(session_mgr)
+        check_deployment_or_exit(session_mgr, bundle)
         status = StatusService(session_mgr).inspect(bundle, target_region)
         report = DriftService(session_mgr).inspect_drift(bundle, target_region) if detail or strict else None
         ous: dict[str, str] = {}

@@ -124,39 +124,6 @@ def test_trail_check_degrades_to_info_when_unreadable(bundle: ConfigBundle):
     assert result.status is PreflightCheckStatus.INFO
 
 
-def _stacks(*names: str) -> MagicMock:
-    cfn = MagicMock()
-    cfn.get_paginator.return_value.paginate.return_value = [
-        {"StackSummaries": [{"StackName": n} for n in names]}
-    ]
-    return cfn
-
-
-def test_stacks_named_for_a_different_organization_name_are_flagged(bundle: ConfigBundle):
-    cfn = _stacks("oldname-organization-scps", "oldname-sso-permission-sets", "unrelated-stack")
-
-    result = PreflightService(_session(cfn), bundle).check_stack_name_prefix("us-east-1")
-
-    # The deploy would duplicate the trail, buckets and recorders before failing, so it is stopped instead.
-    assert result.status is PreflightCheckStatus.FAIL
-    assert "oldname" in result.live_value
-    assert "Set organization.name back to 'oldname'" in (result.action_required or "")
-
-
-def test_leftover_stacks_under_another_name_only_warn(bundle: ConfigBundle):
-    name = bundle.org.organization.name
-    cfn = _stacks(f"{name}-organization-scps", "oldname-organization-scps")
-    result = PreflightService(_session(cfn), bundle).check_stack_name_prefix("us-east-1")
-    assert result.status is PreflightCheckStatus.WARN
-
-
-def test_stacks_matching_the_organization_name_pass(bundle: ConfigBundle):
-    name = bundle.org.organization.name
-    cfn = _stacks(f"{name}-organization-scps", f"{name}-terraform-backend", "unrelated-stack")
-    result = PreflightService(_session(cfn), bundle).check_stack_name_prefix("us-east-1")
-    assert result.status is PreflightCheckStatus.PASS
-
-
 def _factory_with_unlisted_managed_account() -> AccountService:
     mgr = MagicMock()
     org = MagicMock()

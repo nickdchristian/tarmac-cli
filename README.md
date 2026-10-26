@@ -69,7 +69,9 @@ Read what it reports, and check the dry run before the first real deploy. Keep i
   rather than guess.
 - **Accounts you don't declare are left alone,** except ones tarmac created earlier and you have since removed
   from `accounts.yaml`. Those are moved to the Suspended OU (`quarantine_removed_accounts: false` turns this off).
-- **Never change `organization.name` after the first deploy.** Every stack is named after it.
+- **Never change `organization.name` or `primary_region` after the first deploy.** Every stack is named after the
+  name, and tarmac keeps its inventory in the primary Region. Tarmac records both on the management account and
+  stops with an explanation if the config no longer matches.
 - **An existing organization trail isn't replaced.** Tarmac adds its own; delete the old one once the new one is
   delivering logs.
 - **Set `delete_default_vpc: false`** for accounts that already run workloads.
