@@ -174,7 +174,7 @@ def test_a_dropped_region_suspends_guardduty_there_only(monkeypatch):
 
 
 def test_security_hub_in_a_dropped_region_only_loses_its_hubs(monkeypatch):
-    # Central configuration manages the delegation and settings from the home Region, so those are left.
+    # The delegation and organization settings are left for the Regions Security Hub still runs in.
     teardown = MagicMock()
     teardown.member_ids.return_value = {"333333333333"}
     monkeypatch.setattr("tarmac.services.security_off.SecurityServicesTeardown", lambda *_a: teardown)
@@ -183,8 +183,11 @@ def test_security_hub_in_a_dropped_region_only_loses_its_hubs(monkeypatch):
         "AdminAccounts": [{"AccountId": AUDIT}]
     }
 
+    bundle = _bundle(guardduty=True, securityhub=True)
+    bundle.org.security_services.securityhub.central_configuration = False
+
     SecurityServicesOff(mgr).disable_securityhub(
-        _bundle(guardduty=True, securityhub=True), AUDIT, ["us-west-2"], {}, "111", "us-east-1", dry_run=True
+        bundle, AUDIT, ["us-west-2"], {}, "111", "us-east-1", dry_run=True
     )
 
     teardown.disable_hubs.assert_called_once_with(ANY, "us-west-2", AUDIT, {"333333333333"}, True)
@@ -201,3 +204,18 @@ def test_destroy_says_which_security_services_it_keeps():
 
     assert (item.resource_name, item.action) == ("GuardDuty", "SKIPPED")
     assert "--disable-security-services" in item.message
+
+
+def test_under_central_configuration_a_dropped_regions_hubs_are_left_on_with_a_warning(monkeypatch, capsys):
+    # Live, AWS refused: "This account is currently associated with a central configuration policy, so only
+    # the administrator can access this operation."
+    off = MagicMock()
+    monkeypatch.setattr(deploy_phases, "SecurityServicesOff", lambda _s: off)
+    _recorded({"securityhub": ["us-east-1", "us-west-2"]})
+    bundle = _bundle(guardduty=True, securityhub=True)
+    bundle.org.security_services.securityhub.central_configuration = True
+
+    deploy_phases._turn_off_security_services(MagicMock(), bundle, "us-east-1", {"audit": AUDIT})
+
+    off.disable_securityhub.assert_not_called()
+    assert "Security Hub stays on in us-west-2" in capsys.readouterr().out

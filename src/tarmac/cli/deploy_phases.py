@@ -25,7 +25,13 @@ from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
-from ..services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff, regions_off
+from ..services.security_off import (
+    SECURITY_HUB_WARNING,
+    SecurityServicesOff,
+    central_hubs_note,
+    keeps_hubs,
+    regions_off,
+)
 from ..services.settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from ..services.stack_parameters import (
     audit_hardening_parameters,
@@ -575,7 +581,9 @@ def _turn_off_security_services(
     if guardduty:
         apply_removals("GuardDuty", off.suspend_guardduty(audit_id, guardduty, dry_run=False))
     securityhub = regions_off(bundle, recorded, "securityhub", target_region)
-    if securityhub:
+    if securityhub and keeps_hubs(bundle):
+        print_warning(central_hubs_note(securityhub))
+    elif securityhub:
         mgmt_id = str(session_mgr.get_caller_identity().get("Account", ""))
 
         def disable(dry_run: bool) -> list[TeardownItemReport]:

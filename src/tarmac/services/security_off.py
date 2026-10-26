@@ -7,7 +7,9 @@ GuardDuty is suspended in the member accounts: monitoring and charges stop, find
 resumes it. It stays on in the audit account, because AWS only suspends a detector once its members are disassociated.
 Security Hub has no suspend, so it is disabled, and AWS then deletes its findings (archived after 30 days, active
 after 90). In a Region dropped while Security Hub stays on, only the accounts' hubs there are disabled; the delegation
-and organization settings are left, since central configuration manages them from the home Region.
+and organization settings are left. Under central configuration even that is refused: an account associated with a
+configuration policy can't disable its hub, and the policy no longer reaches a Region that isn't linked. Those hubs
+are left on, and the deploy says so.
 """
 
 import logging
@@ -28,6 +30,20 @@ SECURITY_HUB_WARNING = (
     "Disabling Security Hub. AWS deletes its archived findings after 30 days and its active findings, insights and "
     "settings after 90 days; turning it back on before then restores them. Export any findings you need to keep first."
 )
+
+
+def central_hubs_note(regions: list[str]) -> str:
+    return (
+        f"Security Hub stays on in {', '.join(regions)}: under central configuration AWS refuses to disable it in "
+        "an account associated with a configuration policy, and the policy no longer reaches a Region that isn't "
+        "linked. Turn it off in each account there from the Security Hub console if you don't want it."
+    )
+
+
+def keeps_hubs(bundle: ConfigBundle) -> bool:
+    """Whether a dropped Region's hubs have to be left on (Security Hub still on, with central configuration)."""
+    securityhub = bundle.org.security_services.securityhub
+    return securityhub.enabled and securityhub.central_configuration
 
 
 def regions_off(
@@ -110,8 +126,11 @@ class SecurityServicesOff:
         """Disable Security Hub in ``regions``, where the audit account is still its delegated administrator.
 
         With Security Hub off in the config, this is what `destroy --disable-security-services` does. With it still
-        on, these are Regions the config dropped: only the hubs there are disabled.
+        on, these are Regions the config dropped: only the hubs there are disabled, and only without central
+        configuration (see ``keeps_hubs``).
         """
+        if keeps_hubs(bundle):
+            return []
         results: list[TeardownItemReport] = []
         teardown = SecurityServicesTeardown(self.session_mgr, list, lambda _m: None)
         members = teardown.member_ids(bundle, accounts, audit_id, mgmt_id)

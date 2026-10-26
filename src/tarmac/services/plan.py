@@ -38,7 +38,13 @@ from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact
 from .ou import OUService
 from .preflight import PreflightService
 from .scp import SCPService
-from .security_off import SECURITY_HUB_WARNING, SecurityServicesOff, regions_off
+from .security_off import (
+    SECURITY_HUB_WARNING,
+    SecurityServicesOff,
+    central_hubs_note,
+    keeps_hubs,
+    regions_off,
+)
 from .settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from .stack_parameters import (
     audit_hardening_parameters,
@@ -780,7 +786,9 @@ class Planner:
                 action="SUSPEND",
             )
         securityhub = regions_off(self.bundle, self.recorded, "securityhub", self.region)
-        if securityhub:
+        if securityhub and keeps_hubs(self.bundle):
+            phase.notes.append(central_hubs_note(securityhub))
+        elif securityhub:
             mgmt_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
             on = self.bundle.org.security_services.securityhub.enabled
             before = len(phase.items)
