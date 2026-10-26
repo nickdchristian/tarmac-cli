@@ -9,8 +9,8 @@ import contextlib
 import contextvars
 import logging
 import time
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import Any, TypeVar
 
 from .logging import current_context, redact, redact_value
 
@@ -83,6 +83,38 @@ def retry_notice(what: str, why: str, delay: float) -> None:
     """Tell the person running tarmac that it is waiting on AWS and trying again, rather than warning of a failure.
     Callers say it once per wait, not on every attempt."""
     logger.warning("%s: %s; retrying every %.0fs...", what, why, delay)
+
+
+T = TypeVar("T")
+
+#: What a brand-new account's services answer for its first minutes, until they are activated.
+NOT_ACTIVATED = frozenset({"OptInRequired", "SubscriptionRequiredException"})
+
+
+def while_activating(
+    call: Callable[[], T],
+    what: str,
+    *,
+    timeout: float = 600.0,
+    poll: float = 20.0,
+    sleep: Callable[[float], None] | None = None,
+) -> T:
+    """``call()``, retried while the account's services are still activating, as they are right after it is
+    created. Any other error, or the same one after ``timeout`` seconds, is raised."""
+    deadline = time.monotonic() + timeout
+    noticed = False
+    while True:
+        try:
+            with retrying():
+                return call()
+        except Exception as e:
+            code = str(getattr(e, "response", {}).get("Error", {}).get("Code", ""))
+            if code not in NOT_ACTIVATED or time.monotonic() >= deadline:
+                raise
+            if not noticed:
+                retry_notice(what, "the new account's services are still activating", poll)
+                noticed = True
+            (sleep or time.sleep)(poll)
 
 
 def is_benign_error(error: dict[str, Any]) -> bool:

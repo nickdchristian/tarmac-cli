@@ -212,3 +212,28 @@ def test_teardown_removes_every_baseline_stack_set_of_the_organization():
         s.assert_no_pending_responses()
 
     assert [(i.resource_name, i.action) for i in items] == [(NAME, "SIMULATED")]
+
+
+def test_an_operation_already_running_on_the_stack_set_is_waited_for():
+    """Moving a new account into a targeted OU starts an automatic deployment, and AWS runs one at a time."""
+    from botocore.exceptions import ClientError
+
+    cf = MagicMock()
+    busy = ClientError(
+        {"Error": {"Code": "OperationInProgressException", "Message": "busy"}}, "CreateStackInstances"
+    )
+    cf.create_stack_instances.side_effect = [busy, {"OperationId": "op-2"}]
+    cf.list_stack_set_operations.return_value = {
+        "Summaries": [
+            {"OperationId": "auto-1", "Status": "RUNNING"},
+            {"OperationId": "old", "Status": "SUCCEEDED"},
+        ]
+    }
+    cf.describe_stack_set_operation.return_value = DONE
+
+    StackSetService(sleep=lambda _s: None)._create_instances(
+        cf, NAME, {"OrganizationalUnitIds": ["r"]}, ["us-east-1"]
+    )
+
+    waited = [c.kwargs["OperationId"] for c in cf.describe_stack_set_operation.call_args_list]
+    assert waited == ["auto-1", "op-2"]

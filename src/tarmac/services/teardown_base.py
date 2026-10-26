@@ -1,5 +1,6 @@
 """Shared state and helpers for the teardown service."""
 
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -8,6 +9,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from ..core.audit import Outcome, audit
+from ..core.aws_audit import retrying
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
@@ -172,7 +174,9 @@ class TeardownBase:
         try:
             for attempt in range(3):
                 try:
-                    s3_client.delete_bucket(Bucket=bucket)
+                    # Not the last attempt: a BucketNotEmpty here is expected and retried, so it isn't a warning.
+                    with retrying() if attempt < 2 else contextlib.nullcontext():
+                        s3_client.delete_bucket(Bucket=bucket)
                     break
                 except ClientError as e:
                     if e.response.get("Error", {}).get("Code") != "BucketNotEmpty" or attempt == 2:

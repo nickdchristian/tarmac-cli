@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..core.adoption import ADOPT_HINT, adopt_existing
 from ..core.audit import Outcome, audit
+from ..core.aws_audit import while_activating
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import AccountDef, AnomalyDetectionConfig, BudgetConfig
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
@@ -76,6 +77,14 @@ class BaselineService:
             )
         return [self.session_mgr.default_region]
 
+    def _wait_until_activated(self, account_id: str, region: str) -> None:
+        """Wait once for a new account's EC2 to activate, rather than fail in every Region at the same time."""
+        try:
+            ec2 = self.session_mgr.get_member_client(account_id, "ec2", region_name=region)
+            while_activating(lambda: ec2.describe_vpcs(MaxResults=5), f"Reaching EC2 in account {account_id}")
+        except Exception as e:  # each Region then reports its own error
+            logger.debug("EC2 in account %s: %s", account_id, e)
+
     def cleanup_default_vpcs(
         self,
         account_id: str,
@@ -86,6 +95,7 @@ class BaselineService:
 
         If regions is None, dynamically queries all active/enabled AWS regions in the account.
         """
+        self._wait_until_activated(account_id, regions[0] if regions else self.session_mgr.default_region)
         target_regions = regions if regions is not None else self.get_enabled_regions(account_id)
         reports: list[VpcCleanupReport] = []
 

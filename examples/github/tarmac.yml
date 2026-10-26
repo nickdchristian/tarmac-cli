@@ -1,6 +1,6 @@
 # Copy to .github/workflows/tarmac.yml in the repository holding your tarmac config, after running
-# `tarmac bootstrap --github-repo OWNER/REPO`. Protect the branch so changes reach it only through reviewed pull
-# requests: every run on it can deploy.
+# `tarmac bootstrap --github-repo OWNER/REPO`, and set the repository variable it prints (TARMAC_ROLE_ARN).
+# Protect the branch so changes reach it only through reviewed pull requests: every run on it can deploy.
 name: tarmac
 
 on:
@@ -25,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          cache-dependency-glob: .github/workflows/tarmac.yml # the TARMAC pin is the only dependency
       - run: uvx --from "$TARMAC" tarmac validate --config-dir "$CONFIG_DIR"
 
   deploy:
@@ -40,9 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          cache-dependency-glob: .github/workflows/tarmac.yml # the TARMAC pin is the only dependency
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::111111111111:role/TarmacGitHubDeployment # printed by tarmac bootstrap
+          role-to-assume: ${{ vars.TARMAC_ROLE_ARN }} # set as tarmac bootstrap prints
           aws-region: us-east-1 # organization.primary_region
           role-duration-seconds: 14400
       - run: uvx --from "$TARMAC" tarmac plan --config-dir "$CONFIG_DIR"
@@ -57,8 +61,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          cache-dependency-glob: .github/workflows/tarmac.yml # the TARMAC pin is the only dependency
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: arn:aws:iam::111111111111:role/TarmacGitHubDeployment
+          role-to-assume: ${{ vars.TARMAC_ROLE_ARN }}
           aws-region: us-east-1
       - run: uvx --from "$TARMAC" tarmac status --strict --config-dir "$CONFIG_DIR"

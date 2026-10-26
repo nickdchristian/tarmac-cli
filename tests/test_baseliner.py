@@ -487,7 +487,9 @@ def test_baseline_account_runs_and_tags_when_not_baselined():
 
     baseliner.baseline_account(acct_def, "123456789012", regions=["eu-west-1"])
 
-    mock_session_mgr.get_member_client.assert_called_once_with("123456789012", "ec2", region_name="eu-west-1")
+    # Once to wait for a new account's EC2 to activate, once to clean the one Region.
+    calls = mock_session_mgr.get_member_client.call_args_list
+    assert {(c.args, c.kwargs["region_name"]) for c in calls} == {(("123456789012", "ec2"), "eu-west-1")}
     mock_org.tag_resource.assert_called_once()
 
 
@@ -699,3 +701,21 @@ def test_existing_budget_is_not_deleted_without_adopt_existing():
     assert "--adopt-existing" in report.message
     budgets.delete_budget.assert_not_called()
     cfn.create_stack.assert_not_called()
+
+
+def test_a_new_accounts_services_are_waited_for_once_before_cleaning_every_region(monkeypatch):
+    """Right after creation, every service answers OptInRequired for a few minutes."""
+    from tarmac.core import aws_audit
+
+    monkeypatch.setattr(aws_audit.time, "sleep", lambda _s: None)
+    not_yet = ClientError({"Error": {"Code": "OptInRequired", "Message": "not subscribed"}}, "DescribeVpcs")
+    mgr = MagicMock()
+    mgr.default_region = "us-east-1"
+    ec2 = mgr.get_member_client.return_value
+    ec2.describe_vpcs.side_effect = [not_yet, not_yet, {"Vpcs": []}, {"Vpcs": []}, {"Vpcs": []}]
+
+    reports = BaselineService(mgr).cleanup_default_vpcs(
+        "123456789012", "new", regions=["us-east-1", "us-west-2"]
+    )
+
+    assert [r.message for r in reports] == ["No default VPC found.", "No default VPC found."]

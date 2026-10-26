@@ -11,6 +11,7 @@ import yaml
 from botocore.exceptions import BotoCoreError, ClientError, WaiterError
 
 from ..core.audit import Outcome, audit
+from ..core.aws_audit import while_activating
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, DeploymentError, aws_error_message
 from ..core.models import StackDeployReport
@@ -394,7 +395,9 @@ class CloudFormationService:
     def _get_stack_status(self, cfn_client: Any, stack_name: str) -> str | None:
         """Fetch the current CloudFormation stack status, or None if it does not exist."""
         try:
-            resp = cfn_client.describe_stacks(StackName=stack_name)
+            resp = while_activating(
+                lambda: cfn_client.describe_stacks(StackName=stack_name), f"Reading stack {stack_name}"
+            )
             stacks = resp.get("Stacks", [])
             if stacks:
                 return str(stacks[0].get("StackStatus", ""))
