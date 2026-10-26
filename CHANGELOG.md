@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.7.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.6.0...v0.7.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* Identity Center groups without a description, and permission sets removed from identity.yaml ([#131](https://github.com/nickdchristian/tarmac-cli/issues/131))
+* read config only from config/ (or --config-dir / TARMAC_CONFIG_DIR) ([#130](https://github.com/nickdchristian/tarmac-cli/issues/130))
+* assignments to all mean the accounts in accounts.yaml ([#128](https://github.com/nickdchristian/tarmac-cli/issues/128))
+* one way to write each setting, and unknown keys are errors ([#127](https://github.com/nickdchristian/tarmac-cli/issues/127))
+
+### Features
+
+* add tarmac plan, the same as tarmac deploy --dry-run ([#132](https://github.com/nickdchristian/tarmac-cli/issues/132)) ([923b85b](https://github.com/nickdchristian/tarmac-cli/commit/923b85b95145735ce00bb8914828845449a0c2a5))
+* assignments to all mean the accounts in accounts.yaml ([#128](https://github.com/nickdchristian/tarmac-cli/issues/128)) ([5a2674d](https://github.com/nickdchristian/tarmac-cli/commit/5a2674df317b41bc69a92d757c64318fbf13a9b2))
+* one way to write each setting, and unknown keys are errors ([#127](https://github.com/nickdchristian/tarmac-cli/issues/127)) ([160edaa](https://github.com/nickdchristian/tarmac-cli/commit/160edaa377d1f987ec73dce2606c379bc581fba8))
+* stop when organization.yaml names a different deployment than the one in AWS ([#129](https://github.com/nickdchristian/tarmac-cli/issues/129)) ([de1ac3c](https://github.com/nickdchristian/tarmac-cli/commit/de1ac3c0f39d8a3b7018e93612a1cb4cd0cfa7ca))
+* support Python 3.15 ([#134](https://github.com/nickdchristian/tarmac-cli/issues/134)) ([8fbd1ec](https://github.com/nickdchristian/tarmac-cli/commit/8fbd1ec39ec8812e81a2c12e4bb339b91527b342))
+
+
+### Bug Fixes
+
+* Identity Center groups without a description, and permission sets removed from identity.yaml ([#131](https://github.com/nickdchristian/tarmac-cli/issues/131)) ([3a1a6e1](https://github.com/nickdchristian/tarmac-cli/commit/3a1a6e1d0c2b38d3778c18e01e60f1074fe4525b))
+* read config only from config/ (or --config-dir / TARMAC_CONFIG_DIR) ([#130](https://github.com/nickdchristian/tarmac-cli/issues/130)) ([45a55f0](https://github.com/nickdchristian/tarmac-cli/commit/45a55f0484ac65b28cc6f9caa13a077f42cc58a6))
+
 ## [0.6.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.5.0...v0.6.0) (2026-10-25)
 
 
