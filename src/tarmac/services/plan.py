@@ -839,6 +839,12 @@ class Planner:
             return
         name = Stack.CONFIG_RECORDER.for_org(self.org_name)
         regions = config_recorder_regions(self.bundle, self.region)
+        if dropped := inventory.regions_to_remove(self.recorded, "config-recorder", regions):
+            self._removals(
+                phase,
+                "Region dropped",
+                lambda t: t.teardown_config_recorder(self.bundle, self.region, dry_run=True, regions=dropped),
+            )
         log_archive_name = self.bundle.get_log_archive_account_name() or "log-archive"
         log_archive_id = self._account_id(log_archive_name)
         outputs = (
