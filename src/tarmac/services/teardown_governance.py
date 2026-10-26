@@ -239,6 +239,25 @@ class GovernanceTeardown(TeardownBase):
             dry_run=dry_run,
         )
 
+    def report_security_services_kept(self, bundle: ConfigBundle) -> list[TeardownItemReport]:
+        """GuardDuty and Security Hub stay on unless asked; say so, so nobody assumes they were removed."""
+        sec = bundle.org.security_services
+        return [
+            TeardownItemReport(
+                "Security Service",
+                name,
+                sec.audit_account,
+                "",
+                "SKIPPED",
+                "Kept, with its findings. Pass --disable-security-services to turn it off",
+            )
+            for name, enabled in (
+                ("GuardDuty", sec.guardduty.enabled),
+                ("Security Hub", sec.securityhub.enabled),
+            )
+            if enabled
+        ]
+
     def reset_milestones(self, mgmt_account_id: str, dry_run: bool = False) -> list[TeardownItemReport]:
         """Remove tarmac deployment tags and reset milestones on the Management Account."""
         results: list[TeardownItemReport] = self._new_results_list()

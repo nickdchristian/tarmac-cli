@@ -60,7 +60,7 @@ class TeardownService(
 
         if 3 in phases_set or 5 in phases_set:
             self._notify_phase("Phase 5 | AWS Config Recorders")
-            items.extend(self.teardown_config_recorder(bundle, region, dry_run=dry_run))
+            items.extend(self.teardown_config_recorder(bundle, region, dry_run=dry_run, recorded=inventory))
 
         if 3 in phases_set or 5 in phases_set:
             self._notify_phase("Phase 3/5 | Log Archive Hardening & Buckets")
@@ -76,6 +76,8 @@ class TeardownService(
             self._notify_phase("Phase 5 | Terraform Backend & Audit Hardening")
             if disable_security_services:
                 items.extend(self.teardown_security_services(bundle, region, accts, dry_run=dry_run))
+            else:
+                items.extend(self.report_security_services_kept(bundle))
             if not preserve_backend:
                 items.extend(self.teardown_backend(bundle, region, dry_run=dry_run, account_id_map=accts))
             else:
