@@ -26,14 +26,14 @@ from .security_central import (
 logger = logging.getLogger(__name__)
 
 
-_GUARDDUTY_FEATURE_FLAGS = {
+GUARDDUTY_FEATURE_FLAGS = {
     "S3_DATA_EVENTS": "s3_data_events",
     "EKS_AUDIT_LOGS": "eks_audit_logs",
     "EBS_MALWARE_PROTECTION": "malware_protection",
     "RDS_LOGIN_EVENTS": "rds_login_events",
     "LAMBDA_NETWORK_LOGS": "lambda_network_logs",
 }
-_GUARDDUTY_FEATURE_NAMES = frozenset(_GUARDDUTY_FEATURE_FLAGS)
+_GUARDDUTY_FEATURE_NAMES = frozenset(GUARDDUTY_FEATURE_FLAGS)
 
 
 def _guardduty_features(config: GuardDutyConfig) -> list[dict[str, str]]:
@@ -45,7 +45,7 @@ def _guardduty_features(config: GuardDutyConfig) -> list[dict[str, str]]:
     """
     return [
         {"Name": name, "Status": "ENABLED" if getattr(config.features, flag) else "DISABLED"}
-        for name, flag in _GUARDDUTY_FEATURE_FLAGS.items()
+        for name, flag in GUARDDUTY_FEATURE_FLAGS.items()
     ]
 
 

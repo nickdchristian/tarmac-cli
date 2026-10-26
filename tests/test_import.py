@@ -147,7 +147,20 @@ class FakeSession:
             {"StackSummaries": [{"StackName": "acme-organization-scps"}, {"StackName": "unrelated"}]}
         ]
         cfn.get_paginator.return_value = stacks
+        cfn.describe_stack_set.side_effect = ClientError(
+            {"Error": {"Code": "StackSetNotFoundException", "Message": "none"}}, "DescribeStackSet"
+        )
         self.clients["cloudformation"] = cfn
+        for service in ("guardduty", "securityhub"):
+            self.clients[service] = MagicMock()
+            self.clients[service].list_organization_admin_accounts.return_value = {"AdminAccounts": []}
+        self.clients["ce"] = MagicMock()
+        self.clients["ce"].list_cost_allocation_tags.return_value = {"CostAllocationTags": []}
+        member_cfn = MagicMock()
+        member_cfn.describe_stacks.side_effect = ClientError(
+            {"Error": {"Code": "ValidationError", "Message": "Stack does not exist"}}, "DescribeStacks"
+        )
+        self.member_clients: dict[str, MagicMock] = {"cloudformation": member_cfn}
         self.clients["sso-admin"] = MagicMock()
         self.clients["identitystore"] = MagicMock()
         if not with_sso:
@@ -155,6 +168,9 @@ class FakeSession:
 
     def get_client(self, service: str, region_name: str | None = None) -> MagicMock:
         return self.clients[service]
+
+    def get_member_client(self, account_id: str, service: str, region_name: str | None = None) -> MagicMock:
+        return self.member_clients.setdefault(service, MagicMock())
 
 
 @pytest.fixture
@@ -532,3 +548,157 @@ def test_scim_groups_keep_their_members_in_the_idp(monkeypatch, tmp_path: Path):
     assert "_external" not in ident["groups"][0]
     assert report.adopted_groups == []
     assert any("provisioned by your identity provider" in todo for todo in report.todos)
+
+
+def _params(**values: str) -> list[dict[str, str]]:
+    return [{"ParameterKey": k, "ParameterValue": v} for k, v in values.items()]
+
+
+def test_a_tarmac_deployments_settings_are_read_back_so_the_import_plans_no_changes(tmp_path: Path):
+    """Left at their defaults, these settings are off, and the next deploy would turn them off: Security Hub
+    disabled in every account, GuardDuty suspended, the Config recorders deleted, KMS and retention dropped."""
+    session = FakeSession(with_sso=False)
+    member_cfn = session.member_clients["cloudformation"]
+    member_cfn.describe_stacks.side_effect = lambda StackName: {
+        "acme-log-archive-hardening": {
+            "Stacks": [
+                {
+                    "Parameters": _params(
+                        EnableKmsEncryption="true",
+                        LogRetentionDays="30",
+                        ObjectLockMode="GOVERNANCE",
+                        ObjectLockRetentionDays="1",
+                        GuardDutyFindingsAccountId="222",
+                    )
+                }
+            ]
+        },
+        "acme-audit-account-hardening": {"Stacks": [{"Parameters": _params(IncidentResponseWebhookUrl="")}]},
+    }[StackName]
+    cfn = session.clients["cloudformation"]
+    cfn.describe_stack_set.side_effect = lambda StackSetName: {
+        "acme-config-recorder": {
+            "StackSet": {
+                "Parameters": _params(
+                    IncludeGlobalResources="true",
+                    RecordResourceCompliance="false",
+                    RecordingFrequency="DAILY",
+                )
+            }
+        },
+        "acme-baseline-password-policy": {
+            "StackSet": {
+                "TemplateBody": "Resources: {}\n",
+                "Parameters": _params(MinimumLength="14"),
+                "OrganizationalUnitIds": ["r-1"],
+            }
+        },
+    }[StackSetName]
+    pages = {
+        "list_stacks": [
+            {"StackSummaries": [{"StackName": "acme-organization-scps"}, {"StackName": "unrelated"}]}
+        ],
+        "list_stack_instances": [{"Summaries": [{"Region": "us-east-1"}, {"Region": "us-west-2"}]}],
+        "list_stack_sets": [
+            {
+                "Summaries": [
+                    {"StackSetName": "acme-config-recorder"},
+                    {"StackSetName": "acme-baseline-password-policy"},
+                ]
+            }
+        ],
+    }
+    cfn.get_paginator.side_effect = lambda name: MagicMock(**{"paginate.return_value": pages[name]})
+    session.clients["guardduty"].list_organization_admin_accounts.return_value = {
+        "AdminAccounts": [{"AdminAccountId": "222"}]
+    }
+    session.clients["securityhub"].list_organization_admin_accounts.return_value = {
+        "AdminAccounts": [{"AccountId": "222"}]
+    }
+    gd = session.member_clients["guardduty"] = MagicMock()
+    gd.list_detectors.return_value = {"DetectorIds": ["det-1"]}
+    gd.get_detector.return_value = {"Features": [{"Name": "S3_DATA_EVENTS", "Status": "ENABLED"}]}
+    sh = session.member_clients["securityhub"] = MagicMock()
+    sh.describe_organization_configuration.return_value = {
+        "OrganizationConfiguration": {"ConfigurationType": "CENTRAL"}
+    }
+    sh.get_paginator.return_value.paginate.return_value = [
+        {"ConfigurationPolicySummaries": [{"Name": "tarmac-security-baseline", "Id": "pol-1"}]}
+    ]
+    sh.get_configuration_policy.return_value = {
+        "ConfigurationPolicy": {
+            "SecurityHub": {
+                "EnabledStandardIdentifiers": [
+                    "arn:aws:securityhub:us-east-1::standards/aws-foundational-security-best-practices/v/1.0.0",
+                    "arn:aws:securityhub:us-east-1::standards/cis-aws-foundations-benchmark/v/5.0.0",
+                ]
+            }
+        }
+    }
+    sh.list_finding_aggregators.return_value = {"FindingAggregators": [{"FindingAggregatorArn": "agg"}]}
+    sh.get_finding_aggregator.return_value = {"Regions": ["us-west-2"]}
+    session.clients["ce"].list_cost_allocation_tags.return_value = {
+        "CostAllocationTags": [{"TagKey": "CostCenter"}]
+    }
+    service = ImportService(session, "us-east-1")  # type: ignore[arg-type]
+    service.imported_accounts = {}
+    original = service._accounts
+
+    def with_roles(mgmt_id: str, ou_names: dict[str, str], root_id: str) -> list[dict[str, Any]]:
+        accounts = original(mgmt_id, ou_names, root_id)
+        accounts.append({"name": "log-archive", "email": "me+logs@acme-corp.io", "ou": "Security"})
+        service.imported_accounts["555"] = "log-archive"
+        return accounts
+
+    service._accounts = with_roles  # type: ignore[method-assign]
+    report = service.discover_and_write(tmp_path / "cfg", include_identity=False)
+
+    org = yaml.safe_load((tmp_path / "cfg" / "organization.yaml").read_text())
+    assert org["organization"]["additional_regions"] == ["us-west-2"]
+    assert org["cloudtrail"]["enable_kms"] is True
+    assert org["cloudtrail"]["retention_days"] == 30
+    assert org["cloudtrail"]["object_lock"] == {"mode": "GOVERNANCE", "retention_days": 1}
+    security = org["security_services"]
+    assert security["config_recorder"] == {
+        "enabled": True,
+        "include_global_resources": True,
+        "record_resource_compliance": False,
+        "recording_frequency": "DAILY",
+    }
+    assert security["guardduty"]["enabled"] is True
+    assert security["guardduty"]["export_findings"] is True
+    assert security["guardduty"]["features"]["s3_data_events"] is True
+    assert security["guardduty"]["features"]["malware_protection"] is False
+    assert security["securityhub"] == {
+        "enabled": True,
+        "central_configuration": True,
+        "standards": [
+            "aws-foundational-security-best-practices/v/1.0.0",
+            "cis-aws-foundations-benchmark/v/5.0.0",
+        ],
+    }
+    (baseline,) = org["baseline_stacks"]
+    assert baseline == {
+        "name": "password-policy",
+        "template_file": "baseline/password-policy.yaml",
+        "target_ous": ["root"],
+        "regions": ["us-east-1", "us-west-2"],
+        "parameters": {"MinimumLength": "14"},
+    }
+    assert (tmp_path / "cfg" / "baseline" / "password-policy.yaml").read_text() == "Resources: {}\n"
+    assert org["cost_allocation_tags"] == ["CostCenter"]
+    assert not any("Could not read" in t for t in report.todos)
+    assert not [e for e in report.validation_errors if "security_services" in e or "baseline" in e]
+
+
+def test_a_setting_that_cannot_be_read_is_named_rather_than_silently_turned_off(tmp_path: Path):
+    session = FakeSession(with_sso=False)
+    session.clients["guardduty"].list_organization_admin_accounts.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "ListOrganizationAdminAccounts"
+    )
+
+    report = ImportService(session, "us-east-1").discover_and_write(  # type: ignore[arg-type]
+        tmp_path / "cfg", include_identity=False
+    )
+
+    assert any("Could not read GuardDuty" in t for t in report.todos)
