@@ -30,7 +30,8 @@ place to do this.
    pip install tarmac-cli
    tarmac init          # writes config/organization.yaml, accounts.yaml, identity.yaml
    ```
-   Edit the files. Put yourself in `admin_user` in `identity.yaml`, and give every account in `accounts.yaml` a
+   Tarmac reads `config/` in the folder you run it from; `--config-dir` or `TARMAC_CONFIG_DIR` points it
+   elsewhere. Edit the files. Put yourself in `admin_user` in `identity.yaml`, and give every account in `accounts.yaml` a
    real, unique email (plus addresses such as `aws+prod@example.com` work if your mail provider supports them).
 4. Still in CloudShell, as root:
    ```bash

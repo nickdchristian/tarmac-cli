@@ -22,9 +22,6 @@ build/
 # Local tarmac configs and outputs
 outputs/
 test-config/
-config/local/
-*.local.yaml
-*.local.yml
 .tarmac/
 
 # Personal Claude Code instructions
