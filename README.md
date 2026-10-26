@@ -166,11 +166,10 @@ Turning off GuardDuty suspends it in the member accounts: monitoring and charges
 turning it back on resumes it. It stays on in the audit account, because AWS only suspends an administrator's own
 detector once its members are disassociated. Security Hub can't be suspended, so turning it off disables it, and AWS deletes its findings after
 90 days (archived ones after 30) unless you turn it back on first; the dry run and the deploy both warn about this.
-Dropping a Region from `additional_regions` does the same in that Region: GuardDuty is suspended there, the
-accounts' Security Hub hubs there are disabled (except under central configuration, where AWS refuses and the
-deploy says so), and the AWS Config recorders there are removed. Tarmac only does
-this in Regions it recorded setting these up in, so a GuardDuty or Security Hub that someone else runs is left
-alone, even when it is delegated to the audit account.
+Dropping a Region from `additional_regions` suspends GuardDuty and removes the AWS Config recorders there.
+Security Hub stays on in that Region, and the deploy says so: under central configuration AWS refuses to disable
+one account's hub. Tarmac only turns off what it recorded setting up, Region by Region, so a GuardDuty or Security
+Hub that someone else runs is left alone, even when it is delegated to the audit account.
 
 ## Commands
 

@@ -84,7 +84,7 @@ def deploy_config_recorder(
     if dropped:
         apply_removals(
             "AWS Config recorders",
-            TeardownService(session_mgr).teardown_config_recorder(bundle, target_region, regions=dropped),
+            TeardownService(session_mgr).teardown_dropped_config_regions(bundle, target_region, dropped),
         )
     if report.failures:
         raise GovernanceError(

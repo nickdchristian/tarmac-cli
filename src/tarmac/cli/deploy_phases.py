@@ -28,8 +28,7 @@ from ..services.security import SecurityServicesService
 from ..services.security_off import (
     SECURITY_HUB_WARNING,
     SecurityServicesOff,
-    central_hubs_note,
-    keeps_hubs,
+    kept_hubs_note,
     regions_off,
 )
 from ..services.settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
@@ -581,8 +580,8 @@ def _turn_off_security_services(
     if guardduty:
         apply_removals("GuardDuty", off.suspend_guardduty(audit_id, guardduty, dry_run=False))
     securityhub = regions_off(bundle, recorded, "securityhub", target_region)
-    if securityhub and keeps_hubs(bundle):
-        print_warning(central_hubs_note(securityhub))
+    if securityhub and bundle.org.security_services.securityhub.enabled:
+        print_warning(kept_hubs_note(securityhub))
     elif securityhub:
         mgmt_id = str(session_mgr.get_caller_identity().get("Account", ""))
 

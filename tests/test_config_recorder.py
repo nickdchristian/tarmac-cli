@@ -510,7 +510,7 @@ def test_a_dropped_region_loses_its_management_stack_only_where_one_was_recorded
     )
     monkeypatch.setattr("tarmac.cli.deploy_config_recorder.ConfigRecorderService", service)
     teardown = MagicMock()
-    teardown.return_value.teardown_config_recorder.return_value = []
+    teardown.return_value.teardown_dropped_config_regions.return_value = []
     monkeypatch.setattr("tarmac.cli.deploy_config_recorder.TeardownService", teardown)
     recorded = inventory.activate()
     recorded.entries = {"config-recorder": {"eu-west-1": {}, "us-west-2": {}}}
@@ -522,8 +522,8 @@ def test_a_dropped_region_loses_its_management_stack_only_where_one_was_recorded
         _session(), cfn_service, bundle, "eu-west-1", ROOT, {"log-archive": "222222222222"}
     )
 
-    teardown.return_value.teardown_config_recorder.assert_called_once_with(
-        bundle, "eu-west-1", regions=["us-west-2"]
+    teardown.return_value.teardown_dropped_config_regions.assert_called_once_with(
+        bundle, "eu-west-1", ["us-west-2"]
     )
     assert set(recorded.get("config-recorder")) == {"eu-west-1", "us-west-2"}
 
@@ -540,7 +540,7 @@ def test_teardown_reaches_every_region_a_management_stack_was_recorded_in(monkey
     recorded.entries = {"config-recorder": {"us-west-2": {}}}
 
     TeardownService(_session()).teardown_config_recorder(bundle, "eu-west-1", recorded=recorded)
-    TeardownService(_session()).teardown_config_recorder(bundle, "eu-west-1", regions=["us-west-2"])
+    TeardownService(_session()).teardown_dropped_config_regions(bundle, "eu-west-1", ["us-west-2"])
 
     full, dropped = (c.kwargs for c in remove.call_args_list)
     assert (full["regions"], full["stack_set"]) == (["eu-west-1", "us-west-2"], True)

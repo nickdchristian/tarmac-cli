@@ -41,8 +41,7 @@ from .scp import SCPService
 from .security_off import (
     SECURITY_HUB_WARNING,
     SecurityServicesOff,
-    central_hubs_note,
-    keeps_hubs,
+    kept_hubs_note,
     regions_off,
 )
 from .settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
@@ -786,15 +785,14 @@ class Planner:
                 action="SUSPEND",
             )
         securityhub = regions_off(self.bundle, self.recorded, "securityhub", self.region)
-        if securityhub and keeps_hubs(self.bundle):
-            phase.notes.append(central_hubs_note(securityhub))
+        if securityhub and self.bundle.org.security_services.securityhub.enabled:
+            phase.notes.append(kept_hubs_note(securityhub))
         elif securityhub:
             mgmt_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
-            on = self.bundle.org.security_services.securityhub.enabled
             before = len(phase.items)
             self._removals(
                 phase,
-                "Region dropped" if on else "securityhub is off",
+                "securityhub is off",
                 lambda _t: off.disable_securityhub(
                     self.bundle, audit_id, securityhub, self.accounts, mgmt_id, self.region, dry_run=True
                 ),
@@ -851,7 +849,7 @@ class Planner:
             self._removals(
                 phase,
                 "Region dropped",
-                lambda t: t.teardown_config_recorder(self.bundle, self.region, dry_run=True, regions=dropped),
+                lambda t: t.teardown_dropped_config_regions(self.bundle, self.region, dropped, dry_run=True),
             )
         log_archive_name = self.bundle.get_log_archive_account_name() or "log-archive"
         log_archive_id = self._account_id(log_archive_name)

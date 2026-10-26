@@ -6,10 +6,8 @@ is still its delegated administrator there: a service someone else runs is left 
 GuardDuty is suspended in the member accounts: monitoring and charges stop, findings are kept, and turning it back on
 resumes it. It stays on in the audit account, because AWS only suspends a detector once its members are disassociated.
 Security Hub has no suspend, so it is disabled, and AWS then deletes its findings (archived after 30 days, active
-after 90). In a Region dropped while Security Hub stays on, only the accounts' hubs there are disabled; the delegation
-and organization settings are left. Under central configuration even that is refused: an account associated with a
-configuration policy can't disable its hub, and the policy no longer reaches a Region that isn't linked. Those hubs
-are left on, and the deploy says so.
+after 90). It is only turned off as a whole: in a Region the config drops while it stays on, it is left running and
+the deploy says so, because under central configuration (the default) AWS refuses to disable one account's hub.
 """
 
 import logging
@@ -32,17 +30,12 @@ SECURITY_HUB_WARNING = (
 )
 
 
-def central_hubs_note(regions: list[str]) -> str:
+def kept_hubs_note(regions: list[str]) -> str:
     return (
-        f"Security Hub stays on in {', '.join(regions)}: AWS refuses to disable it in an account associated with a "
-        "central configuration policy, even in a Region that is no longer linked."
+        f"Security Hub stays on in {', '.join(regions)}, which the config no longer lists. Tarmac only turns it off "
+        "everywhere (securityhub.enabled: false): under central configuration AWS refuses to disable one account's "
+        "hub, even in a Region that is no longer linked."
     )
-
-
-def keeps_hubs(bundle: ConfigBundle) -> bool:
-    """Whether a dropped Region's hubs have to be left on (Security Hub still on, with central configuration)."""
-    securityhub = bundle.org.security_services.securityhub
-    return securityhub.enabled and securityhub.central_configuration
 
 
 def regions_off(
@@ -122,24 +115,12 @@ class SecurityServicesOff:
         primary_region: str,
         dry_run: bool,
     ) -> list[TeardownItemReport]:
-        """Disable Security Hub in ``regions``, where the audit account is still its delegated administrator.
-
-        With Security Hub off in the config, this is what `destroy --disable-security-services` does. With it still
-        on, these are Regions the config dropped: only the hubs there are disabled, and only without central
-        configuration (see ``keeps_hubs``).
-        """
-        if keeps_hubs(bundle):
-            return []
+        """Disable Security Hub the way `destroy --disable-security-services` does, in Regions where tarmac runs it."""
         results: list[TeardownItemReport] = []
         teardown = SecurityServicesTeardown(self.session_mgr, list, lambda _m: None)
         members = teardown.member_ids(bundle, accounts, audit_id, mgmt_id)
-        still_on = bundle.org.security_services.securityhub.enabled
         for region in regions:
-            if not self._delegated("securityhub", region, audit_id):
-                continue
-            if still_on:
-                teardown.disable_hubs(results, region, audit_id, members, dry_run)
-            else:
+            if self._delegated("securityhub", region, audit_id):
                 teardown.disable_securityhub(
                     results, region, region == primary_region, audit_id, members, dry_run
                 )

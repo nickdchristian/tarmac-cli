@@ -1,7 +1,7 @@
 """GuardDuty and Security Hub turned off in the config: GuardDuty is suspended and resumed, Security Hub disabled."""
 
 from typing import Any
-from unittest.mock import ANY, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -173,27 +173,6 @@ def test_a_dropped_region_suspends_guardduty_there_only(monkeypatch):
     off.disable_securityhub.assert_not_called()
 
 
-def test_security_hub_in_a_dropped_region_only_loses_its_hubs(monkeypatch):
-    # The delegation and organization settings are left for the Regions Security Hub still runs in.
-    teardown = MagicMock()
-    teardown.member_ids.return_value = {"333333333333"}
-    monkeypatch.setattr("tarmac.services.security_off.SecurityServicesTeardown", lambda *_a: teardown)
-    mgr = MagicMock()
-    mgr.get_client.return_value.list_organization_admin_accounts.return_value = {
-        "AdminAccounts": [{"AccountId": AUDIT}]
-    }
-
-    bundle = _bundle(guardduty=True, securityhub=True)
-    bundle.org.security_services.securityhub.central_configuration = False
-
-    SecurityServicesOff(mgr).disable_securityhub(
-        bundle, AUDIT, ["us-west-2"], {}, "111", "us-east-1", dry_run=True
-    )
-
-    teardown.disable_hubs.assert_called_once_with(ANY, "us-west-2", AUDIT, {"333333333333"}, True)
-    teardown.disable_securityhub.assert_not_called()
-
-
 def test_destroy_says_which_security_services_it_keeps():
     from tarmac.services.teardown import TeardownService
 
@@ -206,16 +185,16 @@ def test_destroy_says_which_security_services_it_keeps():
     assert "--disable-security-services" in item.message
 
 
-def test_under_central_configuration_a_dropped_regions_hubs_are_left_on_with_a_warning(monkeypatch, capsys):
-    # Live, AWS refused: "This account is currently associated with a central configuration policy, so only
-    # the administrator can access this operation."
+def test_security_hub_in_a_dropped_region_is_left_on_with_a_warning(monkeypatch, capsys):
+    # Under central configuration AWS refused, live: "This account is currently associated with a central
+    # configuration policy, so only the administrator can access this operation."
     off = MagicMock()
     monkeypatch.setattr(deploy_phases, "SecurityServicesOff", lambda _s: off)
     _recorded({"securityhub": ["us-east-1", "us-west-2"]})
-    bundle = _bundle(guardduty=True, securityhub=True)
-    bundle.org.security_services.securityhub.central_configuration = True
 
-    deploy_phases._turn_off_security_services(MagicMock(), bundle, "us-east-1", {"audit": AUDIT})
+    deploy_phases._turn_off_security_services(
+        MagicMock(), _bundle(guardduty=True, securityhub=True), "us-east-1", {"audit": AUDIT}
+    )
 
     off.disable_securityhub.assert_not_called()
     assert "Security Hub stays on in us-west-2" in capsys.readouterr().out
