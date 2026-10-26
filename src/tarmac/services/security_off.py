@@ -34,9 +34,8 @@ SECURITY_HUB_WARNING = (
 
 def central_hubs_note(regions: list[str]) -> str:
     return (
-        f"Security Hub stays on in {', '.join(regions)}: under central configuration AWS refuses to disable it in "
-        "an account associated with a configuration policy, and the policy no longer reaches a Region that isn't "
-        "linked. Turn it off in each account there from the Security Hub console if you don't want it."
+        f"Security Hub stays on in {', '.join(regions)}: AWS refuses to disable it in an account associated with a "
+        "central configuration policy, even in a Region that is no longer linked."
     )
 
 
