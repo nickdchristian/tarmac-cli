@@ -133,6 +133,14 @@ managed (once the inventory bucket exists); destroy still leaves imported groups
 management account and other accounts not in `accounts.yaml` are left alone, as are users and groups that aren't
 in `identity.yaml`. The dry run lists every removal.
 
+**With an external identity provider** (Okta, Entra ID, Google and so on, provisioning users and groups over SCIM),
+set `identity_source: external` in `identity.yaml`. Tarmac then manages permission sets and the declared groups'
+account assignments, and nothing else: it never creates a user or group or changes members, which belong to the
+identity provider. Provision `admin_user` and the declared groups from the IdP before deploying; a group it hasn't
+pushed yet stops the deploy. Break-glass access is the root user with MFA, since a user in the IdP fails when the
+IdP does, so `breakglass_user` isn't allowed. If tarmac finds SCIM-provisioned users or groups without this setting,
+it stops rather than create users and groups beside them. `tarmac import` writes the setting when it finds them.
+
 `accounts: [all]` in an assignment means every account in `accounts.yaml`. Accounts tarmac doesn't manage get
 nothing from it, and the dry run names them. Nor does the management account: Identity Center creates the role
 there with the caller's own IAM rights, which tarmac's role deliberately doesn't have. `tarmac bootstrap` gives your
