@@ -256,7 +256,8 @@ class AccountService:
                 tags_updated=True,
                 closed=close,
                 status="SIMULATED",
-                message=f"[DRY-RUN] Would quarantine {account_name} in Suspended OU and tag as suspended",
+                message="[DRY-RUN] Would move it to the Suspended OU (unless it is there already) and tag it as "
+                "suspended" + (", then close it. Closing can't be undone after 90 days." if close else "."),
             )
 
         moved = False
@@ -294,15 +295,12 @@ class AccountService:
                     account_id=account_id,
                 )
 
-        msg = (
-            f"Account {account_name} moved to Suspended OU and tagged."
-            if moved
-            else f"Account {account_name} already in Suspended OU and tagged."
-        )
+        # The caller prints this after the account's name and ID.
+        msg = "Moved to the Suspended OU and tagged." if moved else "Already in the Suspended OU; tagged."
         if closed:
-            msg += " Account closure initiated."
+            msg += " Closure started: AWS suspends it now and closes it for good after 90 days."
         elif close and close_error:
-            msg += f" Account closure failed: {close_error}"
+            msg += f" Closing it failed: {close_error}"
 
         return AccountSuspensionResult(
             name=account_name,

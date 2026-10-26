@@ -11,6 +11,8 @@ SCPs, an organization CloudTrail, security services and IAM Identity Center. Cha
 
 ## Install
 
+Tarmac needs Python 3.11 or later, and is tested on 3.11 through 3.15.
+
 ```bash
 uv tool install tarmac-cli     # or: pip install tarmac-cli
 tarmac --help
@@ -101,8 +103,9 @@ This adds GitHub's OIDC provider and the `TarmacGitHubDeployment` role, with the
 `TarmacDeployment`, to the management account. Only workflow runs on that branch can assume it, so protect the
 branch and require pull request reviews. Pull requests get no AWS access, because whoever opens one can change
 the workflow; they run `tarmac validate`, and the dry run is printed in the deploy log before the real deploy.
-Copy [`examples/github/tarmac.yml`](examples/github/tarmac.yml) to `.github/workflows/` and fill in the role ARN
-and Region.
+Copy [`examples/github/tarmac.yml`](examples/github/tarmac.yml) to `.github/workflows/`, set the
+`TARMAC_ROLE_ARN` repository variable with the `gh variable set` command bootstrap prints, and set `aws-region` to
+your `primary_region`.
 
 Running `tarmac bootstrap` after an upgrade also updates the role's policy.
 

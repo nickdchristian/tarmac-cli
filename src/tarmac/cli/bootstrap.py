@@ -219,6 +219,7 @@ def bootstrap_command(
         error_console.print(f"[red]Bootstrap failed:[/red] {e}")
         raise typer.Exit(code=1)
 
+    role_arn = ""
     try:
         identity = IdentityService(session_mgr, preferred_region=sso_region)
         user_id = identity.get_or_create_user(admin)
@@ -238,6 +239,12 @@ def bootstrap_command(
     )
     if github_message:
         print_success(github_message)
+    if role_arn:
+        repo = re.sub(r"@\d+", "", github_repo or "")  # gh takes OWNER/REPO, without the immutable IDs
+        print_info(
+            "Give the workflow the role (examples/github/tarmac.yml reads it from this variable): "
+            f"gh variable set TARMAC_ROLE_ARN --repo {repo} --body {role_arn}"
+        )
     if github_repo and "@" not in github_repo:
         print_info(
             "Repositories created, renamed or transferred after 15 July 2026 need OWNER@ID/REPO@ID instead: "

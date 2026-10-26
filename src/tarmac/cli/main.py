@@ -226,9 +226,15 @@ def validate_config(
     print_success("Configuration files and cross-references are valid.")
     placeholders = find_placeholder_values(bundle)
     if placeholders:
+        # Only an account's email is used up: AWS never lets a closed account's email be reused.
+        accounts_note = (
+            " (AWS never lets a closed account's email be reused)"
+            if any(p.startswith("accounts.yaml") for p in placeholders)
+            else ""
+        )
         print_warning(
             "The configuration still contains sample values from 'tarmac init'. Replace them before a real "
-            "deployment (AWS never lets a closed account's email be reused):"
+            f"deployment{accounts_note}:"
         )
         for problem in placeholders:
             console.print(f"  [yellow]•[/yellow] {problem}")

@@ -826,7 +826,9 @@ class Planner:
         action, detail = self._delegated(org, principal, audit_name)
         regions = ", ".join(config_recorder_regions(self.bundle, self.region))
         if action == NO_CHANGE:
-            return "APPLY", f"delegated to {detail}; settings reconciled in {regions}"
+            # Each deploy re-applies the settings, which changes nothing when they already match, so a settled
+            # organization plans "no changes".
+            return NO_CHANGE, f"delegated to {detail} in {regions}"
         return action, f"{detail}; enable in {regions}"
 
     def _config_recorder(self, phase: PhasePlan) -> None:

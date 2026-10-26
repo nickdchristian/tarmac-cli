@@ -8,6 +8,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from ..core.audit import Outcome, audit
+from ..core.aws_audit import retry_notice
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code
 from ..core.models import TAG_MANAGED_BY
 from ..core.tagging import to_cfn_tags
@@ -80,8 +81,12 @@ class StackSetService:
             audit("update", f"stackset:{name}", Outcome.UNCHANGED, f"StackSet '{name}' is already up to date")
             return "UNCHANGED"
 
-        response = cf.update_stack_set(
-            StackSetName=name, OperationPreferences=OPERATION_PREFERENCES, **settings
+        response = self._start(
+            cf,
+            name,
+            lambda: cf.update_stack_set(
+                StackSetName=name, OperationPreferences=OPERATION_PREFERENCES, **settings
+            ),
         )
         ok = self._finish(
             cf, name, response["OperationId"], "update", f"stackset:{name}", f"Updated StackSet '{name}'"
@@ -141,16 +146,20 @@ class StackSetService:
                 found[0].add(str(inst["Account"]))
                 found[1].add(str(inst["Region"]))
         for ou, (ids, regions) in sorted(stuck.items()):
-            response = cf.delete_stack_instances(
-                StackSetName=name,
-                DeploymentTargets={
-                    "OrganizationalUnitIds": [ou],
-                    "Accounts": sorted(ids),
-                    "AccountFilterType": "INTERSECTION",
-                },
-                Regions=sorted(regions),
-                RetainStacks=True,
-                OperationPreferences=OPERATION_PREFERENCES,
+            response = self._start(
+                cf,
+                name,
+                lambda ou=ou, ids=ids, regions=regions: cf.delete_stack_instances(
+                    StackSetName=name,
+                    DeploymentTargets={
+                        "OrganizationalUnitIds": [ou],
+                        "Accounts": sorted(ids),
+                        "AccountFilterType": "INTERSECTION",
+                    },
+                    Regions=sorted(regions),
+                    RetainStacks=True,
+                    OperationPreferences=OPERATION_PREFERENCES,
+                ),
             )
             self._finish(
                 cf,
@@ -212,11 +221,15 @@ class StackSetService:
         return self._instance_failures(cf, name)
 
     def _create_instances(self, cf: Any, name: str, targets: dict[str, Any], regions: list[str]) -> None:
-        response = cf.create_stack_instances(
-            StackSetName=name,
-            DeploymentTargets=targets,
-            Regions=regions,
-            OperationPreferences=OPERATION_PREFERENCES,
+        response = self._start(
+            cf,
+            name,
+            lambda: cf.create_stack_instances(
+                StackSetName=name,
+                DeploymentTargets=targets,
+                Regions=regions,
+                OperationPreferences=OPERATION_PREFERENCES,
+            ),
         )
         self._finish(
             cf,
@@ -229,12 +242,16 @@ class StackSetService:
         )
 
     def _delete_instances(self, cf: Any, name: str, targets: dict[str, Any], regions: list[str]) -> None:
-        response = cf.delete_stack_instances(
-            StackSetName=name,
-            DeploymentTargets=targets,
-            Regions=regions,
-            RetainStacks=False,
-            OperationPreferences=OPERATION_PREFERENCES,
+        response = self._start(
+            cf,
+            name,
+            lambda: cf.delete_stack_instances(
+                StackSetName=name,
+                DeploymentTargets=targets,
+                Regions=regions,
+                RetainStacks=False,
+                OperationPreferences=OPERATION_PREFERENCES,
+            ),
         )
         self._finish(
             cf,
@@ -282,6 +299,23 @@ class StackSetService:
         )
         return False
 
+    def _start(self, cf: Any, name: str, call: Callable[[], Any]) -> Any:
+        """Start an operation on the StackSet, first waiting for one already running.
+
+        AWS runs one operation per StackSet at a time, and starts some itself: moving a new account into a
+        targeted OU starts an automatic deployment to it.
+        """
+        try:
+            return call()
+        except ClientError as e:
+            if aws_error_code(e) != "OperationInProgressException":
+                raise
+        retry_notice(f"StackSet '{name}'", "another operation on it is still running", self._poll_seconds)
+        for operation in cf.list_stack_set_operations(StackSetName=name).get("Summaries", []):
+            if operation.get("Status") in ("RUNNING", "QUEUED", "STOPPING"):
+                self.wait(cf, name, str(operation["OperationId"]))
+        return call()
+
     def wait(self, cf: Any, name: str, operation_id: str) -> str:
         deadline = time.monotonic() + self._timeout_seconds
         while True:
@@ -322,18 +356,22 @@ class StackSetService:
             instances = self._released(cf, name, closed())
             regions = sorted({str(i["Region"]) for i in instances})
             if regions:
-                response = cf.delete_stack_instances(
-                    StackSetName=name,
-                    DeploymentTargets=targets(),
-                    Regions=regions,
-                    RetainStacks=False,
-                    OperationPreferences=OPERATION_PREFERENCES,
+                response = self._start(
+                    cf,
+                    name,
+                    lambda: cf.delete_stack_instances(
+                        StackSetName=name,
+                        DeploymentTargets=targets(),
+                        Regions=regions,
+                        RetainStacks=False,
+                        OperationPreferences=OPERATION_PREFERENCES,
+                    ),
                 )
                 self.wait(cf, name, response["OperationId"])
                 left = self.list_instances(cf, name)
                 if left:
                     return (resource, "FAILED", f"{plural(len(left), 'stack instance')} could not be deleted")
-            cf.delete_stack_set(StackSetName=name)
+            self._start(cf, name, lambda: cf.delete_stack_set(StackSetName=name))
             audit("delete", f"stackset:{name}", Outcome.SUCCEEDED, f"Deleted StackSet '{name}'")
             return (
                 resource,

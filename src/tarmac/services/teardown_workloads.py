@@ -64,7 +64,7 @@ class WorkloadTeardown(TeardownBase):
                 dry_run,
                 would="Would delete budget stack",
                 deleted="Deleted budget stack",
-                missing="Budget stack does not exist",
+                missing=None,  # most accounts have none; listing each one is noise
                 noun="budget stack",
             ):
                 results.append(item)
