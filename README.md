@@ -55,7 +55,12 @@ stops.
 ## Using an existing organization
 
 `tarmac import` reads your organization and writes matching config files, keeping any file it changes as
-`<name>.bak`. It changes nothing in AWS.
+`<name>.bak`. It changes nothing in AWS. Besides OUs, accounts, SCPs and Identity Center, it reads the settings
+that are running: GuardDuty and Security Hub when they are delegated to the audit account, the Regions they and
+the AWS Config recorders cover, cost allocation tags, and what tarmac's own stacks were deployed with (log
+encryption, retention and Object Lock, the Terraform lock table, baseline stacks, whose templates it writes to
+`baseline/`). Anything it can't read is listed for you to check, because a setting left off turns that thing off
+on the next deploy.
 
 ```bash
 tarmac import --config-dir my-org

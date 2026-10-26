@@ -27,6 +27,7 @@ from ..core.stack_names import LIVE_STACK_STATUSES, TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
 from ..core.text import plural
 from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
+from .importer_settings import Accounts, LiveSettings
 
 logger = logging.getLogger(__name__)
 
@@ -563,6 +564,28 @@ class ImportService:
             "terraform_backend": {"account": deploy_account},
             "security_services": {"audit_account": security_account or "audit"},
         }
+        ids = {name: acct_id for acct_id, name in self.imported_accounts.items()}
+        live = LiveSettings(
+            session_mgr=self.session_mgr,
+            region=self.region,
+            org_name=org_name,
+            accounts=Accounts(
+                management=mgmt_id,
+                audit=ids.get(security_account or ""),
+                log_archive=ids.get(log_account or ""),
+                deployment=ids.get(deploy_account or ""),
+            ),
+            ou_names={**ou_names, root_id: "root"},
+            project_root=self.project_root,
+            write=self._write,
+            todos=self.report.todos,
+        ).read()
+        organization["organization"]["additional_regions"] = live["additional_regions"]
+        for section in ("cloudtrail", "terraform_backend", "security_services"):
+            organization[section].update(live[section])
+        for section in ("baseline_stacks", "cost_allocation_tags"):
+            if live[section]:
+                organization[section] = live[section]
         org_tags = _clean_tags(self._tags(root_id), self.report.todos, "the organization root")
         if org_tags:
             organization["organization"]["tags"] = org_tags
