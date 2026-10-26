@@ -702,6 +702,10 @@ def _run_phase_6_identity(
         if session_mgr.default_region == target_region
         else AwsSessionManager(region_name=target_region)
     )
+    # Before the stack update below: it drops sets identity.yaml stopped listing, and those are what goes.
+    from_stack = IdentityService(sso_session_mgr, preferred_region=target_region).permission_sets_in_stack(
+        bundle.org.organization.name
+    )
     report = IdentityService(sso_session_mgr, preferred_region=target_region).sync_identity(
         id_cfg,
         project_root=project_root,
@@ -720,6 +724,12 @@ def _run_phase_6_identity(
                 target_region, recorded, only=settings_off(bundle)
             ),
         )
+    apply_removals(
+        "permission sets",
+        TeardownService(sso_session_mgr).teardown_undeclared_permission_sets(
+            bundle, target_region, from_stack=from_stack
+        ),
+    )
 
     _record_phase(session_mgr, "identity")
     print_success(

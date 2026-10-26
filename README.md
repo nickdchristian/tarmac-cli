@@ -149,7 +149,9 @@ account's budget, and its cost anomaly monitors. Log buckets and the history in 
 
 Settings tarmac turned on are turned back off when the config no longer asks for them: root access management
 features and its IAM delegated administrator, and cost allocation tags. Groups tarmac created are deleted when they
-leave `identity.yaml`, after their assignments are removed. Users are never deleted for being left out, and anything
+leave `identity.yaml`, after their assignments are removed. So are permission sets tarmac created: removing one
+deletes it and every assignment on it, in every account, so read the dry run first. The two that `tarmac bootstrap`
+gives your admin user are never removed this way. Users are never deleted for being left out, and anything
 tarmac didn't create is left alone.
 
 Turning off GuardDuty suspends it in the member accounts: monitoring and charges stop, its findings are kept, and

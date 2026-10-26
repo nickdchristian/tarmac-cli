@@ -42,6 +42,26 @@ class PermissionSetMixin(IdentityBase):
         except ClientError as e:
             raise IdentityCenterError("Failed listing permission sets", details=str(e)) from e
 
+    def permission_sets_in_stack(self, org_name: str) -> set[str]:
+        """Names of the permission sets tarmac's stack declares now, from identity.yaml at the last deploy.
+
+        Empty when there is no stack or its template can't be read, so callers that delete fail closed.
+        """
+        try:
+            cfn_client = self.session_mgr.get_client("cloudformation", region_name=self.region)
+            body = cfn_client.get_template(
+                StackName=Stack.PERMISSION_SETS.for_org(org_name), TemplateStage="Original"
+            )["TemplateBody"]
+            template = body if isinstance(body, dict) else yaml.safe_load(body)
+            return {
+                str(res["Properties"]["Name"])
+                for res in (template.get("Resources") or {}).values()
+                if res.get("Type") == "AWS::SSO::PermissionSet"
+            }
+        except (ClientError, yaml.YAMLError, KeyError, AttributeError, TypeError) as e:
+            logger.debug("Could not read the permission set stack's template: %s", e)
+            return set()
+
     def is_tarmac_managed_permission_set(self, instance_arn: str, permission_set_arn: str) -> bool:
         """True only if the permission set carries the tarmac ownership tag.
 

@@ -389,8 +389,12 @@ class Planner:
         why: str,
         teardown: Callable[[TeardownService], list[TeardownItemReport]],
         action: str = "DELETE",
+        detail_from_item: bool = False,
     ) -> None:
-        """What a deploy removes because the config turns it off: the teardown of it, simulated."""
+        """What a deploy removes because the config turns it off: the teardown of it, simulated.
+
+        ``detail_from_item`` shows each item's own message (what else goes with it) instead of ``why``.
+        """
         try:
             items = teardown(TeardownService(self.session_mgr))
         except AWS_ERRORS as e:
@@ -398,8 +402,9 @@ class Planner:
             return
         for item in items:
             if item.action == "SIMULATED":
+                detail = item.message if detail_from_item else why
                 phase.items.append(
-                    PlanItem(item.resource_type, item.resource_name, action, why, item.account_name)
+                    PlanItem(item.resource_type, item.resource_name, action, detail, item.account_name)
                 )
             elif item.action == "FAILED":
                 phase.items.append(
@@ -989,6 +994,14 @@ class Planner:
             lambda _t: TeardownService(session).teardown_identity_principals(
                 self.identity_region, self.recorded, dry_run=True, only=settings_off(self.bundle)
             ),
+        )
+        self._removals(
+            phase,
+            "not in identity.yaml",
+            lambda _t: TeardownService(session).teardown_undeclared_permission_sets(
+                self.bundle, self.identity_region, dry_run=True
+            ),
+            detail_from_item=True,
         )
 
     def _undeclared_access(

@@ -9,7 +9,7 @@ from ..core.exceptions import AWS_ERRORS
 from ..core.models import TeardownItemReport
 from ..core.stack_names import Stack
 from ..core.text import plural
-from .identity import IdentityService
+from .identity import DEPLOYMENT_PERMISSION_SET, MANAGEMENT_ADMIN_PERMISSION_SET, IdentityService
 from .scp import SCPService
 from .teardown_base import STACK, TeardownBase
 from .teardown_security import SecurityServicesTeardown
@@ -175,6 +175,52 @@ class GovernanceTeardown(TeardownBase):
         except AWS_ERRORS as e:
             logger.debug("Identity Center direct cleanup: %s", e)
 
+        return results
+
+    def teardown_undeclared_permission_sets(
+        self,
+        bundle: ConfigBundle,
+        target_region: str,
+        dry_run: bool = False,
+        from_stack: set[str] | None = None,
+    ) -> list[TeardownItemReport]:
+        """Delete the permission sets identity.yaml stopped listing, with their assignments.
+
+        Only sets tarmac's permission set stack declared (``from_stack``: read before a deploy updates it; read
+        now when not given) and that still carry tarmac's ownership tag. The stack retains a set it stops
+        declaring (``DeletionPolicy: Retain``), so a deploy alone would leave it and its assignments in place.
+        Sets created any other way, such as bootstrap's TarmacDeployment and ManagementAdministrator, are never
+        candidates. With none declared, the now-empty stack is deleted too.
+        """
+        declared = {ps.name for ps in bundle.identity.identity_center.permission_sets}
+        identity_service, inst_arn, _ = self._resolve_identity_teardown_context(bundle, target_region)
+        if from_stack is None:
+            from_stack = (
+                identity_service.permission_sets_in_stack(bundle.org.organization.name)
+                if identity_service
+                else set()
+            )
+        removed = from_stack - declared - {DEPLOYMENT_PERMISSION_SET, MANAGEMENT_ADMIN_PERMISSION_SET}
+        results: list[TeardownItemReport] = (
+            [] if declared else self.teardown_identity(bundle, target_region, dry_run=dry_run)
+        )
+        if not (removed and identity_service and inst_arn):
+            return results
+        mgmt_id = self._get_management_account_id()
+        live = identity_service.list_permission_sets(inst_arn)
+        for name in sorted(removed & live.keys()):
+            ps_arn = live[name]
+            if not identity_service.is_tarmac_managed_permission_set(inst_arn, ps_arn):
+                continue
+            count = len(identity_service.get_assignments_for_permission_set(inst_arn, ps_arn))
+            assignments = plural(count, "account assignment")
+            if dry_run:
+                action, message = "SIMULATED", f"not in identity.yaml; also removes its {assignments}"
+            elif identity_service.delete_permission_set(inst_arn, ps_arn):
+                action, message = "DELETED", f"Deleted it and its {assignments}"
+            else:
+                action, message = "FAILED", f"Could not delete permission set '{name}'"
+            results.append(TeardownItemReport("Permission Set", name, "Management", mgmt_id, action, message))
         return results
 
     def teardown_security_services(
