@@ -16,7 +16,7 @@ def test_security_services_unresolved_audit_account():
     mock_session_mgr = MagicMock()
     service = SecurityServicesService(mock_session_mgr)
     cfg = SecurityServicesConfig(
-        delegated_account="audit",
+        audit_account="audit",
         guardduty=GuardDutyConfig(enabled=True),
         securityhub=SecurityHubConfig(enabled=True),
     )

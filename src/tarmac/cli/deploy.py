@@ -312,14 +312,7 @@ def _print_teardown_retained_notice(security_disabled: bool = False) -> None:
 
 def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None:
     """Refuse to tear down an organization tagged as production unless --force is given."""
-    # Check every tag source on its own: a lower-precedence `Environment: dev` must not hide `Environment: prod`.
-    sources = [
-        bundle.get_organization_tags(),
-        bundle.org.tags,
-        bundle.org.organization.tags,
-        bundle.accounts.tags,
-    ]
-    is_prod = any(_is_production_tagged(tags) for tags in sources)
+    is_prod = _is_production_tagged(bundle.get_organization_tags())
     if is_prod and not dry_run and not force:
         error_console.print(
             "[bold red]Teardown blocked: the organization is tagged as production.[/bold red]\n"

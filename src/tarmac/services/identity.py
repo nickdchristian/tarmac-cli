@@ -9,7 +9,6 @@ from ..core.config_loader import normalize_account_name
 from ..core.config_schema import GroupDef, IdentityCenterConfig, UserDef
 from ..core.exceptions import IdentityCenterError, aws_error_code
 from ..core.models import IdentitySyncReport
-from ..core.org_accounts import active_account_ids
 from ..core.templates import resolve_resource_path
 from ..core.text import plural
 from .identity_permission_sets import PermissionSetMixin
@@ -179,19 +178,18 @@ class IdentityService(PermissionSetMixin):
         group: GroupDef,
         group_id: str,
         ps_map: dict[str, str],
-        active_accts: dict[str, str],
-        managed_ids: set[str],
+        accounts: dict[str, str],
     ) -> tuple[list[tuple[str, str]], dict[str, str]]:
-        """The group's assignments on ``managed_ids`` (the accounts in accounts.yaml) and its members that
+        """The group's assignments on ``accounts`` (the accounts in accounts.yaml) and its members that
         identity.yaml does not declare. Assignments on other accounts, such as the management account, are left alone.
         """
-        all_ids = list(active_accts.values())
         wanted = {
             (account_id, ps_map[a.permission_set])
             for a in group.assignments
             if a.permission_set in ps_map
-            for account_id in self._resolve_target_account_ids(a.accounts, active_accts, all_ids)
+            for account_id in self._resolve_target_account_ids(a.accounts, accounts)
         }
+        managed_ids = set(accounts.values())
         assignments = sorted(
             a for a in self.group_assignments(instance_arn, group_id) - wanted if a[0] in managed_ids
         )
@@ -407,37 +405,29 @@ class IdentityService(PermissionSetMixin):
 
         return count
 
-    def _resolve_target_account_ids(
-        self,
-        target_accounts: list[str],
-        active_accts: dict[str, str],
-        all_acct_ids: list[str],
-    ) -> list[str]:
-        """Resolve account names or direct IDs to list of 12-digit AWS account IDs."""
+    @staticmethod
+    def _resolve_target_account_ids(target_accounts: list[str], accounts: dict[str, str]) -> list[str]:
+        """The IDs of the named accounts, or of all of them for ``all``.
+
+        ``accounts`` holds only the accounts in accounts.yaml, so the management account and accounts tarmac doesn't
+        manage are never targets. (Identity Center creates the management account's role with the caller's own IAM
+        rights, which tarmac's role deliberately lacks.)
+        """
         if "all" in target_accounts:
-            return all_acct_ids
-        norm_map = {normalize_account_name(k): v for k, v in active_accts.items()}
-        resolved: list[str] = []
-        for t in target_accounts:
-            norm_t = normalize_account_name(t)
-            if norm_t in norm_map:
-                resolved.append(norm_map[norm_t])
-            elif t.isdigit() and len(t) == 12:
-                resolved.append(t)
-        return resolved
+            return list(accounts.values())
+        by_name = {normalize_account_name(name): account_id for name, account_id in accounts.items()}
+        return [by_name[n] for n in map(normalize_account_name, target_accounts) if n in by_name]
 
     def sync_groups_and_assignments(
         self,
         groups: list[GroupDef],
         ps_map: dict[str, str],
-        active_accts: dict[str, str],
+        accounts: dict[str, str],
     ) -> tuple[int, dict[str, str], list[str]]:
-        """Synchronize declared groups and their multi-account permission set assignments."""
-        all_acct_ids = list(active_accts.values())
+        """Synchronize declared groups and their permission set assignments on ``accounts`` (from accounts.yaml)."""
         total_assignments = 0
         group_map: dict[str, str] = {}
         synced_groups: list[str] = []
-        management_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
 
         for grp_def in groups:
             group_id = self.get_or_create_group(grp_def)
@@ -450,12 +440,7 @@ class IdentityService(PermissionSetMixin):
                 ps_arn = ps_map.get(assignment.permission_set)
                 if not ps_arn:
                     continue
-                target_ids = self._resolve_target_account_ids(assignment.accounts, active_accts, all_acct_ids)
-                if management_id in target_ids and not self._assignment_exists(
-                    self.get_instance_details()[0], management_id, ps_arn, group_id
-                ):
-                    target_ids = [a for a in target_ids if a != management_id]
-                    self._skip_management_assignment(grp_def.name, assignment.permission_set, management_id)
+                target_ids = self._resolve_target_account_ids(assignment.accounts, accounts)
                 total_assignments += self.assign_group_to_accounts(
                     group_id=group_id,
                     group_name=grp_def.name,
@@ -464,26 +449,6 @@ class IdentityService(PermissionSetMixin):
                 )
 
         return total_assignments, group_map, synced_groups
-
-    @staticmethod
-    def _skip_management_assignment(group_name: str, permission_set: str, management_id: str) -> None:
-        """Identity Center creates the management account's role with the caller's own IAM rights. Tarmac's role is
-        deliberately not allowed to create IAM roles, so that one assignment is left for an administrator."""
-        audit(
-            "create",
-            f"sso-assignment:{management_id}:{permission_set}:{group_name}",
-            Outcome.SKIPPED,
-            f"Not giving '{group_name}' {permission_set} in the management account: tarmac's role can't create the "
-            "IAM role Identity Center needs there. Assign it once as an administrator (AWSSSOMasterAccountAdministrator "
-            "and IAMFullAccess); tarmac leaves it in place after that.",
-            account_id=management_id,
-        )
-        logger.warning(
-            "Skipped giving '%s' %s in the management account %s: assign it once as an administrator.",
-            group_name,
-            permission_set,
-            management_id,
-        )
 
     def sync_group_memberships(
         self,
@@ -521,19 +486,20 @@ class IdentityService(PermissionSetMixin):
     def sync_identity(
         self,
         id_cfg: IdentityCenterConfig,
+        *,
+        accounts: dict[str, str],
         project_root: Path | None = None,
-        active_accounts: dict[str, str] | None = None,
         org_name: str = "organization",
         org_tags: dict[str, str] | None = None,
         custom_tags: dict[str, str] | None = None,
-        managed_accounts: list[str] | None = None,
         owned_groups: set[str] | None = None,
     ) -> IdentitySyncReport:
         """Complete end-to-end synchronization of permission sets, users, groups, assignments, and memberships.
 
+        ``accounts`` maps the accounts in accounts.yaml to their IDs; assignments only ever touch these.
         ``owned_groups`` are the groups tarmac created or imported (the inventory's identity-group entries). They
-        end up with exactly the declared members, and exactly the declared assignments on ``managed_accounts``
-        (account names from accounts.yaml): anything else is removed. Other declared groups only get additions.
+        end up with exactly the declared members and assignments: anything else on ``accounts`` is removed. Other
+        declared groups only get additions.
         """
         report = IdentitySyncReport()
 
@@ -555,31 +521,21 @@ class IdentityService(PermissionSetMixin):
                 user_map[u.username] = uid
                 report.users_synced.append(u.username)
 
-        accts = (
-            active_accounts
-            if active_accounts is not None
-            else active_account_ids(self.session_mgr.get_client("organizations"))
-        )
-
         total_assignments, group_map, synced_groups = self.sync_groups_and_assignments(
-            id_cfg.groups, ps_map, accts
+            id_cfg.groups, ps_map, accounts
         )
         report.groups_synced = synced_groups
         report.assignments_created = total_assignments
 
         report.memberships_added = self.sync_group_memberships(id_cfg.groups, user_map, group_map)
 
-        managed = {normalize_account_name(name) for name in managed_accounts or []}
-        managed_ids = {acct_id for name, acct_id in accts.items() if normalize_account_name(name) in managed}
         instance_arn, _ = self.get_instance_details()
         failed: list[str] = []
         for group in id_cfg.groups:
             group_id = group_map.get(group.name)
             if not group_id or group.name not in (owned_groups or set()):
                 continue
-            assignments, members = self.undeclared_access(
-                instance_arn, group, group_id, ps_map, accts, managed_ids
-            )
+            assignments, members = self.undeclared_access(instance_arn, group, group_id, ps_map, accounts)
             for account_id, ps_arn in assignments:
                 if self.delete_account_assignment(instance_arn, account_id, ps_arn, "GROUP", group_id):
                     report.assignments_removed += 1

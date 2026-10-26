@@ -199,7 +199,7 @@ def validate_config(
             "valid": not bool(errors or bundle is None),
             "summary": _build_validation_summary(bundle),
             "errors": errors or [],
-            "warnings": [*find_placeholder_values(bundle), *bundle.deprecated_settings()] if bundle else [],
+            "warnings": find_placeholder_values(bundle) if bundle else [],
         }
         print(json.dumps(payload, indent=2))
         if errors or bundle is None:
@@ -231,8 +231,6 @@ def validate_config(
         )
         for problem in placeholders:
             console.print(f"  [yellow]•[/yellow] {problem}")
-    for message in bundle.deprecated_settings():
-        print_warning(message)
 
 
 def _fetch_org_details(session_mgr: AwsSessionManager) -> tuple[dict[str, str], str]:

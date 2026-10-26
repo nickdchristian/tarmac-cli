@@ -60,22 +60,18 @@ def test_configure_root_access():
     mock_session_mgr.get_client.side_effect = client_side_effect
 
     service = OrganizationService(mock_session_mgr)
-    cfg = RootAccessConfig(
-        enabled=True,
-        enable_root_credentials_management=True,
-        enable_root_sessions=True,
-        delegated_admin_account="Audit",
-    )
+    cfg = RootAccessConfig(enable_root_credentials_management=True, enable_root_sessions=True)
 
-    results = service.configure_root_access(cfg, account_id_map={"Audit": "999999999999"})
+    results = service.configure_root_access(cfg, "Audit", account_id_map={"Audit": "999999999999"})
     assert results["iam_trusted_access"] is True
     assert results["root_credentials_management"] is True
     assert results["root_sessions"] is True
     assert results["delegated_admin"] is True
 
     # Test case and separator-insensitive matching
-    cfg_hyphen = RootAccessConfig(enabled=True, delegated_admin_account="audit-account")
-    results_norm = service.configure_root_access(cfg_hyphen, account_id_map={"Audit Account": "888888888888"})
+    results_norm = service.configure_root_access(
+        RootAccessConfig(), "audit-account", account_id_map={"Audit Account": "888888888888"}
+    )
     assert results_norm["delegated_admin"] is True
 
 

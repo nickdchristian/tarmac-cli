@@ -21,7 +21,6 @@ from ..services.baseline_stacks import BaselineStacksService
 from ..services.cloudformation import CloudFormationService, lock_table_wanted
 from ..services.guardduty_export import findings_export
 from ..services.identity import IdentityService
-from ..services.log_encryption import resolve_log_encryption
 from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.scp import SCPService
@@ -34,7 +33,6 @@ from ..services.stack_parameters import (
     cloudtrail_parameters,
     exports_guardduty_findings,
     log_archive_parameters,
-    object_lock_advice,
 )
 from ..services.teardown import TeardownService
 from .deploy_config_recorder import deploy_config_recorder
@@ -155,11 +153,10 @@ def _run_phase_1_org(
     org_id = org_service.ensure_organization()
     org_service.set_account_contacts(bundle.org.contacts)
     org_service.enable_trusted_services()
-    results = org_service.configure_root_access(bundle.org.root_access_management)
+    audit_name = bundle.get_audit_account_name()
+    results = org_service.configure_root_access(bundle.org.root_access_management, audit_name)
     if results.get("delegated_admin"):
-        print_success(
-            f"Delegated administrator ({bundle.org.root_access_management.delegated_admin_account}) for IAM is in place."
-        )
+        print_success(f"Delegated administrator ({audit_name}) for IAM is in place.")
 
     target_cost_tags = bundle.get_cost_allocation_tags()
     if target_cost_tags:
@@ -205,7 +202,7 @@ def _run_phase_2_ou(
     )
 
     scps = bundle.org.service_control_policies
-    if scps and scps.enabled and scps.policies:
+    if scps.policies:
         results = SCPService(session_mgr).reconcile_via_cloudformation(
             bundle.org.service_control_policies,
             root_id,
@@ -245,16 +242,12 @@ def _deploy_log_archive_hardening_stack(
 ) -> StackDeployReport:
     """Deploy the Log Archive account hardening stack containing the centralized S3 sink & KMS key."""
     log_archive_name = bundle.get_log_archive_account_name() or "log-archive"
-    audit_id = bundle.resolve_account_id(bundle.get_audit_account_name() or "audit", accts) or ""
-    advice = object_lock_advice(bundle)
-    if advice:
-        print_warning(advice)
+    audit_id = bundle.resolve_account_id(bundle.get_audit_account_name(), accts) or ""
     cfn_client = session_mgr.get_member_client(log_archive_id, "cloudformation", region_name=target_region)
     template_file = resolve_resource_path(
         "cloudformation/log-archive-hardening.yaml", project_root=project_root
     )
 
-    resolve_log_encryption(session_mgr, bundle, target_region, log_archive_id)
     stack_name = Stack.LOG_ARCHIVE.for_org(bundle.org.organization.name)
 
     return cfn_service.deploy_stack(
@@ -352,7 +345,7 @@ def _run_phase_3_cloudtrail(
             bundle,
             log_archive_id,
             log_archive_report.outputs.get("CloudTrailBucketName", ""),
-            bool(bundle.org.cloudtrail.enable_kms),
+            bundle.org.cloudtrail.enable_kms,
         ),
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
@@ -481,10 +474,11 @@ def _run_phase_4_accounts(
 def _ensure_delegated_admin(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
     """Register delegated administrator for IAM if configured."""
     root_mgmt = bundle.org.root_access_management
-    if not (root_mgmt.enabled and root_mgmt.delegated_admin_account):
+    if not root_mgmt.delegate_to_audit:
         return
-    if OrganizationService(session_mgr).configure_root_access(root_mgmt).get("delegated_admin"):
-        print_success(f"Delegated administrator ({root_mgmt.delegated_admin_account}) for IAM is in place.")
+    audit_name = bundle.get_audit_account_name()
+    if OrganizationService(session_mgr).configure_root_access(root_mgmt, audit_name).get("delegated_admin"):
+        print_success(f"Delegated administrator ({audit_name}) for IAM is in place.")
 
 
 def _deploy_backend_stack(
@@ -542,7 +536,7 @@ def _deploy_hardening_stacks(
             custom_tags=custom_tags,
         )
 
-    audit_name = bundle.get_audit_account_name() or "audit"
+    audit_name = bundle.get_audit_account_name()
     audit_id = bundle.resolve_account_id(audit_name, accts)
     if not audit_id:
         print_warning(
@@ -572,7 +566,7 @@ def _turn_off_security_services(
 ) -> None:
     """Suspend GuardDuty and disable Security Hub where tarmac runs them but the config turns them off."""
     sec_cfg = bundle.org.security_services
-    audit_id = bundle.resolve_account_id(sec_cfg.delegated_account, accts)
+    audit_id = bundle.resolve_account_id(sec_cfg.audit_account, accts)
     if not audit_id or (sec_cfg.guardduty.enabled and sec_cfg.securityhub.enabled):
         return
     regions = [target_region, *bundle.org.organization.additional_regions]
@@ -711,7 +705,9 @@ def _run_phase_6_identity(
         org_name=bundle.org.organization.name,
         org_tags=bundle.get_organization_tags(),
         custom_tags=custom_tags,
-        managed_accounts=[a.name for a in bundle.accounts.accounts],
+        accounts=bundle.declared_account_ids(
+            get_active_account_id_map(session_mgr), str(session_mgr.get_caller_identity().get("Account", ""))
+        ),
         owned_groups=owned_groups(),
     )
 

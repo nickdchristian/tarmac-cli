@@ -74,23 +74,19 @@ def _tags_in(value: Any) -> set[str]:
     return set()
 
 
-def lock_table_wanted(cfn_client: Any, stack_name: str, configured: bool | None) -> tuple[bool, str | None]:
+def lock_table_wanted(cfn_client: Any, stack_name: str, configured: bool) -> tuple[bool, str | None]:
     """Decide whether the Terraform backend stack should have a DynamoDB lock table.
 
-    Returns (wanted, warning). With nothing configured a new backend is S3-only, which is cheaper and is what
-    Terraform now recommends ("DynamoDB-based locking is deprecated"), and an existing stack that has the table keeps
-    it, because dropping the table breaks every Terraform configuration still pointing at it.
+    Returns (wanted, warning). The warning says when the table is removed, because that breaks every Terraform
+    configuration still pointing at it.
     """
-    current = _stack_parameter(cfn_client, stack_name, "EnableDynamoDB")
-    has_table = current == "true"
-    if configured is None:
-        return has_table, None
+    has_table = _stack_parameter(cfn_client, stack_name, "EnableDynamoDB") == "true"
     wanted = configured
     if has_table and not wanted:
         return False, (
             f"Stack '{stack_name}' has a DynamoDB lock table and this deployment removes it. Terraform "
             "configurations that still set dynamodb_table will fail to lock state until they use "
-            "`use_lockfile = true` instead."
+            "`use_lockfile = true` instead. Set terraform_backend.enable_dynamodb: true to keep it."
         )
     return wanted, None
 

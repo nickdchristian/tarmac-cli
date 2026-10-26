@@ -56,23 +56,14 @@ class BillingChecks:
 
     def check_cost_allocation_tags(self) -> PreflightCheckResult:
         """Verify that configured cost allocation tags are active in Cost Explorer."""
-        if not self.bundle.org.cost_allocation_tags.enabled:
-            return PreflightCheckResult(
-                name="Cost Allocation Tags",
-                target="Management Account",
-                status=PreflightCheckStatus.PASS,
-                live_value="Disabled in config",
-                action_required=None,
-            )
-
         target_tags = self.bundle.get_cost_allocation_tags()
         if not target_tags:
             return PreflightCheckResult(
                 name="Cost Allocation Tags",
                 target="Management Account",
-                status=PreflightCheckStatus.WARN,
-                live_value="None defined in configuration",
-                action_required="Define cost_allocation_tags in organization.yaml for cost attribution tracking",
+                status=PreflightCheckStatus.PASS,
+                live_value="None in config",
+                action_required=None,
             )
 
         try:

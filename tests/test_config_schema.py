@@ -13,14 +13,16 @@ from tarmac.core.config_schema import (
 
 def test_org_name_lowercase_validation():
     """Verify that organization name must be lowercase alphanumeric with hyphens."""
-    assert OrgDetails(name="myorg", domain="example.com").name == "myorg"
-    assert OrgDetails(name="my-org-123", domain="example.com").name == "my-org-123"
+    assert OrgDetails(name="myorg", domain="example.com", primary_region="us-east-1").name == "myorg"
+    assert (
+        OrgDetails(name="my-org-123", domain="example.com", primary_region="us-east-1").name == "my-org-123"
+    )
 
     with pytest.raises(ValidationError):
-        OrgDetails(name="MyOrg", domain="example.com")
+        OrgDetails(name="MyOrg", domain="example.com", primary_region="us-east-1")
 
     with pytest.raises(ValidationError):
-        OrgDetails(name="my_org", domain="example.com")
+        OrgDetails(name="my_org", domain="example.com", primary_region="us-east-1")
 
 
 def test_contact_email_validation():
@@ -227,7 +229,7 @@ def test_custom_core_account_designations_and_clean_baseline(sample_config_dir):
     # Verify custom designations override convention
     bundle.org.cloudtrail.log_archive_account = "custom-security-archive"
     bundle.org.terraform_backend.account = "custom-ci-deploy"
-    bundle.org.root_access_management.delegated_admin_account = "custom-sec-audit"
+    bundle.org.security_services.audit_account = "custom-sec-audit"
 
     assert bundle.get_log_archive_account_name() == "custom-security-archive"
     assert bundle.get_backend_account_name() == "custom-ci-deploy"
@@ -262,46 +264,38 @@ def test_normalize_account_name_and_resolution(sample_config_dir):
     assert bundle.resolve_account_id(None, live_map) is None
 
 
-def test_cost_allocation_tags_config_schema(sample_config_dir):
-    from tarmac.core.config_schema import CostAllocationTagsConfig
-
-    # Default is empty list (no tags assumed unless user defines them)
-    cfg = CostAllocationTagsConfig()
-    assert cfg.enabled is True
-    assert cfg.tags == []
-
-    # Explicit list in tags
-    cfg2 = CostAllocationTagsConfig(tags=["Environment", "CostCenter"])
-    assert cfg2.tags == ["Environment", "CostCenter"]
-
-    # In bundle
+def test_cost_allocation_tags_are_a_list(sample_config_dir):
     bundle, _ = load_all_configs(sample_config_dir)
     assert bundle is not None
-    tags = bundle.get_cost_allocation_tags()
-    assert "Environment" in tags
+    assert "Environment" in bundle.get_cost_allocation_tags()
 
-    # Disabled
-    bundle.org.cost_allocation_tags.enabled = False
+    bundle.org.cost_allocation_tags = []
     assert bundle.get_cost_allocation_tags() == []
 
 
-def test_bucket_prefix_is_accepted_but_reported_as_ignored(writable_config_dir):
-    """Configs written before bucket names came from organization.name still load, with a deprecation notice."""
+def test_unknown_keys_are_errors(writable_config_dir):
+    """A typo must not pass validation and silently do nothing."""
     import yaml
-
-    from tarmac.core.config_loader import load_all_configs
 
     org_file = writable_config_dir / "organization.yaml"
     data = yaml.safe_load(org_file.read_text())
-    data["cloudtrail"]["bucket_prefix"] = "Not-A-Valid-Prefix"
+    data["cloudtrail"]["enable_kmss"] = True
     org_file.write_text(yaml.safe_dump(data))
 
     bundle, errors = load_all_configs(writable_config_dir)
 
-    assert not errors
-    assert bundle is not None
-    (message,) = bundle.deprecated_settings()
-    assert "cloudtrail.bucket_prefix is ignored" in message
+    assert bundle is None
+    assert "cloudtrail.enable_kmss" in errors[0]
+    assert "Extra inputs are not permitted" in errors[0]
+
+
+def test_central_configuration_needs_auto_enable():
+    from tarmac.core.config_schema import SecurityHubConfig
+
+    with pytest.raises(ValidationError, match="needs auto_enable_members: true"):
+        SecurityHubConfig(enabled=True, auto_enable_members=False)
+    assert not SecurityHubConfig(auto_enable_members=False, central_configuration=False).auto_enable_members
+    assert not SecurityHubConfig(enabled=False, auto_enable_members=False).enabled  # only checked while on
 
 
 def test_session_duration_validation():
@@ -354,3 +348,29 @@ def test_normalize_account_name_whitespace_and_hyphen_collapsing():
     assert normalize_account_name("  Log-Archive  ") == "log-archive"
     assert normalize_account_name("log---archive") == "log-archive"
     assert normalize_account_name("  Security _ Audit  ") == "security-audit"
+
+
+def test_a_missing_audit_account_names_the_settings_that_use_it(writable_config_dir):
+    import yaml
+
+    org_file = writable_config_dir / "organization.yaml"
+    data = yaml.safe_load(org_file.read_text())
+    data["security_services"]["audit_account"] = "no-such-account"
+    org_file.write_text(yaml.safe_dump(data))
+
+    bundle, errors = load_all_configs(writable_config_dir)
+
+    assert bundle is None
+    assert "used by root_access_management.delegate_to_audit." in errors[0]
+    assert "turn those off (false)" in errors[0]
+
+    data["root_access_management"]["delegate_to_audit"] = False
+    org_file.write_text(yaml.safe_dump(data))
+    bundle, errors = load_all_configs(writable_config_dir)
+    assert bundle is not None, errors
+
+
+def test_primary_region_has_no_default():
+    """It is fixed after the first deploy, so it must be chosen, not inherited."""
+    with pytest.raises(ValidationError, match="primary_region"):
+        OrgDetails(name="myorg", domain="example.com")  # type: ignore[call-arg]

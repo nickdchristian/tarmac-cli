@@ -34,7 +34,6 @@ from .cloudformation import CloudFormationService, lock_table_wanted
 from .config_recorder import service_linked_role_arn
 from .guardduty_export import FindingsExport, findings_export, reconcile_findings_export
 from .identity import IdentityService
-from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
 from .ou import OUService
 from .preflight import PreflightService
@@ -234,6 +233,26 @@ class Planner:
         return get_active_account_id_map(self.session_mgr) if self.org_id else {}
 
     @cached_property
+    def declared_accounts(self) -> dict[str, str]:
+        """The live accounts accounts.yaml lists: the only ones identity assignments touch."""
+        return self.bundle.declared_account_ids(self.accounts, self.management_id)
+
+    def _all_accounts_note(self) -> str:
+        """What `all` covers, and which accounts it leaves out, so nobody assumes it means the whole organization."""
+        unlisted = sorted(
+            name
+            for name, account_id in self.accounts.items()
+            if name not in self.declared_accounts and account_id != self.management_id
+        )
+        note = (
+            f"`all` means the {plural(len(self.bundle.accounts.accounts), 'account')} in accounts.yaml. The management "
+            "account is never included; an administrator assigns access there."
+        )
+        if unlisted:
+            note += f" Accounts not in accounts.yaml get no access from it: {', '.join(unlisted)}."
+        return note
+
+    @cached_property
     def root_id(self) -> str:
         return OUService(self.session_mgr).get_root_id() if self.org_id else ""
 
@@ -293,15 +312,16 @@ class Planner:
             )
         self._check(phase, "trusted access", "AWS services", lambda: self._trusted_access(org))
         root = self.bundle.org.root_access_management
-        if root.enabled:
+        if root.enable_root_credentials_management or root.enable_root_sessions:
             self._check(phase, "root access", "centralized root access", lambda: self._root_features(org))
-            if root.delegated_admin_account:
-                self._check(
-                    phase,
-                    "delegated admin",
-                    f"IAM: {root.delegated_admin_account}",
-                    lambda: self._delegated(org, "iam.amazonaws.com", root.delegated_admin_account or ""),
-                )
+        if root.delegate_to_audit:
+            audit_name = self.bundle.get_audit_account_name()
+            self._check(
+                phase,
+                "delegated admin",
+                f"IAM: {audit_name}",
+                lambda: self._delegated(org, "iam.amazonaws.com", audit_name),
+            )
         cost_tags = self.bundle.get_cost_allocation_tags()
         if cost_tags:
             self._check(
@@ -369,14 +389,14 @@ class Planner:
                 ),
             )
         scps = self.bundle.org.service_control_policies
-        if scps and scps.enabled and scps.policies:
+        if scps.policies:
             self._check(
                 phase, "stack", Stack.ORGANIZATION_SCPS.for_org(self.org_name), lambda: self._scp_stack(scps)
             )
         elif self.org_id:
             self._removals(
                 phase,
-                "SCPs are off or none are declared",
+                "no SCPs are declared",
                 lambda t: t.teardown_scps(self.bundle, dry_run=True),
             )
 
@@ -447,7 +467,6 @@ class Planner:
         if not account_id:
             self._missing_account(phase, name, stack_name)
             return
-        resolve_log_encryption(self.session_mgr, self.bundle, self.region, account_id)
         cfn = self._member_cfn(account_id)
         self._stack(
             phase,
@@ -458,7 +477,7 @@ class Planner:
                 self.bundle,
                 self.org_id,
                 self.management_id,
-                self._account_id(self.bundle.get_audit_account_name() or "audit"),
+                self._account_id(self.bundle.get_audit_account_name()),
                 kept=self.cfn.live_resource_ids(cfn, stack_name),
             ),
             template="cloudformation/log-archive-hardening.yaml",
@@ -494,7 +513,7 @@ class Planner:
                 self.cfn._fetch_stack_outputs(
                     self._member_cfn(account_id), Stack.LOG_ARCHIVE.for_org(self.org_name)
                 ).get("CloudTrailBucketName", ""),
-                bool(self.bundle.org.cloudtrail.enable_kms),
+                self.bundle.org.cloudtrail.enable_kms,
             ),
             template="cloudformation/organization-cloudtrail.yaml",
         )
@@ -694,7 +713,7 @@ class Planner:
         if include_log_archive:
             self._log_archive_stack(phase)
 
-        audit_name = self.bundle.get_audit_account_name() or "audit"
+        audit_name = self.bundle.get_audit_account_name()
         audit_stack = Stack.AUDIT_ACCOUNT.for_org(self.org_name)
         audit_id = self._account_id(audit_name)
         if audit_id:
@@ -979,6 +998,8 @@ class Planner:
                 f"Not created by tarmac, so only added to: {', '.join(adopted)}. Their other members and "
                 "assignments stay. `tarmac import` records them so tarmac manages them fully."
             )
+        if any("all" in a.accounts for g in cfg.groups for a in g.assignments):
+            phase.notes.append(self._all_accounts_note())
 
         self._removals(
             phase,
@@ -998,11 +1019,9 @@ class Planner:
         permission_sets: dict[str, str],
     ) -> None:
         """What a deploy removes from the group because identity.yaml no longer declares it."""
-        managed = {normalize_account_name(a.name) for a in self.bundle.accounts.accounts}
-        managed_ids = {i for name, i in self.accounts.items() if normalize_account_name(name) in managed}
         try:
             assignments, members = identity.undeclared_access(
-                instance_arn, group, group_id, permission_sets, self.accounts, managed_ids
+                instance_arn, group, group_id, permission_sets, self.declared_accounts
             )
         except AWS_ERRORS as e:
             phase.items.append(PlanItem("group", group.name, UNKNOWN, f"could not read its access: {e}"))
@@ -1055,9 +1074,7 @@ class Planner:
         permission_set_arn: str | None,
         targets: list[str],
     ) -> tuple[str, str]:
-        account_ids = identity._resolve_target_account_ids(
-            targets, self.accounts, list(self.accounts.values())
-        )
+        account_ids = identity._resolve_target_account_ids(targets, self.declared_accounts)
         if not group_id or not permission_set_arn:
             return "CREATE", f"{plural(len(account_ids), 'account')}"
         missing = [

@@ -124,6 +124,11 @@ managed (once the inventory bucket exists); destroy still leaves imported groups
 management account and other accounts not in `accounts.yaml` are left alone, as are users and groups that aren't
 in `identity.yaml`. The dry run lists every removal.
 
+`accounts: [all]` in an assignment means every account in `accounts.yaml`. Accounts tarmac doesn't manage get
+nothing from it, and the dry run names them. Nor does the management account: Identity Center creates the role
+there with the caller's own IAM rights, which tarmac's role deliberately doesn't have. `tarmac bootstrap` gives your
+admin user what it needs there; an administrator assigns anything else.
+
 Following AWS's guidance, the management account holds only what has to live there:
 
 - **Management account:** Organizations, SCPs, Identity Center, the trail's stack, the AWS Config StackSet, and
@@ -145,8 +150,8 @@ Tarmac itself runs with the least-privilege policy in
 run `tarmac bootstrap` again to update it; `tarmac preflight` warns when it's out of date.
 
 **The config is the source of truth.** Turning something off, or removing it, makes the next deploy remove what
-tarmac created for it, and the dry run lists each removal first: service control policies
-(`service_control_policies.enabled: false` or no policies), AWS Config recorders, the root activity alert, an
+tarmac created for it, and the dry run lists each removal first: service control policies (an empty
+`service_control_policies.policies`), AWS Config recorders, the root activity alert, an
 account's budget, and its cost anomaly monitors. Log buckets and the history in them are kept.
 
 Settings tarmac turned on are turned back off when the config no longer asks for them: root access management
@@ -179,11 +184,12 @@ detector once its members are disassociated. Security Hub can't be suspended, so
 
 ## Options
 
-All of these go in `organization.yaml`. Options with a real cost are off until you turn them on.
+All of these go in `organization.yaml`. Options with a real cost are off until you turn them on. A setting tarmac
+doesn't know is an error, so a typo can't be silently ignored.
 
 **Log retention and locking.** CloudTrail logs are kept forever unless you set a retention. Object Lock stops anyone
-deleting logs during the lock period. It's recommended, but S3 can never turn it off again, so tarmac asks you to
-decide (`object_lock: null` to say no).
+deleting logs during the lock period. It's recommended, but S3 can never turn it off again, so tarmac leaves it off
+until you set it, and `tarmac plan` recommends it while it's off.
 
 ```yaml
 cloudtrail:
@@ -196,7 +202,7 @@ cloudtrail:
 
 ```yaml
 security_services:
-  delegated_account: audit
+  audit_account: audit
   guardduty:
     enabled: true
     features: {s3_data_events: true}   # optional paid protections stay off unless listed
