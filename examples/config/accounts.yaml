@@ -2,7 +2,7 @@
 #
 # - Budget and anomaly alerts accept 1 to 10 emails. Use shared team mailboxes, such as
 #   finops-alerts@company.com, so alerts still reach someone when people leave.
-# - Tags: top-level `tags:` apply to every account, and an account's own `tags:` add to or override them.
+# - Tags: an account's own `tags:` add to or override organization.tags from organization.yaml.
 #   They also go on the stacks tarmac deploys for the account.
 
 accounts:

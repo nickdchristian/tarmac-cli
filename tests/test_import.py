@@ -105,6 +105,9 @@ class FakeSession:
                     "list_aws_service_access_for_organization": [
                         {"EnabledServicePrincipals": [{"ServicePrincipal": "iam.amazonaws.com"}]}
                     ],
+                    "list_delegated_administrators": [
+                        {"DelegatedAdministrators": [{"Id": "222", "Name": "Audit"}]}
+                    ],
                 }.get(name, [{}])
                 pag.paginate.side_effect = lambda **kw: data
             return pag
@@ -162,6 +165,16 @@ def imported(tmp_path: Path):
     return tmp_path / "cfg", report
 
 
+def test_root_access_is_only_delegated_when_it_already_is(tmp_path: Path, monkeypatch):
+    """Import describes the organization: it must not make the next deploy register a delegated administrator."""
+    monkeypatch.setattr(ImportService, "_iam_delegated_admins", lambda self: set())
+    ImportService(FakeSession(with_sso=False), "us-east-1").discover_and_write(  # type: ignore[arg-type]
+        tmp_path / "cfg", include_identity=False
+    )
+    org = yaml.safe_load((tmp_path / "cfg" / "organization.yaml").read_text())
+    assert org["root_access_management"]["delegate_to_audit"] is False
+
+
 def test_writes_files_that_describe_the_organization(imported):
     cfg, report = imported
     org = yaml.safe_load((cfg / "organization.yaml").read_text())
@@ -172,7 +185,7 @@ def test_writes_files_that_describe_the_organization(imported):
     assert org["organization"]["delete_default_vpc"] is False
     assert [o["name"] for o in org["ou_structure"]] == ["Production", "Security"]
     assert org["ou_structure"][0]["children"][0]["name"] == "App"
-    assert org["root_access_management"]["delegated_admin_account"] == "Audit"
+    assert org["root_access_management"]["delegate_to_audit"] is True
     assert org["contacts"]["billing"]["email"] == "fin@acme-corp.io"
     assert org["contacts"]["operations"]["phone"] == "+1234567890"  # the sample number, so validate flags it
     assert [a["name"] for a in accounts["accounts"]] == ["Audit"]

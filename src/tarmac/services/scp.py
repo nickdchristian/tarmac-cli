@@ -265,8 +265,8 @@ class SCPService:
         tags: dict[str, str] | None = None,
     ) -> list[SCPReconciliationResult]:
         """Reconcile all declared SCPs natively via a single CloudFormation stack."""
-        if not config.enabled or not config.policies:
-            logger.info("No Service Control Policies declared or enabled.")
+        if not config.policies:
+            logger.info("No Service Control Policies declared.")
             return []
 
         self.ensure_scp_enabled(root_id)

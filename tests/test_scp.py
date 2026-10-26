@@ -87,7 +87,6 @@ def test_scp_synthesize_template(tmp_path: Path):
     mock_session = MagicMock()
     service = SCPService(mock_session)
     config = ServiceControlPoliciesConfig(
-        enabled=True,
         policies=[
             SCPDef(
                 name="DenyMemberRootActivity",
@@ -137,7 +136,6 @@ def test_scp_reconcile_via_cloudformation(tmp_path: Path):
     ]
 
     config = ServiceControlPoliciesConfig(
-        enabled=True,
         policies=[
             SCPDef(
                 name="DenyMemberRootActivity",
@@ -197,7 +195,6 @@ def test_scp_reconcile_via_cfn_fallback_when_preexisting_and_broken_stack(tmp_pa
     }
 
     config = ServiceControlPoliciesConfig(
-        enabled=True,
         policies=[
             SCPDef(
                 name="DenyMemberRootActivity",
@@ -264,7 +261,6 @@ def test_scp_reconcile_via_cfn_raises_on_deployment_error(tmp_path: Path):
     )
 
     config = ServiceControlPoliciesConfig(
-        enabled=True,
         policies=[
             SCPDef(
                 name="DenyMemberRootActivity",
@@ -347,7 +343,6 @@ def test_scp_synthesize_template_disambiguates_colliding_logical_ids(tmp_path: P
     policy_file.write_text('{"Version":"2012-10-17","Statement":[]}', encoding="utf-8")
 
     config = ServiceControlPoliciesConfig(
-        enabled=True,
         policies=[
             SCPDef(name="Deny-Root", policy_file="policies/scp/deny.json", targets=["root"]),
             SCPDef(name="Deny_Root", policy_file="policies/scp/deny.json", targets=["root"]),
@@ -387,7 +382,6 @@ def test_scp_reconcile_via_cfn_imports_only_preexisting_when_mixed_with_new(tmp_
     }
 
     config = ServiceControlPoliciesConfig(
-        enabled=True,
         policies=[
             SCPDef(name="ExistingGuard", policy_file="policies/scp/deny.json", targets=["root"]),
             SCPDef(name="BrandNewGuard", policy_file="policies/scp/deny.json", targets=["root"]),

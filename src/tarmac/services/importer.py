@@ -296,6 +296,19 @@ class ImportService:
         except _READ_ERRORS:
             return set()
 
+    def _iam_delegated_admins(self) -> set[str]:
+        """Names of the accounts registered as IAM's delegated administrator for root access management."""
+        try:
+            return {
+                str(admin["Name"])
+                for page in self.org.get_paginator("list_delegated_administrators").paginate(
+                    ServicePrincipal="iam.amazonaws.com"
+                )
+                for admin in page.get("DelegatedAdministrators", [])
+            }
+        except _READ_ERRORS:
+            return set()
+
     def _identity(self, account_names: dict[str, str]) -> dict[str, Any] | None:
         try:
             service = IdentityService(self.session_mgr, preferred_region=self.region)
@@ -537,23 +550,23 @@ class ImportService:
             },
             "contacts": contacts,
             "root_access_management": {
-                "enabled": "iam.amazonaws.com" in trusted,
                 "enable_root_credentials_management": "iam.amazonaws.com" in trusted,
                 "enable_root_sessions": "iam.amazonaws.com" in trusted,
-                "delegated_admin_account": security_account,
+                "delegate_to_audit": bool(security_account)
+                and security_account in self._iam_delegated_admins(),
             },
-            "service_control_policies": {"enabled": bool(scps), "policies": scps},
+            "service_control_policies": {"policies": scps},
             "ou_structure": ou_structure,
             "cloudtrail": {
                 "trail_name": trail_name or "organization-trail",
                 "log_archive_account": log_account,
             },
             "terraform_backend": {"account": deploy_account},
-            "security_services": {"delegated_account": security_account or "audit"},
+            "security_services": {"audit_account": security_account or "audit"},
         }
         org_tags = _clean_tags(self._tags(root_id), self.report.todos, "the organization root")
         if org_tags:
-            organization["tags"] = org_tags
+            organization["organization"]["tags"] = org_tags
 
         for label, value in (
             ("Audit", security_account),
