@@ -1,4 +1,4 @@
-"""Terraform state locking: S3-only for new backends, and an existing lock table is never dropped by accident."""
+"""Terraform state locking: S3-only unless enable_dynamodb is on, with a warning when a table would be dropped."""
 
 from unittest.mock import MagicMock
 
@@ -26,24 +26,21 @@ def _cfn(enable_dynamodb: str | None) -> MagicMock:
     return cfn
 
 
-def test_the_default_is_no_explicit_setting():
-    assert TerraformBackendConfig().enable_dynamodb is None
+def test_the_default_is_s3_only():
+    assert TerraformBackendConfig().enable_dynamodb is False
 
 
 def test_a_new_backend_is_s3_only_by_default():
-    assert lock_table_wanted(_cfn(None), STACK, None) == (False, None)
-
-
-def test_an_existing_lock_table_is_kept_when_nothing_is_configured():
-    assert lock_table_wanted(_cfn("true"), STACK, None) == (True, None)
+    assert lock_table_wanted(_cfn(None), STACK, False) == (False, None)
 
 
 def test_an_existing_s3_only_backend_stays_s3_only():
-    assert lock_table_wanted(_cfn("false"), STACK, None) == (False, None)
+    assert lock_table_wanted(_cfn("false"), STACK, False) == (False, None)
 
 
-def test_asking_for_the_table_creates_it():
+def test_asking_for_the_table_creates_or_keeps_it():
     assert lock_table_wanted(_cfn(None), STACK, True) == (True, None)
+    assert lock_table_wanted(_cfn("true"), STACK, True) == (True, None)
 
 
 def test_removing_an_existing_table_is_allowed_but_warned_about():
@@ -52,9 +49,10 @@ def test_removing_an_existing_table_is_allowed_but_warned_about():
     assert wanted is False
     assert warning is not None
     assert "use_lockfile" in warning
+    assert "enable_dynamodb: true" in warning
 
 
 def test_an_unreadable_stack_counts_as_new():
     cfn = MagicMock()
     cfn.describe_stacks.return_value = MagicMock()
-    assert lock_table_wanted(cfn, STACK, None) == (False, None)
+    assert lock_table_wanted(cfn, STACK, False) == (False, None)

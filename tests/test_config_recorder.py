@@ -531,13 +531,13 @@ def test_regions_are_primary_first_without_repeats():
 @pytest.mark.parametrize(
     ("security", "warns"),
     [
-        ({"securityhub": {"enabled": True}}, True),  # standards on, Config unset: recommend it
-        ({"securityhub": {"enabled": True}, "config_recorder": {"enabled": False}}, False),  # decided against
+        ({"securityhub": {"enabled": True}}, True),  # standards on, Config off: recommend it
+        ({"securityhub": {"enabled": True}, "config_recorder": {"enabled": False}}, True),
         ({"securityhub": {"enabled": True}, "config_recorder": {"enabled": True}}, False),
         ({"securityhub": {"enabled": False}}, False),  # nothing needs it
     ],
 )
-def test_warns_about_security_hub_without_a_recorder_only_while_unset(security, warns):
+def test_recommends_a_recorder_while_security_hub_runs_without_one(security, warns):
     bundle = MagicMock()
     bundle.org.security_services = SecurityServicesConfig(**security)
 
@@ -603,13 +603,6 @@ def test_deploy_stops_with_guidance_when_the_log_archive_has_no_config_bucket_ye
 
     assert "--phase 3" in str(raised.value.details)
     service.assert_not_called()
-
-
-def test_config_recorder_null_means_decided_against_like_object_lock():
-    config = SecurityServicesConfig.model_validate({"config_recorder": None})
-    assert config.config_recorder.enabled is False
-    assert "config_recorder" in config.model_fields_set
-    assert "config_recorder" not in SecurityServicesConfig().model_fields_set
 
 
 def test_recording_frequency_is_continuous_unless_daily_is_asked_for():
@@ -759,7 +752,6 @@ def test_destroy_empties_and_deletes_the_config_bucket_with_the_other_log_bucket
     svc = TeardownService(mgr)
     bundle = MagicMock()
     bundle.org.organization.name = "acme"
-    bundle.org.cloudtrail.bucket_prefix = "p"
     bundle.get_log_archive_account_name.return_value = "log-archive"
     bundle.resolve_account_id.return_value = "222222222222"
     svc.cfn_service = MagicMock()

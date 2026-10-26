@@ -12,7 +12,7 @@ DEFAULT_ORGANIZATION_YAML = """# Organization Master Configuration
 organization:
   name: "myorg"                          # Tarmac names its CloudFormation stacks after this. Do not change it after the first deploy.
   domain: "myorg.example.com"
-  primary_region: "us-east-1"
+  primary_region: "us-east-1"           # Tarmac keeps its state here. Fixed after the first deploy, like name.
   additional_regions:
     - "us-east-2"
     - "eu-west-1"
@@ -39,16 +39,14 @@ contacts:
 # Centralized root access management
 # - enable_root_credentials_management: Centrally manages and recovers member root credentials.
 # - enable_root_sessions: Allows short-lived, audited temporary root sessions for emergency break-glass.
-# - delegated_admin_account: Delegates root access operations to the security account (e.g. 'Audit').
+# - delegate_to_audit: Delegates root access operations to the audit account (security_services.audit_account).
 root_access_management:
-  enabled: true
   enable_root_credentials_management: true
   enable_root_sessions: true
-  delegated_admin_account: "Audit"
+  delegate_to_audit: true
 
 # Declarative Service Control Policies (SCPs)
 service_control_policies:
-  enabled: true
   policies:
     - name: "FoundationalGuardrails"
       description: "Consolidated foundational guardrails: denies member account root user activity and stops member accounts leaving the organization or closing themselves"
@@ -82,35 +80,34 @@ ou_structure:
 cloudtrail:
   trail_name: "myorg-organization-trail"
   log_archive_account: "Log-Archive"
-  # enable_kms: true   # Unset = SSE-S3 for a new deployment (cheaper). true adds a KMS key (about $1/month), which CIS and Security Hub CloudTrail.2 ask for.
+  enable_kms: false   # false = SSE-S3 (cheaper). true adds a KMS key (about $1/month), which CIS and Security Hub CloudTrail.2 ask for.
   # retention_days: 365   # Delete CloudTrail logs after this many days. Omit to keep them indefinitely.
   # RECOMMENDED: S3 Object Lock on the log bucket, so logs cannot be deleted or overwritten for a year.
-  # Off unless set, and S3 cannot turn it off again once it is on. `object_lock: null` hides the deploy warning.
+  # Off unless set, and S3 cannot turn it off again once it is on.
   # object_lock:
   #   mode: GOVERNANCE     # GOVERNANCE (bypassable) or COMPLIANCE (cannot be undone before it expires)
   #   retention_days: 365
 
 # Security services (all off unless enabled)
-# security_services:
-#   delegated_account: audit
-#   guardduty: {enabled: true}
-#   securityhub: {enabled: true}
-#   config_recorder:          # AWS Config in every account, delivered to its own log archive bucket. Billed per item.
-#     enabled: true           # Security Hub CSPM standards need it. `config_recorder: null` acknowledges the warning.
-#     recording_frequency: CONTINUOUS   # or DAILY: $0.012/item vs $0.003, cheaper only above 4 changes a day
+security_services:
+  audit_account: "Audit"   # The audit account: security services and root access are delegated to it
+  # Security services are all off unless enabled:
+  # guardduty: {enabled: true}
+  # securityhub: {enabled: true}
+  # config_recorder:          # AWS Config in every account, delivered to its own log archive bucket. Billed per item.
+  #   enabled: true           # Security Hub CSPM standards need it.
+  #   recording_frequency: CONTINUOUS   # or DAILY: $0.012/item vs $0.003, cheaper only above 4 changes a day
 
 # Terraform Backend configuration
 terraform_backend:
   account: "Deployment"
   dynamodb_table_name: "terraform-state-lock"
-  # enable_dynamodb: true   # Unset = S3-only locking (use_lockfile) for a new backend; DynamoDB locking is deprecated
+  enable_dynamodb: false   # false = S3-only locking (use_lockfile); DynamoDB locking is deprecated in Terraform
 
 # Cost Allocation Tags in AWS Cost Explorer & Billing
 cost_allocation_tags:
-  enabled: true
-  tags:
-    - "Environment"
-    - "Owner"
+  - "Environment"
+  - "Owner"
 """
 
 DEFAULT_ACCOUNTS_YAML = """# AWS Accounts Catalog

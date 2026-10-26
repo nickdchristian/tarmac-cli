@@ -334,7 +334,7 @@ class LoggingTeardown(TeardownBase):
         """Tear down Audit account hardening stack."""
         results: list[TeardownItemReport] = self._new_results_list()
         accts = account_id_map or self._get_active_accounts()
-        acct_name = bundle.get_audit_account_name() or "audit"
+        acct_name = bundle.get_audit_account_name()
         acct_id = bundle.resolve_account_id(acct_name, accts) or ""
         stack_name = Stack.AUDIT_ACCOUNT.for_org(bundle.org.organization.name)
 

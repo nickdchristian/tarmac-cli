@@ -219,7 +219,7 @@ class DriftService:
     ) -> None:
         """Check if declared SCPs exist, match content hashes, and are attached to targets."""
         scp_config = bundle.org.service_control_policies
-        if not scp_config.enabled:
+        if not scp_config.policies:
             return
 
         live_policies = scp_service.list_existing_scps()
@@ -360,7 +360,7 @@ class DriftService:
                 bundle.get_log_archive_account_name() or "log-archive",
                 Stack.LOG_ARCHIVE,
             ),
-            ("AuditHardening", bundle.get_audit_account_name() or "audit", Stack.AUDIT_ACCOUNT),
+            ("AuditHardening", bundle.get_audit_account_name(), Stack.AUDIT_ACCOUNT),
         ]
         for friendly_name, acct_name, stack in stacks_to_check:
             self._audit_member_stack(

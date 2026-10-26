@@ -71,18 +71,17 @@ def test_lock_equal_to_log_retention_is_accepted():
 @pytest.mark.parametrize(
     ("config", "warns"),
     [
-        ({}, True),  # unset: recommend it
-        ({"object_lock": None}, False),  # written down as null: decided against, stay quiet
+        ({}, True),
+        ({"object_lock": None}, True),  # null is the same as leaving it out
         ({"object_lock": {"mode": "GOVERNANCE", "retention_days": 365}}, False),
     ],
 )
-def test_warns_to_enable_object_lock_only_while_it_is_unset(config, warns):
+def test_recommends_object_lock_while_it_is_off(config, warns):
     advice = object_lock_advice(_bundle(**config))  # type: ignore[arg-type]
 
     assert bool(advice) is warns
     if advice:
         assert "GOVERNANCE" in advice
-        assert "object_lock: null" in advice
 
 
 @pytest.mark.parametrize(

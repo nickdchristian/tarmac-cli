@@ -242,11 +242,16 @@ class OrganizationService:
     def configure_root_access(
         self,
         config: RootAccessConfig,
+        delegated_admin: str | None = None,
         account_id_map: dict[str, str] | None = None,
     ) -> dict[str, bool]:
-        """Configure centralized root access management and optional delegated administrator."""
-        if not config.enabled:
-            logger.info("Root access management is disabled in configuration.")
+        """Configure centralized root access management and, when delegated, the IAM delegated administrator.
+
+        ``delegated_admin`` is the audit account's name, given when ``config.delegate_to_audit`` is on.
+        """
+        delegated_admin = delegated_admin if config.delegate_to_audit else None
+        if not (config.enable_root_credentials_management or config.enable_root_sessions or delegated_admin):
+            logger.info("Root access management is off in configuration.")
             return {
                 "iam_trusted_access": False,
                 "root_credentials_management": False,
@@ -254,7 +259,7 @@ class OrganizationService:
                 "delegated_admin": False,
             }
 
-        resolved_map = self._resolve_account_id_map(account_id_map) if config.delegated_admin_account else {}
+        resolved_map = self._resolve_account_id_map(account_id_map) if delegated_admin else {}
         enabled_features = self._enabled_root_features()
 
         return {
@@ -268,8 +273,8 @@ class OrganizationService:
                 self._enable_root_sessions(enabled_features) if config.enable_root_sessions else False
             ),
             "delegated_admin": (
-                self._register_delegated_admin(config.delegated_admin_account, resolved_map)
-                if config.delegated_admin_account and resolved_map
+                self._register_delegated_admin(delegated_admin, resolved_map)
+                if delegated_admin and resolved_map
                 else False
             ),
         }

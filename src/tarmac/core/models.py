@@ -10,6 +10,8 @@ TAG_MANAGED_BY = "tarmac:managed-by"
 TAG_STATUS = "tarmac:status"
 TAG_VERSION = "tarmac:version"
 TAG_COMPLETED_PHASES = "tarmac:completed-phases"
+TAG_NAME = "tarmac:name"
+TAG_HOME_REGION = "tarmac:home-region"
 TAG_BASELINE = "tarmac:baseline"
 
 STATUS_READY = "ready"

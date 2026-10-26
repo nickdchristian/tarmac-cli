@@ -6,7 +6,7 @@ from botocore.exceptions import ClientError
 
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS
-from ..core.models import TeardownItemReport
+from ..core.models import TAG_HOME_REGION, TAG_NAME, TeardownItemReport
 from ..core.stack_names import Stack
 from ..core.text import plural
 from .identity import DEPLOYMENT_PERMISSION_SET, MANAGEMENT_ADMIN_PERMISSION_SET, IdentityService
@@ -250,6 +250,8 @@ class GovernanceTeardown(TeardownBase):
             "tarmac:status",
             "tarmac:version",
             "tarmac:deployment-ready",
+            TAG_NAME,
+            TAG_HOME_REGION,
         ]
 
         if dry_run:
