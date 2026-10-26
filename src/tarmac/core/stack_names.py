@@ -22,6 +22,16 @@ class Stack(StrEnum):
         return f"{org_name}-{self.value}"
 
 
+# Stack statuses that mean the stack exists.
+LIVE_STACK_STATUSES = [
+    "CREATE_COMPLETE",
+    "UPDATE_COMPLETE",
+    "UPDATE_ROLLBACK_COMPLETE",
+    "IMPORT_COMPLETE",
+    "IMPORT_ROLLBACK_COMPLETE",
+    "REVIEW_IN_PROGRESS",
+]
+
 # Suffixes searched for when inferring organization.name from stacks that already exist.
 TARMAC_STACK_SUFFIXES: tuple[str, ...] = (
     Stack.ORGANIZATION_SCPS,

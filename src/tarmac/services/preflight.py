@@ -11,7 +11,7 @@ from ..core.config_loader import ConfigBundle
 from ..core.exceptions import AWS_ERRORS, aws_error_message
 from ..core.models import PreflightCheckResult, PreflightCheckStatus, PreflightReport
 from ..core.placeholders import find_placeholder_values
-from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
+from ..core.stack_names import Stack
 from ..core.text import plural
 from .cloudformation import resource_owner
 from .identity import DEPLOYMENT_PERMISSION_SET, IdentityService, deployment_policy
@@ -19,15 +19,6 @@ from .preflight_billing import BillingChecks
 from .preflight_org import OrganizationChecks
 
 logger = logging.getLogger(__name__)
-
-_LIVE_STACK_STATUSES = [
-    "CREATE_COMPLETE",
-    "UPDATE_COMPLETE",
-    "UPDATE_ROLLBACK_COMPLETE",
-    "IMPORT_COMPLETE",
-    "IMPORT_ROLLBACK_COMPLETE",
-    "REVIEW_IN_PROGRESS",
-]
 
 
 def _count_statuses(checks: list[PreflightCheckResult]) -> tuple[int, int, int, int]:
@@ -194,56 +185,6 @@ class PreflightService(OrganizationChecks, BillingChecks):
             ),
         )
 
-    def check_stack_name_prefix(self, target_region: str) -> PreflightCheckResult:
-        """Warn when Tarmac stacks exist under a different organization name than the one now configured."""
-        org_name = self.bundle.org.organization.name
-        try:
-            cfn = self.session_mgr.get_client("cloudformation", region_name=target_region)
-            names = [
-                str(summary.get("StackName", ""))
-                for page in cfn.get_paginator("list_stacks").paginate(StackStatusFilter=_LIVE_STACK_STATUSES)
-                for summary in page.get("StackSummaries", [])
-            ]
-        except (ClientError, BotoCoreError) as e:
-            logger.debug("Stack name prefix check: %s", e)
-            return PreflightCheckResult(
-                name="Existing Tarmac Stacks",
-                target=f"Region {target_region}",
-                status=PreflightCheckStatus.INFO,
-                live_value="Unavailable",
-            )
-        prefixes: set[str] = set()
-        own = False
-        for name in names:
-            for suffix in TARMAC_STACK_SUFFIXES:
-                if not name.endswith(f"-{suffix}"):
-                    continue
-                if name.startswith(f"{org_name}-"):
-                    own = True
-                else:
-                    prefixes.add(name[: -len(suffix) - 1])
-        if not prefixes:
-            return PreflightCheckResult(
-                name="Existing Tarmac Stacks",
-                target=f"Region {target_region}",
-                status=PreflightCheckStatus.PASS,
-                live_value="Consistent with organization.name",
-            )
-        found = ", ".join(sorted(prefixes))
-        # With no stack under the configured name, the deploy would duplicate the trail, log buckets and recorders,
-        # then stop: a failure. Stacks under both names are usually leftovers to clean up: a warning.
-        return PreflightCheckResult(
-            name="Existing Tarmac Stacks",
-            target=f"Region {target_region}",
-            status=PreflightCheckStatus.WARN if own else PreflightCheckStatus.FAIL,
-            live_value=f"Stacks named for: {found}",
-            action_required=(
-                f"organization.name is '{org_name}', but Tarmac stacks already exist under '{found}'. Stacks are "
-                f"named after organization.name, so deploying now would try to recreate resources those stacks "
-                f"already own and fail. Set organization.name back to '{found}'."
-            ),
-        )
-
     def check_sns_subscriptions(self, target_region: str) -> PreflightCheckResult:
         """Verify whether any alert SNS subscriptions are pending email confirmation."""
         try:
@@ -344,7 +285,6 @@ class PreflightService(OrganizationChecks, BillingChecks):
             self.check_cost_allocation_tags(),
             self.check_sample_values(),
             self.check_existing_organization_trail(home_region),
-            self.check_stack_name_prefix(home_region),
             self.check_sns_subscriptions(home_region),
             self.check_support_tier(),
             self.check_payment_and_tax(),

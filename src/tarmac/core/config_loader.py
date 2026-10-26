@@ -31,60 +31,25 @@ def normalize_account_name(name: str) -> str:
 
 
 def get_default_config_dir() -> Path:
-    """Return default configuration directory in order of precedence:
+    """``TARMAC_CONFIG_DIR`` when set, otherwise ``config/`` in the current directory.
 
-    1. TARMAC_CONFIG_DIR environment variable
-    2. Path.cwd() / "config" / "local" (local dev/testing overrides)
-    3. Path.cwd() / "config" (standard GitOps / production location)
-    4. Path.cwd() (if organization.yaml exists in cwd)
-
-    There is deliberately no fallback to the repository's examples/config: a missing config
-    directory must fail loudly rather than deploy the sample organization. To use the examples,
-    pass --config-dir examples/config explicitly.
+    There are no other places tarmac looks: a stray local folder or file must never quietly replace the real
+    config, and there is deliberately no fallback to the repository's examples/config. To use another folder, pass
+    --config-dir or set TARMAC_CONFIG_DIR.
     """
     if env_dir := os.environ.get("TARMAC_CONFIG_DIR"):
         return Path(env_dir)
-
-    local_config = Path.cwd() / "config" / "local"
-    if local_config.is_dir() and (local_config / "organization.yaml").is_file():
-        return local_config
-
-    cwd_config = Path.cwd() / "config"
-    if cwd_config.is_dir() and (cwd_config / "organization.yaml").is_file():
-        return cwd_config
-
-    if (Path.cwd() / "organization.yaml").is_file():
-        return Path.cwd()
-
-    if local_config.is_dir():
-        return local_config
-
-    if cwd_config.is_dir():
-        return cwd_config
-
-    return cwd_config
+    return Path.cwd() / "config"
 
 
 def resolve_file(config_dir: Path, base_name: str) -> Path:
-    """Resolve a config file, checking for .local.yaml, .yaml and local/<name>.yaml.
-
-    *.yaml.example files are templates and are never loaded as real configuration.
-    """
-    local_path = config_dir / f"{base_name}.local.yaml"
-    if local_path.is_file():
-        return local_path
-
-    yaml_path = config_dir / f"{base_name}.yaml"
-    if yaml_path.is_file():
-        return yaml_path
-
-    nested_local = config_dir / "local" / f"{base_name}.yaml"
-    if nested_local.is_file():
-        return nested_local
-
+    """``<config_dir>/<base_name>.yaml``. *.yaml.example files are templates and are never loaded."""
+    path = config_dir / f"{base_name}.yaml"
+    if path.is_file():
+        return path
     raise ConfigurationError(
         f"Configuration file not found for '{base_name}'.",
-        details=f"Looked for {local_path.name} and {yaml_path.name} in {config_dir}",
+        details=f"Looked for {path.name} in {config_dir}",
     )
 
 
@@ -345,6 +310,15 @@ class ConfigBundle:
             if normalize_account_name(name) == target_norm:
                 return acct_id
         return None
+
+    def declared_account_ids(self, live_accounts: dict[str, str], management_id: str) -> dict[str, str]:
+        """The live accounts that accounts.yaml lists, by name, leaving out the management account even if it's listed."""
+        declared = {normalize_account_name(a.name) for a in self.accounts.accounts}
+        return {
+            name: i
+            for name, i in live_accounts.items()
+            if normalize_account_name(name) in declared and i != management_id
+        }
 
     def get_account(self, account_name: str | None) -> AccountDef | None:
         """Find an AccountDef by name (case-insensitive and hyphen-agnostic)."""

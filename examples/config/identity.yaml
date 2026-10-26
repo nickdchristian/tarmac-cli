@@ -63,7 +63,7 @@ identity_center:
         - "admin"
       assignments:
         - permission_set: "OrganizationAdmin"
-          accounts: ["all"]
+          accounts: ["all"]   # every account in accounts.yaml; never the management account
 
     - name: "AWS-Administrators"
       description: "Cloud Platform Administrators with access across all accounts"

@@ -30,7 +30,8 @@ place to do this.
    pip install tarmac-cli
    tarmac init          # writes config/organization.yaml, accounts.yaml, identity.yaml
    ```
-   Edit the files. Put yourself in `admin_user` in `identity.yaml`, and give every account in `accounts.yaml` a
+   Tarmac reads `config/` in the folder you run it from; `--config-dir` or `TARMAC_CONFIG_DIR` points it
+   elsewhere. Edit the files. Put yourself in `admin_user` in `identity.yaml`, and give every account in `accounts.yaml` a
    real, unique email (plus addresses such as `aws+prod@example.com` work if your mail provider supports them).
 4. Still in CloudShell, as root:
    ```bash
@@ -43,7 +44,7 @@ place to do this.
    ```bash
    export AWS_PROFILE=tarmac
    tarmac preflight           # checks the account is ready
-   tarmac deploy --dry-run    # shows what would change, changes nothing
+   tarmac plan                # shows what would change, changes nothing
    tarmac deploy
    ```
 
@@ -60,7 +61,7 @@ stops.
 tarmac import --config-dir my-org
 cd my-org
 tarmac status --detail
-tarmac deploy --dry-run
+tarmac plan
 ```
 
 Read what it reports, and check the dry run before the first real deploy. Keep in mind:
@@ -69,7 +70,9 @@ Read what it reports, and check the dry run before the first real deploy. Keep i
   rather than guess.
 - **Accounts you don't declare are left alone,** except ones tarmac created earlier and you have since removed
   from `accounts.yaml`. Those are moved to the Suspended OU (`quarantine_removed_accounts: false` turns this off).
-- **Never change `organization.name` after the first deploy.** Every stack is named after it.
+- **Never change `organization.name` or `primary_region` after the first deploy.** Every stack is named after the
+  name, and tarmac keeps its inventory in the primary Region. Tarmac records both on the management account and
+  stops with an explanation if the config no longer matches.
 - **An existing organization trail isn't replaced.** Tarmac adds its own; delete the old one once the new one is
   delivering logs.
 - **Set `delete_default_vpc: false`** for accounts that already run workloads.
@@ -122,6 +125,11 @@ managed (once the inventory bucket exists); destroy still leaves imported groups
 management account and other accounts not in `accounts.yaml` are left alone, as are users and groups that aren't
 in `identity.yaml`. The dry run lists every removal.
 
+`accounts: [all]` in an assignment means every account in `accounts.yaml`. Accounts tarmac doesn't manage get
+nothing from it, and the dry run names them. Nor does the management account: Identity Center creates the role
+there with the caller's own IAM rights, which tarmac's role deliberately doesn't have. `tarmac bootstrap` gives your
+admin user what it needs there; an administrator assigns anything else.
+
 Following AWS's guidance, the management account holds only what has to live there:
 
 - **Management account:** Organizations, SCPs, Identity Center, the trail's stack, the AWS Config StackSet, and
@@ -149,7 +157,9 @@ account's budget, and its cost anomaly monitors. Log buckets and the history in 
 
 Settings tarmac turned on are turned back off when the config no longer asks for them: root access management
 features and its IAM delegated administrator, and cost allocation tags. Groups tarmac created are deleted when they
-leave `identity.yaml`, after their assignments are removed. Users are never deleted for being left out, and anything
+leave `identity.yaml`, after their assignments are removed. So are permission sets tarmac created: removing one
+deletes it and every assignment on it, in every account, so read the dry run first. The two that `tarmac bootstrap`
+gives your admin user are never removed this way. Users are never deleted for being left out, and anything
 tarmac didn't create is left alone.
 
 Turning off GuardDuty suspends it in the member accounts: monitoring and charges stop, its findings are kept, and
@@ -165,7 +175,8 @@ detector once its members are disassociated. Security Hub can't be suspended, so
 | `tarmac validate` | Check the config files, without AWS |
 | `tarmac bootstrap` | Once, as root: create your Identity Center login and the `tarmac` profile |
 | `tarmac preflight` | Check the management account is ready |
-| `tarmac deploy` | Apply the config (`--dry-run` to preview, `--phase N` for one phase) |
+| `tarmac plan` | Show what `deploy` would change, without changing it (same as `deploy --dry-run`) |
+| `tarmac deploy` | Apply the config (`--phase N` for one phase) |
 | `tarmac status` | Compare AWS with the config (`--detail` lists every difference) |
 | `tarmac import` | Write config files from an existing organization |
 | `tarmac destroy` | Remove what tarmac deployed (see [Tearing down](#tearing-down)) |

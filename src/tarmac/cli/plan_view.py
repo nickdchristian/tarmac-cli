@@ -55,7 +55,7 @@ def render_plan(plan: DeploymentPlan) -> None:
     counts = plan.counts()
     if counts:
         print_info(f"Plan: {summarize(counts)}.")
-    print_info("Run without --dry-run to apply.")
+    print_info("Run `tarmac deploy` to apply.")
 
 
 def summarize(counts: dict[str, int]) -> str:

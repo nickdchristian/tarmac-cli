@@ -14,6 +14,7 @@ from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
 from ..core.templates import resolve_resource_path
 from ..core.text import plural
+from ..services import deployment_identity
 from ..services.accounts import AccountService
 from ..services.baseline import BaselineService
 from ..services.baseline_stacks import BaselineStacksService
@@ -122,6 +123,7 @@ def _deploy_inventory_stack(
         termination_protection=True,
     )
     inventory.connect(session_mgr, bundle.org.organization.name, region, bundle.config_dir)
+    deployment_identity.record(session_mgr, bundle)
 
 
 def connect_inventory_or_raise(session_mgr: AwsSessionManager, bundle: ConfigBundle) -> None:
@@ -134,6 +136,7 @@ def connect_inventory_or_raise(session_mgr: AwsSessionManager, bundle: ConfigBun
             "The bucket that records what tarmac creates does not exist yet.",
             details="Run `tarmac deploy --phase 1` first: it creates the bucket.",
         )
+    deployment_identity.record(session_mgr, bundle)
 
 
 def _run_phase_1_org(
@@ -696,13 +699,19 @@ def _run_phase_6_identity(
         if session_mgr.default_region == target_region
         else AwsSessionManager(region_name=target_region)
     )
+    # Before the stack update below: it drops sets identity.yaml stopped listing, and those are what goes.
+    from_stack = IdentityService(sso_session_mgr, preferred_region=target_region).permission_sets_in_stack(
+        bundle.org.organization.name
+    )
     report = IdentityService(sso_session_mgr, preferred_region=target_region).sync_identity(
         id_cfg,
         project_root=project_root,
         org_name=bundle.org.organization.name,
         org_tags=bundle.get_organization_tags(),
         custom_tags=custom_tags,
-        managed_accounts=[a.name for a in bundle.accounts.accounts],
+        accounts=bundle.declared_account_ids(
+            get_active_account_id_map(session_mgr), str(session_mgr.get_caller_identity().get("Account", ""))
+        ),
         owned_groups=owned_groups(),
     )
 
@@ -714,6 +723,12 @@ def _run_phase_6_identity(
                 target_region, recorded, only=settings_off(bundle)
             ),
         )
+    apply_removals(
+        "permission sets",
+        TeardownService(sso_session_mgr).teardown_undeclared_permission_sets(
+            bundle, target_region, from_stack=from_stack
+        ),
+    )
 
     _record_phase(session_mgr, "identity")
     print_success(

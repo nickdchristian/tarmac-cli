@@ -29,6 +29,7 @@ from .common import (
     RegionOption,
     TagsOption,
     YesOption,
+    check_deployment_or_exit,
     confirm_or_exit,
     load_configs_or_exit,
     parse_tags_or_exit,
@@ -215,18 +216,20 @@ def deploy_command(
     _require_yes_for_json(dry_run, yes, json_output)
     bundle = load_configs_or_exit(config_dir)
     _check_deploy_options(phase, accounts, skip_preflight, bundle)
+    custom_tags = parse_tags_or_exit(tags)
+
+    target_region = region or bundle.org.organization.primary_region
+    session_mgr = AwsSessionManager(region_name=target_region)
+    phases = [phase] if phase is not None else ALL_PHASES
+    # Before the prompt: nobody should confirm a live deploy that is then refused.
+    _refuse_root_identity(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
     confirm_or_exit(
         "Are you sure you want to run the live multi-account deployment?",
         yes=yes,
         dry_run=dry_run,
         cancelled="Deployment cancelled by user.",
     )
-    custom_tags = parse_tags_or_exit(tags)
-
-    target_region = region or bundle.org.organization.primary_region
-    session_mgr = AwsSessionManager(region_name=target_region)
-    phases = [phase] if phase is not None else ALL_PHASES
-    _refuse_root_identity(session_mgr)
 
     try:
         if dry_run:
@@ -428,6 +431,32 @@ def _confirm_teardown(
         raise typer.Exit(code=0)
 
 
+def plan_command(
+    phase: Annotated[int | None, typer.Option("--phase", help="Plan only this phase (1-6)")] = None,
+    accounts: Annotated[
+        list[str] | None,
+        typer.Option("--account", "-a", help="With --phase 4: plan only this declared account (repeatable)"),
+    ] = None,
+    config_dir: ConfigDirOption = None,
+    region: RegionOption = None,
+    json_output: JsonOption = False,
+    tags: TagsOption = None,
+) -> None:
+    """Show what `tarmac deploy` would change, using read-only AWS calls (the same as `deploy --dry-run`)."""
+    deploy_command(
+        phase=phase,
+        accounts=accounts,
+        config_dir=config_dir,
+        region=region,
+        dry_run=True,
+        yes=False,
+        skip_preflight=False,
+        json_output=json_output,
+        tags=tags,
+        adopt_existing=False,
+    )
+
+
 def destroy_command(
     phase: Annotated[int | None, typer.Option("--phase", help="Tear down only this phase (2-6)")] = None,
     config_dir: ConfigDirOption = None,
@@ -484,6 +513,7 @@ def destroy_command(
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
     _refuse_root_identity(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
 
     inv = _load_inventory(session_mgr, bundle, inventory_from_log) if everything else None
     _confirm_teardown(
@@ -586,6 +616,7 @@ def inventory_command(
     bundle = load_configs_or_exit(config_dir)
     session_mgr = AwsSessionManager(region_name=bundle.org.organization.primary_region)
     require_credentials_or_exit(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
     inv = _load_inventory(session_mgr, bundle, from_log)
     if json_output:
         print(json.dumps(inv.entries, indent=2, sort_keys=True))
