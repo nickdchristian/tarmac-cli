@@ -122,31 +122,28 @@ def config_recorder_parameters(
 
 
 def object_lock_advice(bundle: ConfigBundle) -> str | None:
-    """A recommendation to turn on Object Lock while it is off and not explicitly declined (``object_lock: null``).
+    """A `tarmac plan` note recommending Object Lock while it is off.
 
     S3 cannot switch Object Lock off once it is on, so tarmac never turns it on by itself.
     """
-    cloudtrail = bundle.org.cloudtrail
-    if cloudtrail.object_lock is not None or "object_lock" in cloudtrail.model_fields_set:
+    if bundle.org.cloudtrail.object_lock is not None:
         return None
     return (
         "CloudTrail Object Lock is not configured, so anyone with delete rights on the log bucket can "
         "erase the audit trail. Best practice is `cloudtrail.object_lock: {mode: GOVERNANCE, "
         "retention_days: 365}`. Enable it before the first deploy if you can; S3 cannot turn it off "
-        "again. Set `object_lock: null` to acknowledge and hide this warning."
+        "again."
     )
 
 
 def config_recorder_advice(bundle: ConfigBundle) -> str | None:
-    """Security Hub needs a Config recorder for most controls; say so while it is unset and not declined."""
+    """A `tarmac plan` note: Security Hub needs a Config recorder for most controls."""
     security = bundle.org.security_services
     if not security.securityhub.enabled or security.config_recorder.enabled:
-        return None
-    if "config_recorder" in security.model_fields_set:
         return None
     return (
         "Security Hub CSPM is enabled but AWS Config recording is not. Most of its controls need a Config "
         "recorder to be evaluated and report no data without one (unless the newer AWS Security Hub is also "
         "enabled, which manages its own recorder). Set `security_services.config_recorder.enabled: true` "
-        "(billed per configuration item), or `config_recorder: null` to acknowledge and hide this warning."
+        "(billed per configuration item)."
     )

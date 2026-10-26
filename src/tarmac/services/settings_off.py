@@ -30,13 +30,11 @@ def settings_off(bundle: ConfigBundle) -> Callable[[str, str], bool]:
 
     def off(kind: str, key: str) -> bool:
         if kind == "root-credentials-management":
-            return not (root.enabled and root.enable_root_credentials_management)
+            return not root.enable_root_credentials_management
         if kind == "root-sessions":
-            return not (root.enabled and root.enable_root_sessions)
+            return not root.enable_root_sessions
         if kind == "delegated-admin":
-            return key.startswith("iam.amazonaws.com:") and not (
-                root.enabled and root.delegated_admin_account
-            )
+            return key.startswith("iam.amazonaws.com:") and not root.delegate_to_audit
         if kind == "cost-allocation-tag":
             return key not in tags
         if kind == "identity-group":

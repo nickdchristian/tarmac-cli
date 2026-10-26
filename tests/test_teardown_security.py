@@ -27,7 +27,7 @@ def bundle(tmp_path: Path):
     assert b is not None, errors
     b.org.security_services.guardduty.enabled = True
     b.org.security_services.securityhub.enabled = True
-    b.org.root_access_management.enabled = False
+    b.org.root_access_management.delegate_to_audit = False
     b.org.organization.additional_regions = []
     return b
 
@@ -47,7 +47,7 @@ def _security_service(clients: dict[str, Any]) -> TeardownService:
 
 
 def _audit_name(bundle) -> str:
-    return bundle.org.security_services.delegated_account
+    return bundle.org.security_services.audit_account
 
 
 def test_security_teardown_issues_valid_calls_in_a_safe_order(bundle):

@@ -3,25 +3,31 @@
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from .tagging import validate_tags
 
 
-class Contact(BaseModel):
+class StrictModel(BaseModel):
+    """Every config model rejects keys it does not know, so a typo or a removed setting is an error, not a no-op."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class Contact(StrictModel):
     name: str = Field(..., min_length=1)
     title: str = Field(..., min_length=1)
     email: EmailStr
     phone: str = Field(..., min_length=5)
 
 
-class ContactsConfig(BaseModel):
+class ContactsConfig(StrictModel):
     billing: Contact
     operations: Contact
     security: Contact
 
 
-class RootAccessConfig(BaseModel):
+class RootAccessConfig(StrictModel):
     """Centralized root access management configuration for AWS Organizations.
 
     AWS allows organizations to centrally govern member account root access:
@@ -29,14 +35,10 @@ class RootAccessConfig(BaseModel):
       accounts without needing console access or access to member email inboxes.
     - Privileged root sessions: Allow authorized administrators to open audited, short-lived
       temporary root sessions via AWS STS/SSM, eliminating permanent root passwords.
-    - Delegated administration: Register a dedicated security account (e.g. 'audit') to issue
-      and manage root sessions without logging into the management/payer account.
+    - Delegated administration: Register the audit account to issue and manage root sessions without
+      logging into the management/payer account.
     """
 
-    enabled: bool = Field(
-        default=True,
-        description="Enable centralized root access management features across the organization.",
-    )
     enable_root_credentials_management: bool = Field(
         default=True,
         description=(
@@ -51,22 +53,22 @@ class RootAccessConfig(BaseModel):
             "via AWS STS/SSM for emergency break-glass operations, avoiding permanent root passwords."
         ),
     )
-    delegated_admin_account: str | None = Field(
-        default=None,
+    delegate_to_audit: bool = Field(
+        default=True,
         description=(
-            "Account name (e.g. 'audit') to register as the IAM delegated administrator, "
-            "allowing security operators to manage root credentials and privileged sessions without payer access."
+            "Register the audit account (security_services.audit_account) as the IAM delegated administrator, "
+            "so security operators manage root credentials and sessions without management account access."
         ),
     )
 
 
-class OUDef(BaseModel):
+class OUDef(StrictModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str | None = ""
     children: list["OUDef"] = Field(default_factory=list)
 
 
-class ObjectLockConfig(BaseModel):
+class ObjectLockConfig(StrictModel):
     mode: Literal["GOVERNANCE", "COMPLIANCE"] = Field(
         description=(
             "GOVERNANCE can be bypassed by principals with s3:BypassGovernanceRetention. COMPLIANCE cannot be "
@@ -78,19 +80,14 @@ class ObjectLockConfig(BaseModel):
     )
 
 
-class CloudTrailConfig(BaseModel):
+class CloudTrailConfig(StrictModel):
     trail_name: str = Field(default="organization-trail")
-    bucket_prefix: str | None = Field(
-        default=None,
-        description="Deprecated and ignored: tarmac names its buckets after organization.name. Remove this line.",
-    )
-    enable_kms: bool | None = Field(
-        default=None,
+    enable_kms: bool = Field(
+        default=False,
         description=(
-            "Encrypt CloudTrail logs with a customer managed KMS key (about $1/month plus request charges). "
-            "Unset: a new deployment uses SSE-S3 (AES256), which CloudTrail applies by default, and a deployment "
-            "that already has the key keeps it. True adds the key, which Security Hub control CloudTrail.2 and the "
-            "CIS benchmark ask for; false switches an existing deployment back to SSE-S3 for new logs."
+            "Encrypt CloudTrail logs with a customer managed KMS key (about $1/month plus request charges), which "
+            "Security Hub control CloudTrail.2 and the CIS benchmark ask for. False uses SSE-S3 (AES256). Turning it "
+            "off keeps the key, so logs already written stay readable; only new logs use SSE-S3."
         ),
     )
     log_archive_account: str | None = Field(
@@ -114,9 +111,9 @@ class CloudTrailConfig(BaseModel):
         description=(
             "S3 Object Lock default retention on the CloudTrail log bucket, so logs cannot be deleted or "
             "overwritten during the period. Off unless set, because S3 does not allow Object Lock to be "
-            "disabled on a bucket once it is on. Recommended: mode GOVERNANCE, retention_days 365 (tarmac "
-            "warns on deploy while it is unset; write `object_lock: null` to acknowledge and silence the "
-            "warning). COMPLIANCE mode also blocks teardown from deleting the logs until the period ends."
+            "disabled on a bucket once it is on. Recommended: mode GOVERNANCE, retention_days 365 (`tarmac plan` "
+            "recommends it while it is off). COMPLIANCE mode also blocks teardown from deleting the logs until "
+            "the period ends."
         ),
     )
 
@@ -134,31 +131,31 @@ class CloudTrailConfig(BaseModel):
         return self
 
 
-class TerraformBackendConfig(BaseModel):
+class TerraformBackendConfig(StrictModel):
     account: str | None = Field(
         default="deployment",
         description="Designates the account name hosting Terraform remote state.",
     )
-    bucket_prefix: str | None = Field(
-        default=None,
-        description="Deprecated and ignored: tarmac names its buckets after organization.name. Remove this line.",
-    )
     dynamodb_table_name: str = Field(default="terraform-state-lock")
-    enable_dynamodb: bool | None = Field(
-        default=None,
+    enable_dynamodb: bool = Field(
+        default=False,
         description=(
-            "Create a DynamoDB table for Terraform state locking. Unset: new backends use S3-only locking "
-            "(`use_lockfile`, Terraform 1.10+; no table to pay for), and a backend that already has the table keeps "
-            "it. DynamoDB locking is deprecated in Terraform. Set true to create the table, false to remove it."
+            "Create a DynamoDB table for Terraform state locking. False uses S3-only locking (`use_lockfile`, "
+            "Terraform 1.10+; no table to pay for). DynamoDB locking is deprecated in Terraform."
         ),
     )
 
 
-class OrgDetails(BaseModel):
+class OrgDetails(StrictModel):
     name: str = Field(..., min_length=2, max_length=32)
     domain: str = Field(..., min_length=3)
     primary_region: str = Field(
-        default="eu-west-1", description="Primary AWS deployment and governance region."
+        ...,
+        min_length=1,
+        description=(
+            "Primary AWS Region: tarmac's state, the organization trail and security services aggregate here. "
+            "Fixed after the first deploy, like name."
+        ),
     )
     additional_regions: list[str] = Field(
         default_factory=list,
@@ -171,8 +168,10 @@ class OrgDetails(BaseModel):
         default=True,
         description="Purge default VPCs, subnets, and internet gateways across all enabled AWS regions in the management account.",
     )
-    tags: dict[str, str] = Field(default_factory=dict)
-    cost_allocation_tags: list[str] = Field(default_factory=list)
+    tags: dict[str, str] = Field(
+        default_factory=dict,
+        description="Tags applied to everything tarmac creates, under each account's own tags.",
+    )
 
     @field_validator("name")
     def name_must_be_lowercase_alphanumeric(cls, v: str) -> str:
@@ -185,19 +184,18 @@ class OrgDetails(BaseModel):
         return validate_tags(v)
 
 
-class SCPDef(BaseModel):
+class SCPDef(StrictModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str = Field(default="", max_length=512)
     policy_file: str = Field(..., min_length=1)
     targets: list[str] = Field(default_factory=lambda: ["root"])
 
 
-class ServiceControlPoliciesConfig(BaseModel):
-    enabled: bool = True
+class ServiceControlPoliciesConfig(StrictModel):
     policies: list[SCPDef] = Field(default_factory=list)
 
 
-class BaselineStackDef(BaseModel):
+class BaselineStackDef(StrictModel):
     name: str = Field(..., pattern=r"^[a-zA-Z][a-zA-Z0-9-]*$", max_length=64)
     template_file: str = Field(..., min_length=1)
     target_ous: list[str] = Field(..., min_length=1)
@@ -205,7 +203,7 @@ class BaselineStackDef(BaseModel):
     parameters: dict[str, str] = Field(default_factory=dict)
 
 
-class GuardDutyFeaturesConfig(BaseModel):
+class GuardDutyFeaturesConfig(StrictModel):
     """Optional GuardDuty protection plans. All off: each is billed on top of the foundational data sources.
 
     AWS enables every optional feature (except Runtime Monitoring) on a new detector unless told otherwise, so tarmac
@@ -227,7 +225,7 @@ class GuardDutyFeaturesConfig(BaseModel):
     )
 
 
-class GuardDutyConfig(BaseModel):
+class GuardDutyConfig(StrictModel):
     enabled: bool = False
     auto_enable_members: bool = True
     export_findings: bool = Field(
@@ -241,7 +239,7 @@ class GuardDutyConfig(BaseModel):
     features: GuardDutyFeaturesConfig = Field(default_factory=GuardDutyFeaturesConfig)
 
 
-class SecurityHubConfig(BaseModel):
+class SecurityHubConfig(StrictModel):
     enabled: bool = False
     auto_enable_members: bool = True
     central_configuration: bool = Field(
@@ -250,7 +248,7 @@ class SecurityHubConfig(BaseModel):
             "Manage Security Hub with one central configuration policy applied to the whole organization "
             "from the primary Region (the standards below reach every account, existing and new). Used when "
             "auto_enable_members is true. False keeps Region-by-Region local configuration, where new member "
-            "accounts join Security Hub with no standards."
+            "accounts join Security Hub with no standards. Needs auto_enable_members."
         ),
     )
     standards: list[str] = Field(default_factory=lambda: ["aws-foundational-security-best-practices"])
@@ -265,8 +263,17 @@ class SecurityHubConfig(BaseModel):
             seen.add(key)
         return v
 
+    @model_validator(mode="after")
+    def central_configuration_needs_auto_enable(self) -> "SecurityHubConfig":
+        if self.enabled and self.central_configuration and not self.auto_enable_members:
+            raise ValueError(
+                "securityhub.central_configuration enables every member account, so it needs "
+                "auto_enable_members: true. Set central_configuration: false to manage accounts Region by Region."
+            )
+        return self
 
-class ConfigRecorderConfig(BaseModel):
+
+class ConfigRecorderConfig(StrictModel):
     enabled: bool = Field(
         default=False,
         description=(
@@ -314,7 +321,7 @@ def _validate_max_subscribers(v: list[EmailStr], service_name: str) -> list[Emai
     return v
 
 
-class RootAlertConfig(BaseModel):
+class RootAlertConfig(StrictModel):
     """Email alert when the root user is used in the management account.
 
     The deny-root SCP cannot apply to the management account, so root use there is detected rather than blocked.
@@ -332,8 +339,14 @@ class RootAlertConfig(BaseModel):
     )
 
 
-class SecurityServicesConfig(BaseModel):
-    delegated_account: str = "audit"
+class SecurityServicesConfig(StrictModel):
+    audit_account: str = Field(
+        default="audit",
+        description=(
+            "The audit account: GuardDuty, Security Hub and AWS Config are delegated to it, and root access "
+            "management too while root_access_management.delegate_to_audit is on."
+        ),
+    )
     root_alert: RootAlertConfig = Field(default_factory=RootAlertConfig)
     guardduty: GuardDutyConfig = Field(default_factory=GuardDutyConfig)
     securityhub: SecurityHubConfig = Field(default_factory=SecurityHubConfig)
@@ -346,33 +359,12 @@ class SecurityServicesConfig(BaseModel):
         ),
     )
 
-    @field_validator("config_recorder", mode="before")
-    def null_means_decided_against(cls, v: Any) -> Any:
-        """`config_recorder: null` records "no AWS Config", the same way `object_lock: null` does for Object Lock."""
-        return {"enabled": False} if v is None else v
-
     @field_validator("incident_response_webhook_url")
     def validate_webhook_url(cls, v: str | None) -> str | None:
         return _validate_webhook_url(v)
 
 
-class CostAllocationTagsConfig(BaseModel):
-    enabled: bool = True
-    tags: list[str] = Field(
-        default_factory=list,
-        description=(
-            "User-defined list of cost allocation tag keys to activate and monitor in AWS Billing & Cost Management."
-        ),
-    )
-
-    @field_validator("tags", mode="before")
-    def validate_tag_list(cls, v: Any) -> list[str]:
-        if isinstance(v, str):
-            return [v]
-        return list(v) if v is not None else []
-
-
-class OrganizationConfig(BaseModel):
+class OrganizationConfig(StrictModel):
     organization: OrgDetails
     contacts: ContactsConfig
     root_access_management: RootAccessConfig = Field(default_factory=RootAccessConfig)
@@ -384,23 +376,13 @@ class OrganizationConfig(BaseModel):
     cloudtrail: CloudTrailConfig = Field(default_factory=CloudTrailConfig)
     terraform_backend: TerraformBackendConfig = Field(default_factory=TerraformBackendConfig)
     security_services: SecurityServicesConfig = Field(default_factory=SecurityServicesConfig)
-    cost_allocation_tags: CostAllocationTagsConfig = Field(default_factory=CostAllocationTagsConfig)
-    tags: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("cost_allocation_tags", mode="before")
-    def parse_cost_allocation_tags(cls, v: Any) -> Any:
-        if isinstance(v, list):
-            return {"enabled": True, "tags": v}
-        if isinstance(v, bool):
-            return {"enabled": v, "tags": []}
-        return v
-
-    @field_validator("tags")
-    def validate_org_config_tags(cls, v: dict[str, Any]) -> dict[str, str]:
-        return validate_tags(v)
+    cost_allocation_tags: list[str] = Field(
+        default_factory=list,
+        description="Tag keys to activate as cost allocation tags in AWS Billing. Empty activates none.",
+    )
 
 
-class BudgetConfig(BaseModel):
+class BudgetConfig(StrictModel):
     monthly_limit_usd: float = Field(gt=0, description="Monthly budget limit in USD.")
     alert_threshold_percent: float = Field(
         default=80.0, gt=0, le=100, description="Percentage threshold to trigger budget alerts."
@@ -439,7 +421,7 @@ class BudgetConfig(BaseModel):
         return _validate_max_subscribers(v, "Budgets")
 
 
-class AnomalyDetectionConfig(BaseModel):
+class AnomalyDetectionConfig(StrictModel):
     enabled: bool = True
     threshold_usd: float = Field(default=100.0, gt=0, description="Anomaly alert threshold in USD.")
     notification_emails: list[EmailStr] = Field(
@@ -452,7 +434,7 @@ class AnomalyDetectionConfig(BaseModel):
         return _validate_max_subscribers(v, "Cost Anomaly Detection")
 
 
-class AccountBaselineConfig(BaseModel):
+class AccountBaselineConfig(StrictModel):
     delete_default_vpc: bool = Field(
         default=True,
         description="Purge default VPCs, subnets, and internet gateways across all enabled AWS regions in this account.",
@@ -461,7 +443,7 @@ class AccountBaselineConfig(BaseModel):
     anomaly_detection: AnomalyDetectionConfig | None = None
 
 
-class AccountDef(BaseModel):
+class AccountDef(StrictModel):
     name: str = Field(..., min_length=1, max_length=50)
     email: EmailStr
     ou: str = Field(..., min_length=1)
@@ -473,9 +455,8 @@ class AccountDef(BaseModel):
         return validate_tags(tags)
 
 
-class AccountsCatalog(BaseModel):
+class AccountsCatalog(StrictModel):
     accounts: list[AccountDef]
-    tags: dict[str, str] = Field(default_factory=dict)
     quarantine_removed_accounts: bool = Field(
         default=True,
         description=(
@@ -503,19 +484,15 @@ class AccountsCatalog(BaseModel):
             seen_emails.add(norm_email)
         return accounts
 
-    @field_validator("tags")
-    def validate_catalog_tags(cls, v: dict[str, Any]) -> dict[str, str]:
-        return validate_tags(v)
 
-
-class UserDef(BaseModel):
+class UserDef(StrictModel):
     username: str = Field(..., min_length=1)
     email: EmailStr
-    first_name: str = Field(default="User")
-    last_name: str = Field(default="Account")
+    first_name: str = Field(..., min_length=1)
+    last_name: str = Field(..., min_length=1)
 
 
-class PermissionSetDef(BaseModel):
+class PermissionSetDef(StrictModel):
     name: str = Field(..., min_length=1, max_length=32)
     description: str | None = ""
     session_duration: str = Field(default="PT4H")
@@ -531,19 +508,19 @@ class PermissionSetDef(BaseModel):
         return v
 
 
-class AssignmentDef(BaseModel):
+class AssignmentDef(StrictModel):
     permission_set: str
     accounts: list[str]  # Account names or ["all"]
 
 
-class GroupDef(BaseModel):
+class GroupDef(StrictModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str | None = ""
     members: list[str] = Field(default_factory=list)
     assignments: list[AssignmentDef] = Field(default_factory=list)
 
 
-class IdentityCenterConfig(BaseModel):
+class IdentityCenterConfig(StrictModel):
     region: str | None = None
     admin_user: UserDef
     breakglass_user: UserDef
@@ -552,5 +529,5 @@ class IdentityCenterConfig(BaseModel):
     groups: list[GroupDef] = Field(default_factory=list)
 
 
-class IdentityConfigFile(BaseModel):
+class IdentityConfigFile(StrictModel):
     identity_center: IdentityCenterConfig

@@ -34,7 +34,6 @@ from .cloudformation import CloudFormationService, lock_table_wanted
 from .config_recorder import service_linked_role_arn
 from .guardduty_export import FindingsExport, findings_export, reconcile_findings_export
 from .identity import IdentityService
-from .log_encryption import resolve_log_encryption
 from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact_types
 from .ou import OUService
 from .preflight import PreflightService
@@ -296,15 +295,16 @@ class Planner:
             )
         self._check(phase, "trusted access", "AWS services", lambda: self._trusted_access(org))
         root = self.bundle.org.root_access_management
-        if root.enabled:
+        if root.enable_root_credentials_management or root.enable_root_sessions:
             self._check(phase, "root access", "centralized root access", lambda: self._root_features(org))
-            if root.delegated_admin_account:
-                self._check(
-                    phase,
-                    "delegated admin",
-                    f"IAM: {root.delegated_admin_account}",
-                    lambda: self._delegated(org, "iam.amazonaws.com", root.delegated_admin_account or ""),
-                )
+        if root.delegate_to_audit:
+            audit_name = self.bundle.get_audit_account_name()
+            self._check(
+                phase,
+                "delegated admin",
+                f"IAM: {audit_name}",
+                lambda: self._delegated(org, "iam.amazonaws.com", audit_name),
+            )
         cost_tags = self.bundle.get_cost_allocation_tags()
         if cost_tags:
             self._check(
@@ -372,14 +372,14 @@ class Planner:
                 ),
             )
         scps = self.bundle.org.service_control_policies
-        if scps and scps.enabled and scps.policies:
+        if scps.policies:
             self._check(
                 phase, "stack", Stack.ORGANIZATION_SCPS.for_org(self.org_name), lambda: self._scp_stack(scps)
             )
         elif self.org_id:
             self._removals(
                 phase,
-                "SCPs are off or none are declared",
+                "no SCPs are declared",
                 lambda t: t.teardown_scps(self.bundle, dry_run=True),
             )
 
@@ -450,7 +450,6 @@ class Planner:
         if not account_id:
             self._missing_account(phase, name, stack_name)
             return
-        resolve_log_encryption(self.session_mgr, self.bundle, self.region, account_id)
         cfn = self._member_cfn(account_id)
         self._stack(
             phase,
@@ -461,7 +460,7 @@ class Planner:
                 self.bundle,
                 self.org_id,
                 self.management_id,
-                self._account_id(self.bundle.get_audit_account_name() or "audit"),
+                self._account_id(self.bundle.get_audit_account_name()),
                 kept=self.cfn.live_resource_ids(cfn, stack_name),
             ),
             template="cloudformation/log-archive-hardening.yaml",
@@ -497,7 +496,7 @@ class Planner:
                 self.cfn._fetch_stack_outputs(
                     self._member_cfn(account_id), Stack.LOG_ARCHIVE.for_org(self.org_name)
                 ).get("CloudTrailBucketName", ""),
-                bool(self.bundle.org.cloudtrail.enable_kms),
+                self.bundle.org.cloudtrail.enable_kms,
             ),
             template="cloudformation/organization-cloudtrail.yaml",
         )
@@ -697,7 +696,7 @@ class Planner:
         if include_log_archive:
             self._log_archive_stack(phase)
 
-        audit_name = self.bundle.get_audit_account_name() or "audit"
+        audit_name = self.bundle.get_audit_account_name()
         audit_stack = Stack.AUDIT_ACCOUNT.for_org(self.org_name)
         audit_id = self._account_id(audit_name)
         if audit_id:

@@ -65,9 +65,9 @@ class SecurityServicesService:
     ) -> list[SecurityServiceReport]:
         """Configure all enabled security services (GuardDuty, Security Hub)."""
         reports: list[SecurityServiceReport] = []
-        audit_id = self._resolve_account_id(config.delegated_account, account_id_map)
+        audit_id = self._resolve_account_id(config.audit_account, account_id_map)
         if not audit_id:
-            msg = f"Delegated admin account '{config.delegated_account}' could not be resolved."
+            msg = f"Delegated admin account '{config.audit_account}' could not be resolved."
             logger.warning(msg)
             for sname, enabled in (
                 ("GuardDuty", config.guardduty.enabled),
@@ -77,7 +77,7 @@ class SecurityServicesService:
                     reports.append(
                         SecurityServiceReport(
                             service_name=sname,
-                            delegated_account=config.delegated_account,
+                            delegated_account=config.audit_account,
                             status="FAILED",
                             message=msg,
                         )
