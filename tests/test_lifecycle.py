@@ -332,7 +332,7 @@ def test_phase_5_stops_before_audit_stack_when_delegated_admin_registration_fail
     )
     cfn = MagicMock()
     mgr = MagicMock()
-    accounts = {bundle.get_audit_account_name() or "audit": "444455556666"}
+    accounts = {bundle.get_audit_account_name(): "444455556666"}
 
     with (
         patch("tarmac.cli.deploy_phases.OrganizationService", return_value=org_service),

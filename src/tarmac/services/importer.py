@@ -23,11 +23,10 @@ from ..core.config_loader import load_all_configs
 from ..core.exceptions import AWS_ERRORS
 from ..core.org_accounts import account_state, is_active, iter_accounts
 from ..core.placeholders import PLACEHOLDER_PHONE
-from ..core.stack_names import TARMAC_STACK_SUFFIXES, Stack
+from ..core.stack_names import LIVE_STACK_STATUSES, TARMAC_STACK_SUFFIXES, Stack
 from ..core.tagging import validate_tags
 from ..core.text import plural
 from .identity import BOOTSTRAP_PERMISSION_SETS, IdentityService
-from .preflight import _LIVE_STACK_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +247,7 @@ class ImportService:
         try:
             cfn = self.session_mgr.get_client("cloudformation", region_name=self.region)
             found: dict[str, int] = {}
-            for page in cfn.get_paginator("list_stacks").paginate(StackStatusFilter=_LIVE_STACK_STATUSES):
+            for page in cfn.get_paginator("list_stacks").paginate(StackStatusFilter=LIVE_STACK_STATUSES):
                 for summary in page.get("StackSummaries", []):
                     stack = str(summary.get("StackName", ""))
                     for suffix in TARMAC_STACK_SUFFIXES:
@@ -292,6 +291,19 @@ class ImportService:
                 str(s["ServicePrincipal"])
                 for page in self.org.get_paginator("list_aws_service_access_for_organization").paginate()
                 for s in page.get("EnabledServicePrincipals", [])
+            }
+        except _READ_ERRORS:
+            return set()
+
+    def _iam_delegated_admins(self) -> set[str]:
+        """Names of the accounts registered as IAM's delegated administrator for root access management."""
+        try:
+            return {
+                str(admin["Name"])
+                for page in self.org.get_paginator("list_delegated_administrators").paginate(
+                    ServicePrincipal="iam.amazonaws.com"
+                )
+                for admin in page.get("DelegatedAdministrators", [])
             }
         except _READ_ERRORS:
             return set()
@@ -537,23 +549,23 @@ class ImportService:
             },
             "contacts": contacts,
             "root_access_management": {
-                "enabled": "iam.amazonaws.com" in trusted,
                 "enable_root_credentials_management": "iam.amazonaws.com" in trusted,
                 "enable_root_sessions": "iam.amazonaws.com" in trusted,
-                "delegated_admin_account": security_account,
+                "delegate_to_audit": bool(security_account)
+                and security_account in self._iam_delegated_admins(),
             },
-            "service_control_policies": {"enabled": bool(scps), "policies": scps},
+            "service_control_policies": {"policies": scps},
             "ou_structure": ou_structure,
             "cloudtrail": {
                 "trail_name": trail_name or "organization-trail",
                 "log_archive_account": log_account,
             },
             "terraform_backend": {"account": deploy_account},
-            "security_services": {"delegated_account": security_account or "audit"},
+            "security_services": {"audit_account": security_account or "audit"},
         }
         org_tags = _clean_tags(self._tags(root_id), self.report.todos, "the organization root")
         if org_tags:
-            organization["tags"] = org_tags
+            organization["organization"]["tags"] = org_tags
 
         for label, value in (
             ("Audit", security_account),

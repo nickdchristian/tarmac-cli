@@ -135,9 +135,12 @@ def test_enable_trusted_services_defaults(stubs):
     assert svc.enable_trusted_services() == DEFAULT_TRUSTED_SERVICES
 
 
-def test_configure_root_access_disabled_makes_no_calls(stubs):
+def test_configure_root_access_off_makes_no_calls(stubs):
     svc, _ = stubs
-    result = svc.configure_root_access(RootAccessConfig(enabled=False))
+    off = RootAccessConfig(
+        enable_root_credentials_management=False, enable_root_sessions=False, delegate_to_audit=False
+    )
+    result = svc.configure_root_access(off, "audit")
     assert result == {
         "iam_trusted_access": False,
         "root_credentials_management": False,
@@ -158,9 +161,7 @@ def test_configure_root_access_full_with_name_normalized_admin(stubs):
         {},
         {"AccountId": "222222222222", "ServicePrincipal": "iam.amazonaws.com"},
     )
-    result = svc.configure_root_access(
-        RootAccessConfig(delegated_admin_account="Log Archive"), {"log_archive": "222222222222"}
-    )
+    result = svc.configure_root_access(RootAccessConfig(), "Log Archive", {"log_archive": "222222222222"})
     assert result == {
         "iam_trusted_access": True,
         "root_credentials_management": True,
@@ -174,12 +175,11 @@ def test_configure_root_access_feature_flags_skip_calls(stubs):
     s["organizations"].add_response(
         "enable_aws_service_access", {}, {"ServicePrincipal": "iam.amazonaws.com"}
     )
-    result = svc.configure_root_access(
-        RootAccessConfig(enable_root_credentials_management=False, enable_root_sessions=False)
-    )
+    s["iam"].add_response("enable_organizations_root_sessions", {})
+    result = svc.configure_root_access(RootAccessConfig(enable_root_credentials_management=False))
     assert result["iam_trusted_access"] is True
     assert result["root_credentials_management"] is False
-    assert result["root_sessions"] is False
+    assert result["root_sessions"] is True
 
 
 def test_configure_root_access_records_failures(stubs):
@@ -218,8 +218,8 @@ def test_delegated_admin_already_registered_counts_as_success(stubs):
         RootAccessConfig(
             enable_root_credentials_management=False,
             enable_root_sessions=False,
-            delegated_admin_account="audit",
         ),
+        "audit",
         {"audit": "333333333333"},
     )
     assert result["delegated_admin"] is True
@@ -234,8 +234,8 @@ def test_delegated_admin_unknown_account(stubs):
         RootAccessConfig(
             enable_root_credentials_management=False,
             enable_root_sessions=False,
-            delegated_admin_account="audit",
         ),
+        "audit",
         {"other": "444444444444"},
     )
     assert result["delegated_admin"] is False
@@ -264,8 +264,8 @@ def test_delegated_admin_resolves_accounts_from_paginated_active_list(stubs):
         RootAccessConfig(
             enable_root_credentials_management=False,
             enable_root_sessions=False,
-            delegated_admin_account="audit",
-        )
+        ),
+        "audit",
     )
     assert result["delegated_admin"] is True
 
@@ -279,8 +279,8 @@ def test_delegated_admin_lookup_failure_degrades(stubs):
         RootAccessConfig(
             enable_root_credentials_management=False,
             enable_root_sessions=False,
-            delegated_admin_account="audit",
-        )
+        ),
+        "audit",
     )
     assert result["delegated_admin"] is False
 

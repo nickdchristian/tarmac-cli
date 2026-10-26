@@ -11,7 +11,6 @@ from ..core.text import plural
 from ..services.cloudformation import CloudFormationService
 from ..services.config_recorder import ConfigRecorderService
 from ..services.stack_parameters import (
-    config_recorder_advice,
     config_recorder_parameters,
     config_recorder_regions,
 )
@@ -30,9 +29,6 @@ def deploy_config_recorder(
     custom_tags: dict[str, str] | None = None,
 ) -> None:
     """Deploy the recorder StackSet and management account stacks when ``config_recorder.enabled`` is set."""
-    advice = config_recorder_advice(bundle)
-    if advice:
-        print_warning(advice)
     settings = bundle.org.security_services.config_recorder
     if not settings.enabled:
         apply_removals(

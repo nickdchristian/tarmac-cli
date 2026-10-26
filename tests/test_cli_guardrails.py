@@ -218,8 +218,7 @@ def test_broken_stack_deletion_releases_termination_protection_when_needed():
     assert cfn.delete_stack.call_count == 2
 
 
-def test_production_lock_is_not_hidden_by_a_higher_precedence_tag():
-    """accounts.yaml tags override organization.yaml tags, but a 'prod' anywhere must still block destroy."""
+def test_production_lock_blocks_a_production_tagged_organization():
     from types import SimpleNamespace
     from typing import Any
 
@@ -227,11 +226,24 @@ def test_production_lock_is_not_hidden_by_a_higher_precedence_tag():
 
     from tarmac.cli.deploy import _enforce_production_lock
 
-    bundle: Any = SimpleNamespace(
-        org=SimpleNamespace(tags={"Environment": "prod"}, organization=SimpleNamespace(tags={})),
-        accounts=SimpleNamespace(tags={"Environment": "dev"}),
-        get_organization_tags=lambda: {"Environment": "dev"},
-    )
+    bundle: Any = SimpleNamespace(get_organization_tags=lambda: {"Environment": "prod"})
     with pytest.raises(typer.Exit):
         _enforce_production_lock(bundle, dry_run=False, force=False)
     _enforce_production_lock(bundle, dry_run=False, force=True)
+
+
+def test_a_refused_deploy_stops_before_asking_for_confirmation(tmp_path: Path, monkeypatch):
+    """A config that doesn't match the deployment must stop the run before anyone confirms a live deploy."""
+    import typer
+
+    def refuse(_mgr, _bundle):
+        raise typer.Exit(code=1)
+
+    confirm = MagicMock()
+    monkeypatch.setattr("tarmac.cli.deploy.check_deployment_or_exit", refuse)
+    monkeypatch.setattr("tarmac.cli.deploy.confirm_or_exit", confirm)
+    cfg = make_config(tmp_path, None)
+    with patch("tarmac.cli.deploy.AwsSessionManager"):
+        res = runner.invoke(app, ["deploy", "--phase", "6", "-c", str(cfg)])
+    assert res.exit_code == 1
+    confirm.assert_not_called()

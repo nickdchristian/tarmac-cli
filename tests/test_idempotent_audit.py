@@ -98,10 +98,9 @@ def test_root_access_features_already_on_are_unchanged(caplog):
         "EnabledFeatures": ["RootCredentialsManagement", "RootSessions"]
     }
     config = MagicMock(
-        enabled=True,
         enable_root_credentials_management=True,
         enable_root_sessions=True,
-        delegated_admin_account=None,
+        delegate_to_audit=False,
     )
 
     result = svc.configure_root_access(config)

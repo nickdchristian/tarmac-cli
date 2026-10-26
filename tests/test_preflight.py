@@ -182,23 +182,13 @@ def test_check_cost_allocation_tags_warn_inactive(mock_session, test_bundle):
     assert "Environment" in res.live_value
 
 
-def test_check_cost_allocation_tags_disabled(mock_session, test_bundle):
-    test_bundle.org.cost_allocation_tags.enabled = False
+def test_check_cost_allocation_tags_passes_when_none_are_declared(mock_session, test_bundle):
+    test_bundle.org.cost_allocation_tags = []
     service = PreflightService(mock_session, test_bundle)
     res = service.check_cost_allocation_tags()
 
     assert res.status == PreflightCheckStatus.PASS
-    assert "Disabled" in res.live_value
-
-
-def test_check_cost_allocation_tags_warn_none_defined(mock_session, test_bundle):
-    test_bundle.org.cost_allocation_tags.tags = []
-    service = PreflightService(mock_session, test_bundle)
-    res = service.check_cost_allocation_tags()
-
-    assert res.status == PreflightCheckStatus.WARN
-    assert "None defined" in res.live_value
-    assert "Define cost_allocation_tags" in (res.action_required or "")
+    assert res.live_value == "None in config"
 
 
 def _sns_service(mock_session, test_bundle):
@@ -409,7 +399,7 @@ def test_run_all_checks_compilation(mock_session, test_bundle):
     assert report.can_proceed is True
     assert report.failures == 0
     assert report.passed > 0
-    assert len(report.checks) == 20
+    assert len(report.checks) == 19
 
 
 def test_check_account_quota_pass(mock_session, test_bundle):
