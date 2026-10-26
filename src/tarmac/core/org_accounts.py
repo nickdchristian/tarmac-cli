@@ -41,6 +41,11 @@ def is_closed(account: dict[str, Any]) -> bool:
     return account_state(account) in CLOSED_STATES
 
 
+def inactive_account_ids(org_client: Any) -> set[str]:
+    """IDs of the accounts that are not ACTIVE (suspended, closing or closed), which AWS can no longer reach."""
+    return {str(a["Id"]) for a in iter_accounts(org_client) if not is_active(a)}
+
+
 def active_account_ids(org_client: Any) -> dict[str, str]:
     """{AccountName: AccountId} for every ACTIVE account. AWS errors propagate."""
     return {str(a["Name"]): str(a["Id"]) for a in iter_accounts(org_client) if is_active(a)}

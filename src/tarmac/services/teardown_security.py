@@ -212,6 +212,17 @@ class SecurityServicesTeardown:
             dry_run,
             "deregister Security Hub delegated administrator",
         )
+        self.disable_hubs(results, region, audit_id, member_ids, dry_run)
+
+    def disable_hubs(
+        self,
+        results: list[TeardownItemReport],
+        region: str,
+        audit_id: str,
+        member_ids: set[str],
+        dry_run: bool,
+    ) -> None:
+        """Disable Security Hub in one Region of the audit account and ``member_ids``."""
         for acct in sorted({audit_id, *member_ids}):
             self._record(
                 results,

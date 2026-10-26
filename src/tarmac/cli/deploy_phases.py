@@ -25,7 +25,7 @@ from ..services.organization import OrganizationService
 from ..services.ou import OUService
 from ..services.scp import SCPService
 from ..services.security import SecurityServicesService
-from ..services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff
+from ..services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff, regions_off
 from ..services.settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from ..services.stack_parameters import (
     audit_hardening_parameters,
@@ -564,23 +564,28 @@ def _deploy_hardening_stacks(
 def _turn_off_security_services(
     session_mgr: AwsSessionManager, bundle: ConfigBundle, target_region: str, accts: dict[str, str]
 ) -> None:
-    """Suspend GuardDuty and disable Security Hub where tarmac runs them but the config turns them off."""
-    sec_cfg = bundle.org.security_services
-    audit_id = bundle.resolve_account_id(sec_cfg.audit_account, accts)
-    if not audit_id or (sec_cfg.guardduty.enabled and sec_cfg.securityhub.enabled):
+    """Suspend GuardDuty and disable Security Hub where tarmac set them up but the config turns them off, or no
+    longer lists the Region."""
+    recorded = inventory.active()
+    audit_id = bundle.resolve_account_id(bundle.org.security_services.audit_account, accts)
+    if not audit_id or recorded is None or not recorded.bucket:
         return
-    regions = [target_region, *bundle.org.organization.additional_regions]
     off = SecurityServicesOff(session_mgr)
-    if not sec_cfg.guardduty.enabled:
-        apply_removals("GuardDuty", off.suspend_guardduty(audit_id, regions, dry_run=False))
-    if not sec_cfg.securityhub.enabled:
+    guardduty = regions_off(bundle, recorded, "guardduty", target_region)
+    if guardduty:
+        apply_removals("GuardDuty", off.suspend_guardduty(audit_id, guardduty, dry_run=False))
+    securityhub = regions_off(bundle, recorded, "securityhub", target_region)
+    if securityhub:
         mgmt_id = str(session_mgr.get_caller_identity().get("Account", ""))
-        if off.disable_securityhub(bundle, audit_id, regions, accts, mgmt_id, dry_run=True):
-            print_warning(SECURITY_HUB_WARNING)
-            apply_removals(
-                "Security Hub",
-                off.disable_securityhub(bundle, audit_id, regions, accts, mgmt_id, dry_run=False),
+
+        def disable(dry_run: bool) -> list[TeardownItemReport]:
+            return off.disable_securityhub(
+                bundle, audit_id, securityhub, accts, mgmt_id, target_region, dry_run=dry_run
             )
+
+        if disable(True):
+            print_warning(SECURITY_HUB_WARNING)
+            apply_removals("Security Hub", disable(False))
 
 
 def _delegate_security_services(
@@ -610,6 +615,9 @@ def _delegate_security_services(
     )
     failed: list[str] = []
     for rep in reports:
+        # Recorded per Region, so a later deploy can turn off only what tarmac set up.
+        for region in rep.regions:
+            inventory.note(f"{rep.service_name.lower()}:{region}", {"admin": rep.delegated_account})
         if rep.status in ("ENABLED", "ALREADY_CONFIGURED"):
             print_success(f"Security Delegation ({rep.service_name}): {rep.message}")
         else:

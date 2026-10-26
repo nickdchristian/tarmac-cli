@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from ..core import inventory
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
 from ..core.exceptions import GovernanceError
@@ -33,7 +34,9 @@ def deploy_config_recorder(
     if not settings.enabled:
         apply_removals(
             "AWS Config recorders",
-            TeardownService(session_mgr).teardown_config_recorder(bundle, target_region),
+            TeardownService(session_mgr).teardown_config_recorder(
+                bundle, target_region, recorded=inventory.active()
+            ),
         )
         return
 
@@ -75,6 +78,14 @@ def deploy_config_recorder(
         tags=custom_tags,
         org_tags=bundle.get_organization_tags(),
     )
+    for region in regions:  # a management stack that fails to deploy raises before this
+        inventory.note(f"config-recorder:{region}")
+    dropped = inventory.regions_to_remove(inventory.active(), "config-recorder", regions)
+    if dropped:
+        apply_removals(
+            "AWS Config recorders",
+            TeardownService(session_mgr).teardown_config_recorder(bundle, target_region, regions=dropped),
+        )
     if report.failures:
         raise GovernanceError(
             "Phase 5 failed: AWS Config recorders are not current in every account.",

@@ -33,7 +33,8 @@ def _cf() -> Any:
 
 def _session(cf: Any) -> MagicMock:
     mgr = MagicMock(spec=AwsSessionManager)
-    mgr.get_client.return_value = cf
+    org = MagicMock()  # no closed accounts
+    mgr.get_client.side_effect = lambda service, **_kw: org if service == "organizations" else cf
     mgr.get_caller_identity.return_value = {"Account": "111111111111"}
     return mgr
 
