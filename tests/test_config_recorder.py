@@ -117,6 +117,16 @@ def _organization(org: Any, stub: Stubber, accounts: list[dict[str, str]] | None
     )
 
 
+def _closed_then_root(stub: Stubber) -> None:
+    """Removal reads the closed accounts first, then the root it removes the instances through."""
+    stub.add_response(
+        "list_accounts",
+        {"Accounts": [{"Id": MGMT, "Status": "ACTIVE"}, {"Id": "333333333333", "Status": "ACTIVE"}]},
+        {},
+    )
+    stub.add_response("list_roots", {"Roots": [{"Id": "r-ab12"}]}, {})
+
+
 TARGETS = {
     "OrganizationalUnitIds": ["r-ab12"],
     "AccountFilterType": "DIFFERENCE",
@@ -204,6 +214,7 @@ def test_first_run_creates_the_stack_set_its_instances_and_the_management_stacks
             },
         )
         cfs.add_response("list_stack_instances", {"Summaries": []}, {"StackSetName": NAME})
+        cfs.add_response("list_stack_set_auto_deployment_targets", {"Summaries": []}, {"StackSetName": NAME})
         cfs.add_response(
             "create_stack_instances",
             {"OperationId": "op-1"},
@@ -263,6 +274,7 @@ def test_unchanged_stack_set_with_all_regions_current_changes_nothing():
         cfs.add_response("describe_stack_set", _existing(template), {"StackSetName": NAME})
         # tags merge to the defaults plus the ownership tag
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
+        cfs.add_response("list_stack_set_auto_deployment_targets", {"Summaries": []}, {"StackSetName": NAME})
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
         iams.add_response("get_role", SLR, _GET_SLR)
 
@@ -300,6 +312,7 @@ def test_changed_template_updates_the_stack_set_and_waits_for_the_operation():
             {"StackSetName": NAME, "OperationId": "op-2"},
         )
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
+        cfs.add_response("list_stack_set_auto_deployment_targets", {"Summaries": []}, {"StackSetName": NAME})
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
         iams.add_response("get_role", SLR, _GET_SLR)
 
@@ -354,12 +367,14 @@ def test_regions_no_longer_configured_are_removed_and_failed_instances_are_repor
         _organization(org, orgs)
         cfs.add_response("describe_stack_set", _existing(template), {"StackSetName": NAME})
         cfs.add_response("list_stack_instances", _instances("eu-west-1", "us-west-2"), {"StackSetName": NAME})
+        cfs.add_response("list_stack_set_auto_deployment_targets", {"Summaries": []}, {"StackSetName": NAME})
         cfs.add_response(
             "delete_stack_instances",
             {"OperationId": "op-3"},
             {
                 "StackSetName": NAME,
-                "DeploymentTargets": TARGETS,
+                # Without the account filter, so the Region also leaves the auto-deployment targets.
+                "DeploymentTargets": {"OrganizationalUnitIds": ["r-ab12"]},
                 "Regions": ["us-west-2"],
                 "RetainStacks": False,
                 "OperationPreferences": PREFS,
@@ -383,6 +398,154 @@ def test_regions_no_longer_configured_are_removed_and_failed_instances_are_repor
 
     assert len(report.failures) == 1
     assert "333333333333 eu-west-1: OUTDATED AWS Config recorder limit reached" in report.failures[0]
+
+
+def _account_instance(account: str, region: str) -> dict[str, Any]:
+    return {
+        "StackSetId": "id",
+        "Region": region,
+        "Account": account,
+        "Status": "OUTDATED" if account == "444444444444" else "CURRENT",
+        "OrganizationalUnitId": "r-ab12",
+    }
+
+
+def test_instances_in_closed_accounts_are_released_through_their_ou_keeping_their_stacks():
+    # A closed account's instances stay OUTDATED for good and fail every deploy and destroy after it.
+    cf, org, iam, mgr = _setup()
+    template = TEMPLATE.read_text(encoding="utf-8")
+    with Stubber(cf) as cfs, Stubber(org) as orgs, Stubber(iam) as iams:
+        cfs.add_response("activate_organizations_access", {}, {})
+        _organization(org, orgs)
+        cfs.add_response("describe_stack_set", _existing(template), {"StackSetName": NAME})
+        cfs.add_response(
+            "list_stack_instances",
+            {
+                "Summaries": [
+                    _account_instance("333333333333", "eu-west-1"),
+                    _account_instance("444444444444", "eu-west-1"),
+                    _account_instance("444444444444", "us-west-2"),
+                ]
+            },
+            {"StackSetName": NAME},
+        )
+        cfs.add_response(
+            "delete_stack_instances",
+            {"OperationId": "op-6"},
+            {
+                "StackSetName": NAME,
+                "DeploymentTargets": {
+                    "OrganizationalUnitIds": ["r-ab12"],
+                    "Accounts": ["444444444444"],
+                    "AccountFilterType": "INTERSECTION",
+                },
+                "Regions": ["eu-west-1", "us-west-2"],
+                "RetainStacks": True,
+                "OperationPreferences": PREFS,
+            },
+        )
+        cfs.add_response(
+            "describe_stack_set_operation",
+            {"StackSetOperation": {"Status": "SUCCEEDED"}},
+            {"StackSetName": NAME, "OperationId": "op-6"},
+        )
+        cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
+        cfs.add_response("list_stack_set_auto_deployment_targets", {"Summaries": []}, {"StackSetName": NAME})
+        cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
+        iams.add_response("get_role", SLR, _GET_SLR)
+
+        report = _deploy(_service(mgr), ["eu-west-1"])
+
+        cfs.assert_no_pending_responses()
+
+    assert report.failures == []
+
+
+def test_a_region_left_in_the_auto_deployment_targets_is_removed():
+    # New accounts would otherwise still get the Region, as an account created after it was dropped did.
+    cf, org, iam, mgr = _setup()
+    template = TEMPLATE.read_text(encoding="utf-8")
+    with Stubber(cf) as cfs, Stubber(org) as orgs, Stubber(iam) as iams:
+        cfs.add_response("activate_organizations_access", {}, {})
+        _organization(org, orgs)
+        cfs.add_response("describe_stack_set", _existing(template), {"StackSetName": NAME})
+        cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
+        cfs.add_response(
+            "list_stack_set_auto_deployment_targets",
+            {"Summaries": [{"OrganizationalUnitId": "r-ab12", "Regions": ["eu-west-1", "us-west-2"]}]},
+            {"StackSetName": NAME},
+        )
+        cfs.add_response(
+            "delete_stack_instances",
+            {"OperationId": "op-7"},
+            {
+                "StackSetName": NAME,
+                "DeploymentTargets": {"OrganizationalUnitIds": ["r-ab12"]},
+                "Regions": ["us-west-2"],
+                "RetainStacks": False,
+                "OperationPreferences": PREFS,
+            },
+        )
+        cfs.add_response(
+            "describe_stack_set_operation",
+            {"StackSetOperation": {"Status": "SUCCEEDED"}},
+            {"StackSetName": NAME, "OperationId": "op-7"},
+        )
+        cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
+        iams.add_response("get_role", SLR, _GET_SLR)
+
+        report = _deploy(_service(mgr), ["eu-west-1"])
+
+        cfs.assert_no_pending_responses()
+
+    assert report.failures == []
+
+
+def test_a_dropped_region_loses_its_management_stack_only_where_one_was_recorded(monkeypatch):
+    from tarmac.core import inventory
+
+    service = MagicMock()
+    service.return_value.deploy.return_value = MagicMock(
+        failures=[], management_stacks=[], stack_set_action="UNCHANGED"
+    )
+    monkeypatch.setattr("tarmac.cli.deploy_config_recorder.ConfigRecorderService", service)
+    teardown = MagicMock()
+    teardown.return_value.teardown_dropped_config_regions.return_value = []
+    monkeypatch.setattr("tarmac.cli.deploy_config_recorder.TeardownService", teardown)
+    recorded = inventory.activate()
+    recorded.entries = {"config-recorder": {"eu-west-1": {}, "us-west-2": {}}}
+    cfn_service = MagicMock()
+    cfn_service._fetch_stack_outputs.return_value = {"ConfigBucketName": "acme-org-config-logs-222222222222"}
+    bundle = _bundle(config={"enabled": True})
+
+    deploy_config_recorder(
+        _session(), cfn_service, bundle, "eu-west-1", ROOT, {"log-archive": "222222222222"}
+    )
+
+    teardown.return_value.teardown_dropped_config_regions.assert_called_once_with(
+        bundle, "eu-west-1", ["us-west-2"]
+    )
+    assert set(recorded.get("config-recorder")) == {"eu-west-1", "us-west-2"}
+
+
+def test_teardown_reaches_every_region_a_management_stack_was_recorded_in(monkeypatch):
+    from tarmac.core.inventory import Inventory
+
+    remove = MagicMock(return_value=[])
+    monkeypatch.setattr("tarmac.services.teardown_config.ConfigRecorderService.remove", remove)
+    bundle = MagicMock()
+    bundle.org.organization.name = "acme"
+    bundle.org.organization.additional_regions = []
+    recorded = Inventory()
+    recorded.entries = {"config-recorder": {"us-west-2": {}}}
+
+    TeardownService(_session()).teardown_config_recorder(bundle, "eu-west-1", recorded=recorded)
+    TeardownService(_session()).teardown_dropped_config_regions(bundle, "eu-west-1", ["us-west-2"])
+
+    full, dropped = (c.kwargs for c in remove.call_args_list)
+    assert (full["regions"], full["stack_set"]) == (["eu-west-1", "us-west-2"], True)
+    # A dropped Region keeps the StackSet, which serves the Regions still declared.
+    assert (dropped["regions"], dropped["stack_set"]) == (["us-west-2"], False)
 
 
 def test_an_operation_that_never_finishes_times_out_with_guidance():
@@ -429,14 +592,14 @@ def test_remove_deletes_instances_then_the_stack_set_then_the_management_stacks(
     cfn_service._get_stack_status.return_value = "CREATE_COMPLETE"
     with Stubber(cf) as cfs, Stubber(org) as orgs:
         cfs.add_response("describe_stack_set", _existing("# t"), {"StackSetName": NAME})
+        _closed_then_root(orgs)
         cfs.add_response("list_stack_instances", _instances("eu-west-1", "us-east-1"), {"StackSetName": NAME})
-        _organization(org, orgs)
         cfs.add_response(
             "delete_stack_instances",
             {"OperationId": "op-4"},
             {
                 "StackSetName": NAME,
-                "DeploymentTargets": TARGETS,
+                "DeploymentTargets": {"OrganizationalUnitIds": ["r-ab12"]},
                 "Regions": ["eu-west-1", "us-east-1"],
                 "RetainStacks": False,
                 "OperationPreferences": PREFS,
@@ -481,8 +644,8 @@ def test_remove_reports_instances_that_could_not_be_deleted():
     cfn_service._get_stack_status.return_value = None
     with Stubber(cf) as cfs, Stubber(org) as orgs:
         cfs.add_response("describe_stack_set", _existing("# t"), {"StackSetName": NAME})
+        _closed_then_root(orgs)
         cfs.add_response("list_stack_instances", _instances("eu-west-1"), {"StackSetName": NAME})
-        _organization(org, orgs)
         cfs.add_response("delete_stack_instances", {"OperationId": "op-5"}, None)
         cfs.add_response("describe_stack_set_operation", {"StackSetOperation": {"Status": "FAILED"}}, None)
         cfs.add_response("list_stack_instances", _instances("eu-west-1", status="INOPERABLE"), None)

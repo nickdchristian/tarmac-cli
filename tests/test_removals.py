@@ -43,7 +43,7 @@ def test_a_disabled_config_recorder_is_removed_on_deploy(bundle, monkeypatch):
 
     deploy_config_recorder(MagicMock(), MagicMock(), bundle, "eu-west-1", Path("."), {})
 
-    teardown.return_value.teardown_config_recorder.assert_called_once_with(bundle, "eu-west-1")
+    teardown.return_value.teardown_config_recorder.assert_called_once_with(bundle, "eu-west-1", recorded=None)
 
 
 def test_the_dry_run_lists_what_a_deploy_would_remove(bundle, monkeypatch):

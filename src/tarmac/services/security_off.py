@@ -1,9 +1,13 @@
-"""GuardDuty or Security Hub turned off in the config.
+"""GuardDuty or Security Hub turned off in the config, or in a Region the config no longer lists.
+
+Only Regions the inventory records tarmac setting the service up in are touched, and only while the audit account
+is still its delegated administrator there: a service someone else runs is left alone.
 
 GuardDuty is suspended in the member accounts: monitoring and charges stop, findings are kept, and turning it back on
 resumes it. It stays on in the audit account, because AWS only suspends a detector once its members are disassociated.
 Security Hub has no suspend, so it is disabled, and AWS then deletes its findings (archived after 30 days, active
-after 90).
+after 90). It is only turned off as a whole: in a Region the config drops while it stays on, it is left running and
+the deploy says so, because under central configuration (the default) AWS refuses to disable one account's hub.
 """
 
 import logging
@@ -13,6 +17,7 @@ from botocore.exceptions import ClientError
 
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle
+from ..core.inventory import Inventory, regions_to_remove
 from ..core.models import TeardownItemReport
 from ..core.text import plural
 from .teardown_security import SecurityServicesTeardown
@@ -23,6 +28,23 @@ SECURITY_HUB_WARNING = (
     "Disabling Security Hub. AWS deletes its archived findings after 30 days and its active findings, insights and "
     "settings after 90 days; turning it back on before then restores them. Export any findings you need to keep first."
 )
+
+
+def kept_hubs_note(regions: list[str]) -> str:
+    return (
+        f"Security Hub stays on in {', '.join(regions)}, which the config no longer lists. Tarmac only turns it off "
+        "everywhere (securityhub.enabled: false): under central configuration AWS refuses to disable one account's "
+        "hub, even in a Region that is no longer linked."
+    )
+
+
+def regions_off(
+    bundle: ConfigBundle, recorded: Inventory | None, service: str, primary_region: str
+) -> list[str]:
+    """Where tarmac set up ``service`` ("guardduty" or "securityhub") and the config no longer wants it."""
+    enabled = getattr(bundle.org.security_services, service).enabled
+    keep = [primary_region, *bundle.org.organization.additional_regions] if enabled else []
+    return regions_to_remove(recorded, service, keep)
 
 
 class SecurityServicesOff:
@@ -90,6 +112,7 @@ class SecurityServicesOff:
         regions: list[str],
         accounts: dict[str, str],
         mgmt_id: str,
+        primary_region: str,
         dry_run: bool,
     ) -> list[TeardownItemReport]:
         """Disable Security Hub the way `destroy --disable-security-services` does, in Regions where tarmac runs it."""
@@ -99,6 +122,6 @@ class SecurityServicesOff:
         for region in regions:
             if self._delegated("securityhub", region, audit_id):
                 teardown.disable_securityhub(
-                    results, region, region == regions[0], audit_id, members, dry_run
+                    results, region, region == primary_region, audit_id, members, dry_run
                 )
         return [r for r in results if r.action != "NOT_FOUND"]

@@ -3,10 +3,14 @@
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from tarmac.cli import deploy_phases
+from tarmac.core import inventory
+from tarmac.core.inventory import Inventory
 from tarmac.core.models import TeardownItemReport
 from tarmac.services.security import SecurityServicesService
-from tarmac.services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff
+from tarmac.services.security_off import SECURITY_HUB_WARNING, SecurityServicesOff, regions_off
 
 AUDIT = "222222222222"
 
@@ -97,6 +101,7 @@ def test_security_hub_is_disabled_after_a_warning(monkeypatch, capsys):
     )
     off.disable_securityhub.return_value = [item]
     monkeypatch.setattr(deploy_phases, "SecurityServicesOff", lambda _s: off)
+    _recorded({"guardduty": ["us-east-1"], "securityhub": ["us-east-1"]})
 
     deploy_phases._turn_off_security_services(MagicMock(), bundle, "us-east-1", {"audit": AUDIT})
 
@@ -104,3 +109,92 @@ def test_security_hub_is_disabled_after_a_warning(monkeypatch, capsys):
     assert out.index(SECURITY_HUB_WARNING[:40]) < out.index("Disable Security Hub")
     assert [c.kwargs["dry_run"] for c in off.disable_securityhub.call_args_list] == [True, False]
     off.suspend_guardduty.assert_not_called()
+
+
+def _recorded(regions: dict[str, list[str]]) -> Inventory:
+    """The active inventory, connected to a bucket, recording ``{service: [Region, ...]}``."""
+    inv = inventory.activate()
+    inv.bucket = "inventory-bucket"
+    inv.entries = {kind: {r: {"admin": AUDIT} for r in rs} for kind, rs in regions.items()}
+    return inv
+
+
+def _bundle(guardduty: bool, securityhub: bool, additional: list[str] | None = None) -> MagicMock:
+    bundle = MagicMock()
+    bundle.org.security_services.guardduty.enabled = guardduty
+    bundle.org.security_services.securityhub.enabled = securityhub
+    bundle.org.organization.additional_regions = additional or []
+    bundle.resolve_account_id.return_value = AUDIT
+    return bundle
+
+
+@pytest.mark.parametrize(
+    ("enabled", "additional", "expected"),
+    [
+        (True, ["us-west-2"], []),
+        (True, [], ["us-west-2"]),  # the Region was dropped
+        (False, ["us-west-2"], ["us-east-1", "us-west-2"]),  # the service was turned off
+    ],
+)
+def test_only_recorded_regions_the_config_no_longer_wants_are_turned_off(enabled, additional, expected):
+    recorded = _recorded({"guardduty": ["us-east-1", "us-west-2"]})
+    bundle = _bundle(guardduty=enabled, securityhub=True, additional=additional)
+    assert regions_off(bundle, recorded, "guardduty", "us-east-1") == expected
+    assert regions_off(bundle, recorded, "securityhub", "us-east-1") == []
+    assert regions_off(bundle, None, "guardduty", "us-east-1") == []
+
+
+def test_a_service_tarmac_never_recorded_is_left_alone_even_when_the_config_turns_it_off(monkeypatch):
+    # An adopted organization can have GuardDuty and Security Hub delegated to an account named audit by
+    # someone else; imported with both off, the next deploy must not disable them.
+    off = MagicMock()
+    monkeypatch.setattr(deploy_phases, "SecurityServicesOff", lambda _s: off)
+    _recorded({})
+
+    deploy_phases._turn_off_security_services(
+        MagicMock(), _bundle(guardduty=False, securityhub=False), "us-east-1", {"audit": AUDIT}
+    )
+
+    off.suspend_guardduty.assert_not_called()
+    off.disable_securityhub.assert_not_called()
+
+
+def test_a_dropped_region_suspends_guardduty_there_only(monkeypatch):
+    off = MagicMock()
+    off.suspend_guardduty.return_value = []
+    monkeypatch.setattr(deploy_phases, "SecurityServicesOff", lambda _s: off)
+    _recorded({"guardduty": ["us-east-1", "us-west-2"]})
+
+    deploy_phases._turn_off_security_services(
+        MagicMock(), _bundle(guardduty=True, securityhub=True), "us-east-1", {"audit": AUDIT}
+    )
+
+    off.suspend_guardduty.assert_called_once_with(AUDIT, ["us-west-2"], dry_run=False)
+    off.disable_securityhub.assert_not_called()
+
+
+def test_destroy_says_which_security_services_it_keeps():
+    from tarmac.services.teardown import TeardownService
+
+    bundle = _bundle(guardduty=True, securityhub=False)
+    bundle.org.security_services.audit_account = "audit"
+
+    (item,) = TeardownService(MagicMock()).report_security_services_kept(bundle)
+
+    assert (item.resource_name, item.action) == ("GuardDuty", "SKIPPED")
+    assert "--disable-security-services" in item.message
+
+
+def test_security_hub_in_a_dropped_region_is_left_on_with_a_warning(monkeypatch, capsys):
+    # Under central configuration AWS refused, live: "This account is currently associated with a central
+    # configuration policy, so only the administrator can access this operation."
+    off = MagicMock()
+    monkeypatch.setattr(deploy_phases, "SecurityServicesOff", lambda _s: off)
+    _recorded({"securityhub": ["us-east-1", "us-west-2"]})
+
+    deploy_phases._turn_off_security_services(
+        MagicMock(), _bundle(guardduty=True, securityhub=True), "us-east-1", {"audit": AUDIT}
+    )
+
+    off.disable_securityhub.assert_not_called()
+    assert "Security Hub stays on in us-west-2" in capsys.readouterr().out

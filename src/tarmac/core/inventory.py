@@ -42,6 +42,11 @@ TRACKED: dict[str, frozenset[str]] = {
     "delegated-admin": frozenset({"register"}),
     "alternate-contact": frozenset({"update"}),
     "cost-allocation-tags": frozenset({"activate"}),
+    # Keyed by Region, recorded with ``note`` when a deploy sets the service up there, so removal only ever
+    # reaches Regions tarmac ran it in, even after the config stops listing them.
+    "guardduty": frozenset(),
+    "securityhub": frozenset(),
+    "config-recorder": frozenset(),
 }
 
 
@@ -242,6 +247,19 @@ def activate() -> Inventory:
 
 def active() -> Inventory | None:
     return _active
+
+
+def note(resource: str, details: dict[str, Any] | None = None) -> None:
+    """Record ``resource`` in the active inventory, when there is one."""
+    if _active is not None:
+        _active.record(resource, details)
+
+
+def regions_to_remove(recorded: Inventory | None, kind: str, keep: list[str]) -> list[str]:
+    """Regions recorded for ``kind`` that are not in ``keep``: where tarmac ran it and no longer should."""
+    if recorded is None:
+        return []
+    return sorted(r for r in recorded.get(kind) if r not in keep)
 
 
 def deactivate() -> None:

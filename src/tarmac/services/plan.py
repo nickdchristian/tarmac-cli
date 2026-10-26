@@ -38,7 +38,12 @@ from .organization import DEFAULT_TRUSTED_SERVICES, OrganizationService, contact
 from .ou import OUService
 from .preflight import PreflightService
 from .scp import SCPService
-from .security_off import SECURITY_HUB_WARNING, SecurityServicesOff
+from .security_off import (
+    SECURITY_HUB_WARNING,
+    SecurityServicesOff,
+    kept_hubs_note,
+    regions_off,
+)
 from .settings_off import ROOT_SESSIONS_WARNING, settings_off, turns_off_root_sessions
 from .stack_parameters import (
     audit_hardening_parameters,
@@ -758,31 +763,38 @@ class Planner:
                     audit_name,
                 )
         audit_id = self._account_id(audit_name)
-        if audit_id and not (security.guardduty.enabled and security.securityhub.enabled):
+        if audit_id and self.org_id:
             self._security_off(phase, audit_id)
         if security.guardduty.enabled and audit_id:
             self._findings_export(phase, audit_id, audit_name)
 
     def _security_off(self, phase: PhasePlan, audit_id: str) -> None:
-        """GuardDuty and Security Hub that tarmac runs but the config turns off."""
-        security = self.bundle.org.security_services
-        regions = [self.region, *self.bundle.org.organization.additional_regions]
+        """GuardDuty and Security Hub that tarmac set up but the config turns off, or no longer lists the Region."""
         off = SecurityServicesOff(self.session_mgr)
-        if not security.guardduty.enabled:
+        guardduty = regions_off(self.bundle, self.recorded, "guardduty", self.region)
+        if guardduty:
+            why = (
+                "guardduty is off"
+                if not self.bundle.org.security_services.guardduty.enabled
+                else "Region dropped"
+            )
             self._removals(
                 phase,
-                "guardduty is off; findings are kept",
-                lambda _t: off.suspend_guardduty(audit_id, regions, dry_run=True),
+                f"{why}; findings are kept",
+                lambda _t: off.suspend_guardduty(audit_id, guardduty, dry_run=True),
                 action="SUSPEND",
             )
-        if not security.securityhub.enabled:
+        securityhub = regions_off(self.bundle, self.recorded, "securityhub", self.region)
+        if securityhub and self.bundle.org.security_services.securityhub.enabled:
+            phase.notes.append(kept_hubs_note(securityhub))
+        elif securityhub:
             mgmt_id = str(self.session_mgr.get_caller_identity().get("Account", ""))
             before = len(phase.items)
             self._removals(
                 phase,
                 "securityhub is off",
                 lambda _t: off.disable_securityhub(
-                    self.bundle, audit_id, regions, self.accounts, mgmt_id, dry_run=True
+                    self.bundle, audit_id, securityhub, self.accounts, mgmt_id, self.region, dry_run=True
                 ),
             )
             if len(phase.items) > before:
@@ -826,11 +838,19 @@ class Planner:
                 self._removals(
                     phase,
                     "config_recorder is off",
-                    lambda t: t.teardown_config_recorder(self.bundle, self.region, dry_run=True),
+                    lambda t: t.teardown_config_recorder(
+                        self.bundle, self.region, dry_run=True, recorded=self.recorded
+                    ),
                 )
             return
         name = Stack.CONFIG_RECORDER.for_org(self.org_name)
         regions = config_recorder_regions(self.bundle, self.region)
+        if dropped := inventory.regions_to_remove(self.recorded, "config-recorder", regions):
+            self._removals(
+                phase,
+                "Region dropped",
+                lambda t: t.teardown_dropped_config_regions(self.bundle, self.region, dropped, dry_run=True),
+            )
         log_archive_name = self.bundle.get_log_archive_account_name() or "log-archive"
         log_archive_id = self._account_id(log_archive_name)
         outputs = (

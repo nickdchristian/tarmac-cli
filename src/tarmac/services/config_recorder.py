@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.exceptions import AWS_ERRORS, GovernanceError, aws_error_code, aws_error_message
 from ..core.models import TAG_MANAGED_BY, StackDeployReport
-from ..core.org_accounts import is_active, iter_accounts
+from ..core.org_accounts import inactive_account_ids
 from ..core.stack_names import Stack
 from ..core.tagging import merge_tags
 from .cloudformation import CloudFormationService
@@ -80,11 +80,12 @@ class ConfigRecorderService:
         try:
             cf.activate_organizations_access()
             root_id = self._root_id()
-            targets = self._targets(root_id, management_account_id)
+            closed = inactive_account_ids(self.session_mgr.get_client("organizations"))
+            targets = self._targets(root_id, management_account_id, closed)
             report.stack_set_action = self.stack_sets.ensure(
                 cf, name, "AWS Config recorders managed by tarmac", template_body, parameters, cfn_tags
             )
-            report.failures.extend(self.stack_sets.sync_instances(cf, name, regions, targets))
+            report.failures.extend(self.stack_sets.sync_instances(cf, name, regions, targets, closed))
         except ClientError as e:
             raise GovernanceError(
                 f"Could not deploy AWS Config recorders through StackSet '{name}'",
@@ -133,17 +134,14 @@ class ConfigRecorderService:
             raise GovernanceError("The organization has no root to deploy AWS Config recorders to.")
         return str(roots[0]["Id"])
 
-    def _targets(self, root_id: str, management_account_id: str) -> dict[str, Any]:
+    @staticmethod
+    def _targets(root_id: str, management_account_id: str, closed: set[str]) -> dict[str, Any]:
         """The organization root without the management account (StackSets cannot deploy there) and without
         suspended accounts (their roles cannot be assumed)."""
-        excluded = {management_account_id}
-        for account in iter_accounts(self.session_mgr.get_client("organizations")):
-            if not is_active(account):
-                excluded.add(str(account["Id"]))
         return {
             "OrganizationalUnitIds": [root_id],
             "AccountFilterType": "DIFFERENCE",
-            "Accounts": sorted(a for a in excluded if a),
+            "Accounts": sorted(a for a in {management_account_id, *closed} if a),
         }
 
     def _deploy_management_stack(
@@ -176,26 +174,29 @@ class ConfigRecorderService:
         primary_region: str,
         management_account_id: str,
         dry_run: bool = False,
+        stack_set: bool = True,
     ) -> list[tuple[str, str, str]]:
-        """Remove the StackSet (with its instances) and the management account stacks.
+        """Remove the StackSet (with its instances, unless ``stack_set`` is False) and the management account stacks
+        in ``regions``.
 
         Returns (resource, action, message) rows where action is DELETED, NOT_FOUND, SIMULATED or FAILED.
         """
-        rows = self._remove_stack_set(org_name, primary_region, management_account_id, dry_run)
+        rows = self._remove_stack_set(org_name, primary_region, dry_run) if stack_set else []
         for region in regions:
             rows.append(self._remove_management_stack(org_name, region, management_account_id, dry_run))
         return rows
 
     def _remove_stack_set(
-        self, org_name: str, primary_region: str, management_account_id: str, dry_run: bool
+        self, org_name: str, primary_region: str, dry_run: bool
     ) -> list[tuple[str, str, str]]:
         cf = self.session_mgr.get_client("cloudformation", region_name=primary_region)
         return [
             self.stack_sets.remove(
                 cf,
                 Stack.CONFIG_RECORDER.for_org(org_name),
-                lambda: self._targets(self._root_id(), management_account_id),
+                lambda: {"OrganizationalUnitIds": [self._root_id()]},
                 dry_run,
+                closed=lambda: inactive_account_ids(self.session_mgr.get_client("organizations")),
             )
         ]
 

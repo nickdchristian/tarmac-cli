@@ -113,24 +113,91 @@ class StackSetService:
             instances.extend(page.get("Summaries", []))
         return instances
 
-    def sync_instances(self, cf: Any, name: str, regions: list[str], targets: dict[str, Any]) -> list[str]:
+    def auto_deployment_regions(self, cf: Any, name: str) -> set[str]:
+        """The Regions new accounts in the targeted OUs are given instances in."""
+        regions: set[str] = set()
+        token: str | None = None
+        while True:
+            page = cf.list_stack_set_auto_deployment_targets(
+                StackSetName=name, **({"NextToken": token} if token else {})
+            )
+            for summary in page.get("Summaries", []):
+                regions.update(str(r) for r in summary.get("Regions", []))
+            token = page.get("NextToken")
+            if not token:
+                return regions
+
+    def release(self, cf: Any, name: str, accounts: set[str], instances: list[dict[str, Any]]) -> bool:
+        """Remove the instances in ``accounts``, keeping their stacks.
+
+        For closed and suspended accounts: AWS can no longer reach them, so their instances stay OUTDATED and block
+        every later operation until they are removed with RetainStacks. Each instance is removed through the OU it
+        was deployed for, the only target AWS accepts for it. Returns whether any were removed.
+        """
+        stuck: dict[str, tuple[set[str], set[str]]] = {}
+        for inst in instances:
+            if str(inst.get("Account")) in accounts:
+                found = stuck.setdefault(str(inst["OrganizationalUnitId"]), (set(), set()))
+                found[0].add(str(inst["Account"]))
+                found[1].add(str(inst["Region"]))
+        for ou, (ids, regions) in sorted(stuck.items()):
+            response = cf.delete_stack_instances(
+                StackSetName=name,
+                DeploymentTargets={
+                    "OrganizationalUnitIds": [ou],
+                    "Accounts": sorted(ids),
+                    "AccountFilterType": "INTERSECTION",
+                },
+                Regions=sorted(regions),
+                RetainStacks=True,
+                OperationPreferences=OPERATION_PREFERENCES,
+            )
+            self._finish(
+                cf,
+                name,
+                response["OperationId"],
+                "delete",
+                f"stackset-instances:{name}",
+                f"Removed StackSet '{name}' from closed {plural(len(ids), 'account')} {', '.join(sorted(ids))}",
+                regions=sorted(regions),
+            )
+        return bool(stuck)
+
+    def _released(self, cf: Any, name: str, closed: set[str] | None) -> list[dict[str, Any]]:
+        """The StackSet's instances, after removing those in ``closed`` accounts."""
+        instances = self.list_instances(cf, name)
+        if closed and self.release(cf, name, closed, instances):
+            instances = self.list_instances(cf, name)
+        return instances
+
+    def sync_instances(
+        self, cf: Any, name: str, regions: list[str], targets: dict[str, Any], closed: set[str] | None = None
+    ) -> list[str]:
         """Add instances for Regions that have none, drop Regions no longer configured, report what is not
-        current. Template and parameter changes reach existing instances through the StackSet update."""
-        present = {str(i["Region"]) for i in self.list_instances(cf, name)}
+        current. Template and parameter changes reach existing instances through the StackSet update.
+
+        A dropped Region is removed through the targeted OUs alone: removing it with an account filter would leave
+        it among the Regions new accounts are deployed to.
+        """
+        present = {str(i["Region"]) for i in self._released(cf, name, closed)}
+        present |= self.auto_deployment_regions(cf, name)
         missing = [r for r in regions if r not in present]
         surplus = sorted(present - set(regions))
         if missing:
             self._create_instances(cf, name, targets, missing)
         if surplus:
-            self._delete_instances(cf, name, targets, surplus)
+            ous = {"OrganizationalUnitIds": targets["OrganizationalUnitIds"]}
+            self._delete_instances(cf, name, ous, surplus)
         return self._instance_failures(cf, name)
 
-    def sync_targets(self, cf: Any, name: str, ou_ids: list[str], regions: list[str]) -> list[str]:
+    def sync_targets(
+        self, cf: Any, name: str, ou_ids: list[str], regions: list[str], closed: set[str] | None = None
+    ) -> list[str]:
         """For a StackSet targeting OUs: give each OU instances in exactly ``regions``, remove the instances of
         OUs no longer targeted, and report what is not current. Each instance records the OU it was deployed
         for, so an OU without accounts has none and is targeted again on every run, which changes nothing."""
         present: dict[str, set[str]] = {}
-        for instance in self.list_instances(cf, name):
+        for instance in self._released(cf, name, closed):
             present.setdefault(str(instance["OrganizationalUnitId"]), set()).add(str(instance["Region"]))
         for ou in sorted(set(present) - set(ou_ids)):
             self._delete_instances(cf, name, {"OrganizationalUnitIds": [ou]}, sorted(present[ou]))
@@ -234,7 +301,12 @@ class StackSetService:
             self._sleep(self._poll_seconds)
 
     def remove(
-        self, cf: Any, name: str, targets: Callable[[], dict[str, Any]], dry_run: bool
+        self,
+        cf: Any,
+        name: str,
+        targets: Callable[[], dict[str, Any]],
+        dry_run: bool,
+        closed: Callable[[], set[str]] = set,
     ) -> tuple[str, str, str]:
         """Delete the StackSet and its instances. Returns (resource, action, message) where action is DELETED,
         NOT_FOUND, SKIPPED, SIMULATED or FAILED."""
@@ -247,7 +319,7 @@ class StackSetService:
                 return (resource, "SKIPPED", f"Not created by tarmac (no {TAG_MANAGED_BY}=tarmac tag)")
             if dry_run:
                 return (resource, "SIMULATED", "Would delete the StackSet and its stack instances")
-            instances = self.list_instances(cf, name)
+            instances = self._released(cf, name, closed())
             regions = sorted({str(i["Region"]) for i in instances})
             if regions:
                 response = cf.delete_stack_instances(

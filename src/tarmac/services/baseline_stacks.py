@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 from ..core.aws_client import AwsSessionManager
 from ..core.config_schema import BaselineStackDef
 from ..core.exceptions import GovernanceError, aws_error_message
+from ..core.org_accounts import inactive_account_ids
 from ..core.templates import resolve_resource_path
 from .stackset import StackSetService
 
@@ -23,6 +24,7 @@ def stack_set_name(org_name: str, name: str) -> str:
 class BaselineStacksService:
     def __init__(self, session_mgr: AwsSessionManager, region: str):
         self.cf: Any = session_mgr.get_client("cloudformation", region_name=region)
+        self.org: Any = session_mgr.get_client("organizations")
         self.stack_sets = StackSetService()
 
     def undeclared(self, org_name: str, stacks: list[BaselineStackDef]) -> list[str]:
@@ -48,6 +50,7 @@ class BaselineStacksService:
         problems found. ``ou_ids`` maps OU names, and "root", to their IDs."""
         failures: list[str] = []
         try:
+            closed = inactive_account_ids(self.org) if stacks else set()
             if stacks:
                 self.cf.activate_organizations_access()
             for stack in stacks:
@@ -63,7 +66,7 @@ class BaselineStacksService:
                     tags,
                 )
                 targets = [ou_ids["root" if t.lower() == "root" else t] for t in stack.target_ous]
-                failures.extend(self.stack_sets.sync_targets(self.cf, name, targets, stack.regions))
+                failures.extend(self.stack_sets.sync_targets(self.cf, name, targets, stack.regions, closed))
             for resource, action, message in self.remove(self.undeclared(org_name, stacks)):
                 if action == "FAILED":
                     failures.append(f"{resource}: {message}")
@@ -82,6 +85,7 @@ class BaselineStacksService:
                     )
                 },
                 dry_run,
+                closed=lambda: inactive_account_ids(self.org),
             )
             for name in names
         ]
