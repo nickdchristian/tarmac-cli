@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1](https://github.com/nickdchristian/tarmac-cli/compare/v0.7.0...v0.7.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* polish from the pre-1.0 live test ([#137](https://github.com/nickdchristian/tarmac-cli/issues/137)) ([9e95089](https://github.com/nickdchristian/tarmac-cli/commit/9e95089fc2e689abbabfd1004dde25b802f2d40e))
+* remove only what tarmac set up, in closed accounts and dropped Regions too ([#135](https://github.com/nickdchristian/tarmac-cli/issues/135)) ([2038912](https://github.com/nickdchristian/tarmac-cli/commit/2038912e5bb6840f84a4862583f882aa17615698))
+* tarmac import reads the running settings, so its config plans no changes ([#136](https://github.com/nickdchristian/tarmac-cli/issues/136)) ([7ac1ba7](https://github.com/nickdchristian/tarmac-cli/commit/7ac1ba7da54235a18f727ad43a3c3f6632a47aec))
+
 ## [0.7.0](https://github.com/nickdchristian/tarmac-cli/compare/v0.6.0...v0.7.0) (2026-10-26)
 
 

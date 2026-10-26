@@ -15,7 +15,7 @@ permissions:
 
 env:
   # Pin the version you have tested. Releases of tarmac update this line.
-  TARMAC: tarmac-cli==0.7.0 # x-release-please-version
+  TARMAC: tarmac-cli==0.7.1 # x-release-please-version
   CONFIG_DIR: config
 
 jobs:
