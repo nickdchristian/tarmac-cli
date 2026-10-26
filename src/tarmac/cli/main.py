@@ -30,6 +30,7 @@ from .common import (
     ConfigDirOption,
     JsonOption,
     RegionOption,
+    check_deployment_or_exit,
     exit_on_error,
     load_configs_or_exit,
     warn_if_example_newer,
@@ -198,7 +199,7 @@ def validate_config(
             "valid": not bool(errors or bundle is None),
             "summary": _build_validation_summary(bundle),
             "errors": errors or [],
-            "warnings": [*find_placeholder_values(bundle), *bundle.deprecated_settings()] if bundle else [],
+            "warnings": find_placeholder_values(bundle) if bundle else [],
         }
         print(json.dumps(payload, indent=2))
         if errors or bundle is None:
@@ -230,8 +231,6 @@ def validate_config(
         )
         for problem in placeholders:
             console.print(f"  [yellow]•[/yellow] {problem}")
-    for message in bundle.deprecated_settings():
-        print_warning(message)
 
 
 def _fetch_org_details(session_mgr: AwsSessionManager) -> tuple[dict[str, str], str]:
@@ -616,6 +615,7 @@ def show_status(
     with exit_on_error("Status Inspection Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         _refuse_root_identity(session_mgr)
+        check_deployment_or_exit(session_mgr, bundle)
         status = StatusService(session_mgr).inspect(bundle, target_region)
         report = DriftService(session_mgr).inspect_drift(bundle, target_region) if detail or strict else None
         ous: dict[str, str] = {}

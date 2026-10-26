@@ -29,6 +29,7 @@ from .common import (
     RegionOption,
     TagsOption,
     YesOption,
+    check_deployment_or_exit,
     confirm_or_exit,
     load_configs_or_exit,
     parse_tags_or_exit,
@@ -215,18 +216,20 @@ def deploy_command(
     _require_yes_for_json(dry_run, yes, json_output)
     bundle = load_configs_or_exit(config_dir)
     _check_deploy_options(phase, accounts, skip_preflight, bundle)
+    custom_tags = parse_tags_or_exit(tags)
+
+    target_region = region or bundle.org.organization.primary_region
+    session_mgr = AwsSessionManager(region_name=target_region)
+    phases = [phase] if phase is not None else ALL_PHASES
+    # Before the prompt: nobody should confirm a live deploy that is then refused.
+    _refuse_root_identity(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
     confirm_or_exit(
         "Are you sure you want to run the live multi-account deployment?",
         yes=yes,
         dry_run=dry_run,
         cancelled="Deployment cancelled by user.",
     )
-    custom_tags = parse_tags_or_exit(tags)
-
-    target_region = region or bundle.org.organization.primary_region
-    session_mgr = AwsSessionManager(region_name=target_region)
-    phases = [phase] if phase is not None else ALL_PHASES
-    _refuse_root_identity(session_mgr)
 
     try:
         if dry_run:
@@ -309,14 +312,7 @@ def _print_teardown_retained_notice(security_disabled: bool = False) -> None:
 
 def _enforce_production_lock(bundle: Any, *, dry_run: bool, force: bool) -> None:
     """Refuse to tear down an organization tagged as production unless --force is given."""
-    # Check every tag source on its own: a lower-precedence `Environment: dev` must not hide `Environment: prod`.
-    sources = [
-        bundle.get_organization_tags(),
-        bundle.org.tags,
-        bundle.org.organization.tags,
-        bundle.accounts.tags,
-    ]
-    is_prod = any(_is_production_tagged(tags) for tags in sources)
+    is_prod = _is_production_tagged(bundle.get_organization_tags())
     if is_prod and not dry_run and not force:
         error_console.print(
             "[bold red]Teardown blocked: the organization is tagged as production.[/bold red]\n"
@@ -491,6 +487,7 @@ def destroy_command(
     target_region = region or bundle.org.organization.primary_region
     session_mgr = AwsSessionManager(region_name=target_region)
     _refuse_root_identity(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
 
     inv = _load_inventory(session_mgr, bundle, inventory_from_log) if everything else None
     _confirm_teardown(
@@ -593,6 +590,7 @@ def inventory_command(
     bundle = load_configs_or_exit(config_dir)
     session_mgr = AwsSessionManager(region_name=bundle.org.organization.primary_region)
     require_credentials_or_exit(session_mgr)
+    check_deployment_or_exit(session_mgr, bundle)
     inv = _load_inventory(session_mgr, bundle, from_log)
     if json_output:
         print(json.dumps(inv.entries, indent=2, sort_keys=True))

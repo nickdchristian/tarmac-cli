@@ -12,6 +12,7 @@ from .common import (
     ConfigDirOption,
     JsonOption,
     RegionOption,
+    check_deployment_or_exit,
     exit_on_error,
     load_configs_or_exit,
     require_credentials_or_exit,
@@ -141,6 +142,7 @@ def run_preflight_checks(
     with exit_on_error("Pre-flight Failed"):
         session_mgr = AwsSessionManager(region_name=target_region)
         require_credentials_or_exit(session_mgr)
+        check_deployment_or_exit(session_mgr, bundle)
         report = PreflightService(session_mgr, bundle).run_all_checks(region_override=region)
 
         if json_output:

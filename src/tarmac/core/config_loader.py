@@ -139,24 +139,29 @@ class ConfigBundle:
         return errors
 
     def _check_delegated_admin(self, account_names: set[str]) -> list[str]:
-        """Validate that delegated admin accounts exist in accounts catalog."""
+        """Validate that the audit account exists in the accounts catalog when something is delegated to it."""
         errors: list[str] = []
-        del_admin = self.org.root_access_management.delegated_admin_account
         norm_names = {normalize_account_name(a) for a in account_names}
-        if del_admin and normalize_account_name(del_admin) not in norm_names:
-            errors.append(
-                f"Delegated admin account '{del_admin}' in organization.yaml does not exist in accounts catalog. "
-                f"Valid accounts: {sorted(account_names)}"
-            )
-
         sec_cfg = self.org.security_services
-        if sec_cfg.guardduty.enabled or sec_cfg.securityhub.enabled:
-            sec_admin = sec_cfg.delegated_account
-            if normalize_account_name(sec_admin) not in norm_names:
-                errors.append(
-                    f"Security services delegated admin account '{sec_admin}' in organization.yaml does not exist in accounts catalog. "
-                    f"Valid accounts: {sorted(account_names)}"
-                )
+        users = [
+            name
+            for name, on in (
+                ("security_services.guardduty", sec_cfg.guardduty.enabled),
+                ("security_services.securityhub", sec_cfg.securityhub.enabled),
+                (
+                    "root_access_management.delegate_to_audit",
+                    self.org.root_access_management.delegate_to_audit,
+                ),
+            )
+            if on
+        ]
+        sec_admin = sec_cfg.audit_account
+        if users and normalize_account_name(sec_admin) not in norm_names:
+            errors.append(
+                f"Audit account '{sec_admin}' (security_services.audit_account) is not in accounts.yaml, but it is "
+                f"used by {', '.join(users)}. Add the account, point audit_account at one that exists, or turn "
+                f"those off (false). Valid accounts: {sorted(account_names)}"
+            )
         return errors
 
     def _check_identity_assignments(self, account_names: set[str]) -> list[str]:
@@ -196,9 +201,6 @@ class ConfigBundle:
         """Validate SCP policy file existence, syntax, and size limit (5,120 bytes)."""
         errors: list[str] = []
         scp_cfg = self.org.service_control_policies
-        if not (scp_cfg and scp_cfg.enabled):
-            return errors
-
         for scp in scp_cfg.policies:
             try:
                 resolved_path = resolve_resource_path(scp.policy_file, project_root=self.config_dir.parent)
@@ -222,9 +224,6 @@ class ConfigBundle:
         """Validate that every SCP target is the root or a declared OU (matching is case-insensitive)."""
         errors: list[str] = []
         scp_cfg = self.org.service_control_policies
-        if not (scp_cfg and scp_cfg.enabled):
-            return errors
-
         valid_ous = self._collect_ou_names(self.org.ou_structure)
         valid_lower = {name.lower() for name in valid_ous}
         for scp in scp_cfg.policies:
@@ -296,16 +295,9 @@ class ConfigBundle:
                 return acct.name
         return "log-archive"
 
-    def get_audit_account_name(self) -> str | None:
-        """Find the declared account name configured to host security auditing / Config aggregator."""
-        if self.org.root_access_management.delegated_admin_account:
-            return self.org.root_access_management.delegated_admin_account
-        if self.org.security_services.delegated_account:
-            return self.org.security_services.delegated_account
-        for acct in self.accounts.accounts:
-            if normalize_account_name(acct.name).replace("-", "") in ("audit", "security"):
-                return acct.name
-        return "audit"
+    def get_audit_account_name(self) -> str:
+        """The audit account: security_services.audit_account."""
+        return self.org.security_services.audit_account
 
     def resolve_account_id(self, account_name: str | None, live_accounts: dict[str, str]) -> str | None:
         """Resolve a declared account name to its live AWS account ID (case-insensitive)."""
@@ -319,6 +311,15 @@ class ConfigBundle:
                 return acct_id
         return None
 
+    def declared_account_ids(self, live_accounts: dict[str, str], management_id: str) -> dict[str, str]:
+        """The live accounts that accounts.yaml lists, by name, leaving out the management account even if it's listed."""
+        declared = {normalize_account_name(a.name) for a in self.accounts.accounts}
+        return {
+            name: i
+            for name, i in live_accounts.items()
+            if normalize_account_name(name) in declared and i != management_id
+        }
+
     def get_account(self, account_name: str | None) -> AccountDef | None:
         """Find an AccountDef by name (case-insensitive and hyphen-agnostic)."""
         if not account_name:
@@ -330,41 +331,12 @@ class ConfigBundle:
         return None
 
     def get_organization_tags(self) -> dict[str, str]:
-        """Collect organization-level tags from organization.yaml and accounts.yaml.
-
-        Precedence (lowest to highest):
-        1. Top-level ``tags`` in organization.yaml
-        2. ``organization.tags`` in organization.yaml
-        3. Top-level ``tags`` in accounts.yaml (catalog-level defaults)
-        """
-        tags: dict[str, str] = {}
-        if self.org.tags:
-            tags.update(self.org.tags)
-        if self.org.organization.tags:
-            tags.update(self.org.organization.tags)
-        if self.accounts.tags:
-            tags.update(self.accounts.tags)
-        return tags
-
-    def deprecated_settings(self) -> list[str]:
-        """Settings the configuration still sets that tarmac now ignores, as messages to show the user."""
-        found = []
-        for section in ("cloudtrail", "terraform_backend"):
-            if "bucket_prefix" in getattr(self.org, section).model_fields_set:
-                found.append(
-                    f"organization.yaml: {section}.bucket_prefix is ignored (bucket names come from "
-                    "organization.name). Remove it."
-                )
-        return found
+        """The tags in ``organization.tags``, applied to everything tarmac creates."""
+        return dict(self.org.organization.tags)
 
     def get_cost_allocation_tags(self) -> list[str]:
-        """Collect user-defined cost allocation tag keys from configuration."""
-        if not self.org.cost_allocation_tags.enabled:
-            return []
-        tags = list(self.org.cost_allocation_tags.tags)
-        if not tags and self.org.organization.cost_allocation_tags:
-            tags = list(self.org.organization.cost_allocation_tags)
-        return sorted(set(tags))
+        """The cost allocation tag keys to activate."""
+        return sorted(set(self.org.cost_allocation_tags))
 
     def get_account_tags(self, account_name: str | None) -> dict[str, str]:
         """Fetch declared tags for an account."""

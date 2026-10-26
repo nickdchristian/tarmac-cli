@@ -52,7 +52,7 @@ class SecurityServicesTeardown:
     ) -> list[TeardownItemReport]:
         results = self._new_results()
         sec = bundle.org.security_services
-        audit_id = bundle.resolve_account_id(sec.delegated_account, accounts)
+        audit_id = bundle.resolve_account_id(sec.audit_account, accounts)
         regions = [primary_region, *bundle.org.organization.additional_regions]
         member_ids = self.member_ids(bundle, accounts, audit_id, mgmt_id)
 
@@ -60,8 +60,8 @@ class SecurityServicesTeardown:
             results.append(
                 self._item(
                     "Security Services",
-                    sec.delegated_account,
-                    sec.delegated_account,
+                    sec.audit_account,
+                    sec.audit_account,
                     "",
                     "SKIPPED",
                     "Delegated admin account not resolved in active accounts",
@@ -78,12 +78,9 @@ class SecurityServicesTeardown:
                 self._guardduty(results, region, audit_id, member_ids, dry_run)
 
         principals: list[str] = list(CONFIG_PRINCIPALS)
-        rm = bundle.org.root_access_management
-        if rm.enabled and rm.delegated_admin_account:
-            iam_admin = bundle.resolve_account_id(rm.delegated_admin_account, accounts)
-            if iam_admin:
-                self._deregister(results, iam_admin, rm.delegated_admin_account, [IAM_PRINCIPAL], dry_run)
-        self._deregister(results, audit_id, sec.delegated_account, principals, dry_run)
+        if bundle.org.root_access_management.delegate_to_audit:
+            principals.append(IAM_PRINCIPAL)
+        self._deregister(results, audit_id, sec.audit_account, principals, dry_run)
         return results
 
     @staticmethod

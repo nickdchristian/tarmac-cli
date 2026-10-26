@@ -295,7 +295,7 @@ def test_identity_sync_identity():
         ],
     )
 
-    report = service.sync_identity(id_cfg, active_accounts={"TestAccount": "111122223333"})
+    report = service.sync_identity(id_cfg, accounts={"TestAccount": "111122223333"})
 
     assert "AdministratorAccess" in report.permission_sets_synced
     assert "admin" in report.users_synced
@@ -788,8 +788,7 @@ def test_undeclared_access_is_found_only_on_the_accounts_tarmac_manages():
         group,
         "g-1",
         {"Admin": "arn:admin", "Read": "arn:read"},
-        {"dev": "111", "prod": "222", "management": "999"},
-        managed_ids={"111", "222"},
+        {"dev": "111", "prod": "222"},
     )
     # 999 (the management account) is not in accounts.yaml, so its assignment is left alone.
     assert assignments == [("111", "arn:read"), ("222", "arn:read")]
@@ -816,9 +815,7 @@ def test_sync_identity_removes_what_identity_yaml_no_longer_declares(monkeypatch
         groups=[GroupDef(name="Admins", members=[], assignments=[])],
     )
 
-    report = service.sync_identity(
-        cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"], owned_groups={"Admins"}
-    )
+    report = service.sync_identity(cfg, accounts={"dev": "111"}, owned_groups={"Admins"})
 
     assert removed == [("111", "arn:read")]
     assert (report.assignments_removed, report.memberships_removed) == (1, 1)
@@ -829,9 +826,7 @@ def test_sync_identity_removes_what_identity_yaml_no_longer_declares(monkeypatch
     # A group tarmac didn't create (or import) is only added to.
     removed.clear()
     service.identitystore_client.delete_group_membership.reset_mock()
-    report = service.sync_identity(
-        cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"], owned_groups=set()
-    )
+    report = service.sync_identity(cfg, accounts={"dev": "111"}, owned_groups=set())
     assert removed == []
     assert (report.assignments_removed, report.memberships_removed) == (0, 0)
     service.identitystore_client.delete_group_membership.assert_not_called()
@@ -850,9 +845,7 @@ def test_an_assignment_that_cannot_be_removed_fails_the_sync(monkeypatch):
         groups=[GroupDef(name="Admins")],
     )
     with pytest.raises(IdentityCenterError, match="Could not remove 1 undeclared assignment"):
-        service.sync_identity(
-            cfg, active_accounts={"dev": "111"}, managed_accounts=["dev"], owned_groups={"Admins"}
-        )
+        service.sync_identity(cfg, accounts={"dev": "111"}, owned_groups={"Admins"})
 
 
 def test_phase_6_owns_only_the_groups_the_inventory_records():
@@ -870,41 +863,20 @@ def test_phase_6_owns_only_the_groups_the_inventory_records():
         inventory.deactivate()
 
 
-def test_a_new_assignment_in_the_management_account_is_left_for_an_administrator(monkeypatch, caplog):
-    """Identity Center needs IAM role-creation rights the deployment role deliberately lacks there."""
-    session = MagicMock()
-    session.get_caller_identity.return_value = {"Account": "999"}
-    service = IdentityService(session)
-    monkeypatch.setattr(service, "get_or_create_group", lambda g: "g-1")
-    monkeypatch.setattr(service, "get_instance_details", lambda: ("arn:i", "d-1"))
-    monkeypatch.setattr(service, "_assignment_exists", lambda inst, acct, ps, gid: False)
-    assigned: list[list[str]] = []
-    monkeypatch.setattr(
-        service,
-        "assign_group_to_accounts",
-        lambda **kw: assigned.append(kw["account_ids"]) or len(kw["account_ids"]),
-    )
-    group = GroupDef(name="Admins", assignments=[AssignmentDef(permission_set="Admin", accounts=["all"])])
-
-    service.sync_groups_and_assignments([group], {"Admin": "arn:ps"}, {"dev": "111", "management": "999"})
-
-    assert assigned == [["111"]]
-    assert "Skipped giving 'Admins' Admin in the management account" in caplog.text
+def test_all_and_named_targets_resolve_only_within_the_accounts_given():
+    accounts = {"dev": "111", "Prod": "222"}
+    assert IdentityService._resolve_target_account_ids(["all"], accounts) == ["111", "222"]
+    assert IdentityService._resolve_target_account_ids(["prod", "missing"], accounts) == ["222"]
 
 
-def test_an_existing_management_account_assignment_is_kept(monkeypatch):
-    session = MagicMock()
-    session.get_caller_identity.return_value = {"Account": "999"}
-    service = IdentityService(session)
-    monkeypatch.setattr(service, "get_or_create_group", lambda g: "g-1")
-    monkeypatch.setattr(service, "get_instance_details", lambda: ("arn:i", "d-1"))
-    monkeypatch.setattr(service, "_assignment_exists", lambda inst, acct, ps, gid: True)
-    assigned: list[list[str]] = []
-    monkeypatch.setattr(
-        service, "assign_group_to_accounts", lambda **kw: assigned.append(kw["account_ids"]) or 0
-    )
-    group = GroupDef(name="Admins", assignments=[AssignmentDef(permission_set="Admin", accounts=["all"])])
+def test_only_accounts_in_accounts_yaml_are_assignment_targets(sample_config_dir):
+    """The management account, unlisted and quarantined accounts never receive access from `all`."""
+    from tarmac.core.config_loader import load_all_configs
 
-    service.sync_groups_and_assignments([group], {"Admin": "arn:ps"}, {"dev": "111", "management": "999"})
-
-    assert assigned == [["111", "999"]]
+    bundle, errors = load_all_configs(sample_config_dir)
+    assert bundle is not None, errors
+    declared = bundle.accounts.accounts[0].name
+    live = {declared: "111", "management": "999", "partner-x": "333"}
+    assert bundle.declared_account_ids(live, "999") == {declared: "111"}
+    # Even written into accounts.yaml by hand, the management account is left out.
+    assert bundle.declared_account_ids({declared: "999"}, "999") == {}
