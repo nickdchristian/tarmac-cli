@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/nickdchristian/tarmac-cli/compare/v0.7.1...v0.7.2) (2026-10-27)
+
+
+### Features
+
+* identity_source: external, for an identity provider that provisions Identity Center ([#139](https://github.com/nickdchristian/tarmac-cli/issues/139)) ([7823eae](https://github.com/nickdchristian/tarmac-cli/commit/7823eae18d903cf1a7b2b4b2d2a50407e508a322))
+
 ## [0.7.1](https://github.com/nickdchristian/tarmac-cli/compare/v0.7.0...v0.7.1) (2026-10-26)
 
 
