@@ -179,9 +179,11 @@ class IdentityService(PermissionSetMixin):
         group_id: str,
         ps_map: dict[str, str],
         accounts: dict[str, str],
+        members: bool = True,
     ) -> tuple[list[tuple[str, str]], dict[str, str]]:
-        """The group's assignments on ``accounts`` (the accounts in accounts.yaml) and its members that
-        identity.yaml does not declare. Assignments on other accounts, such as the management account, are left alone.
+        """The group's assignments on ``accounts`` (the accounts in accounts.yaml) and, unless ``members`` is False
+        (an identity provider owns them), its members that identity.yaml does not declare. Assignments on other
+        accounts, such as the management account, are left alone.
         """
         wanted = {
             (account_id, ps_map[a.permission_set])
@@ -193,8 +195,12 @@ class IdentityService(PermissionSetMixin):
         assignments = sorted(
             a for a in self.group_assignments(instance_arn, group_id) - wanted if a[0] in managed_ids
         )
-        members = {name: m for name, m in self.group_members(group_id).items() if name not in group.members}
-        return assignments, members
+        if not members:
+            return assignments, {}
+        undeclared = {
+            name: m for name, m in self.group_members(group_id).items() if name not in group.members
+        }
+        return assignments, undeclared
 
     def remove_user_from_group(self, membership_id: str, group_name: str, username: str) -> None:
         _, store_id = self.get_instance_details()
@@ -218,6 +224,32 @@ class IdentityService(PermissionSetMixin):
             Outcome.SUCCEEDED,
             f"Removed user '{username}' from group '{group_name}'",
         )
+
+    def refuse_provisioned_directory(self) -> None:
+        """Stop when an identity provider provisions the directory but identity.yaml doesn't say so.
+
+        Users and groups provisioned over SCIM carry ExternalIds. Creating users and groups, or changing members,
+        next to an IdP makes the directory drift from it, and SCIM may not correct it.
+        """
+        _, store_id = self.get_instance_details()
+        store = self.identitystore_client
+        # SCIM provisions users and groups in bulk, so the first page of each shows it.
+        for kind, page in (
+            ("user", store.list_users(IdentityStoreId=store_id, MaxResults=50).get("Users", [])),
+            ("group", store.list_groups(IdentityStoreId=store_id, MaxResults=50).get("Groups", [])),
+        ):
+            for item in page:
+                if item.get("ExternalIds"):
+                    name = item.get("UserName") or item.get("DisplayName")
+                    raise IdentityCenterError(
+                        f"An identity provider provisions this Identity Center directory ({kind} '{name}' "
+                        "came from it over SCIM), but identity.yaml manages it as tarmac's own.",
+                        details=(
+                            "Set identity_center.identity_source: external in identity.yaml. Tarmac then only "
+                            "manages permission sets and group assignments, and never creates users or groups "
+                            "or changes members, which belong to the identity provider."
+                        ),
+                    )
 
     def get_user_id_by_username(self, username: str) -> str | None:
         """Fetch UserId for a given username from Identity Store."""
@@ -423,15 +455,23 @@ class IdentityService(PermissionSetMixin):
         groups: list[GroupDef],
         ps_map: dict[str, str],
         accounts: dict[str, str],
+        external: bool = False,
     ) -> tuple[int, dict[str, str], list[str]]:
-        """Synchronize declared groups and their permission set assignments on ``accounts`` (from accounts.yaml)."""
+        """Synchronize declared groups and their permission set assignments on ``accounts`` (from accounts.yaml).
+
+        With an ``external`` identity provider, groups are only looked up: one it hasn't provisioned yet is an error.
+        """
         total_assignments = 0
         group_map: dict[str, str] = {}
         synced_groups: list[str] = []
+        missing: list[str] = []
 
         for grp_def in groups:
-            group_id = self.get_or_create_group(grp_def)
+            group_id = (
+                self.get_group_id_by_name(grp_def.name) if external else self.get_or_create_group(grp_def)
+            )
             if not group_id:
+                missing.append(grp_def.name)
                 continue
             group_map[grp_def.name] = group_id
             synced_groups.append(grp_def.name)
@@ -448,6 +488,12 @@ class IdentityService(PermissionSetMixin):
                     account_ids=target_ids,
                 )
 
+        if external and missing:
+            raise IdentityCenterError(
+                f"{plural(len(missing), 'group')} in identity.yaml {'is' if len(missing) == 1 else 'are'} not in "
+                f"Identity Center: {', '.join(missing)}",
+                details="Your identity provider creates groups: push them from it (SCIM), then deploy again.",
+            )
         return total_assignments, group_map, synced_groups
 
     def sync_group_memberships(
@@ -502,6 +548,8 @@ class IdentityService(PermissionSetMixin):
         declared groups only get additions.
         """
         report = IdentitySyncReport()
+        if not id_cfg.external:
+            self.refuse_provisioned_directory()
 
         ps_map = self.sync_permission_sets_via_cloudformation(
             id_cfg.permission_sets,
@@ -513,29 +561,34 @@ class IdentityService(PermissionSetMixin):
         declared_sets = {ps.name for ps in id_cfg.permission_sets}
         report.permission_sets_synced = [name for name in ps_map if name in declared_sets]
 
-        users = [id_cfg.admin_user, id_cfg.breakglass_user, *id_cfg.additional_users]
         user_map: dict[str, str] = {}
-        for u in users:
+        for u in id_cfg.users:
             uid = self.get_or_create_user(u)
             if uid:
                 user_map[u.username] = uid
                 report.users_synced.append(u.username)
 
         total_assignments, group_map, synced_groups = self.sync_groups_and_assignments(
-            id_cfg.groups, ps_map, accounts
+            id_cfg.groups, ps_map, accounts, external=id_cfg.external
         )
         report.groups_synced = synced_groups
         report.assignments_created = total_assignments
 
-        report.memberships_added = self.sync_group_memberships(id_cfg.groups, user_map, group_map)
+        if not id_cfg.external:
+            report.memberships_added = self.sync_group_memberships(id_cfg.groups, user_map, group_map)
 
+        # With an external identity provider every declared group's assignments are tarmac's to keep exact; its
+        # members never are.
+        owned = {g.name for g in id_cfg.groups} if id_cfg.external else (owned_groups or set())
         instance_arn, _ = self.get_instance_details()
         failed: list[str] = []
         for group in id_cfg.groups:
             group_id = group_map.get(group.name)
-            if not group_id or group.name not in (owned_groups or set()):
+            if not group_id or group.name not in owned:
                 continue
-            assignments, members = self.undeclared_access(instance_arn, group, group_id, ps_map, accounts)
+            assignments, members = self.undeclared_access(
+                instance_arn, group, group_id, ps_map, accounts, members=not id_cfg.external
+            )
             for account_id, ps_arn in assignments:
                 if self.delete_account_assignment(instance_arn, account_id, ps_arn, "GROUP", group_id):
                     report.assignments_removed += 1

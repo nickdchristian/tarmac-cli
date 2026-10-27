@@ -222,7 +222,17 @@ def bootstrap_command(
     role_arn = ""
     try:
         identity = IdentityService(session_mgr, preferred_region=sso_region)
-        user_id = identity.get_or_create_user(admin)
+        if bundle.identity.identity_center.external:
+            user_id = identity.get_user_id_by_username(admin.username)
+            if not user_id:
+                error_console.print(
+                    f"[red]'{admin.username}' is not in Identity Center.[/red] With an external identity provider, "
+                    "tarmac doesn't create users: provision it from your identity provider (SCIM), then run "
+                    "'tarmac bootstrap' again."
+                )
+                raise typer.Exit(code=1)
+        else:
+            user_id = identity.get_or_create_user(admin)
         _grant(identity, instance_arn, account_id, user_id, DEPLOYMENT_PERMISSION_SET, deployment_policy())
         _grant(identity, instance_arn, account_id, user_id, MANAGEMENT_ADMIN_PERMISSION_SET, None)
         if github_repo:

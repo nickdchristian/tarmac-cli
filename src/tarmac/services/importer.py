@@ -338,9 +338,13 @@ class ImportService:
             self.report.todos.append(f"Identity Center could only be partly read ({exc}).")
             return None
 
+        provisioned = [u.pop("_external") for u in users.values()]
+        external = bool(self.external_groups) or any(provisioned)
         usernames = list(users.values())
         self.report.users = [u["username"] for u in usernames]
         self.report.groups = [g["name"] for g in groups]
+        if external:
+            return self._external_identity(service.region, usernames, groups, permission_sets)
         admin = next((u for u in usernames if "admin" in u["username"].lower()), None)
         breakglass = next((u for u in usernames if "break" in u["username"].lower()), None)
         rest = [u for u in usernames if u is not admin and u is not breakglass]
@@ -370,15 +374,54 @@ class ImportService:
             }
         }
 
+    def _external_identity(
+        self,
+        region: str,
+        users: list[dict[str, Any]],
+        groups: list[dict[str, Any]],
+        permission_sets: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """identity.yaml for a directory an identity provider provisions: groups with their assignments only."""
+        self.report.todos.append(
+            "An identity provider provisions this Identity Center (SCIM), so identity.yaml says identity_source: "
+            "external. Tarmac manages the groups' assignments and never their members. Break-glass access is the "
+            "root user with MFA."
+        )
+        local = sorted(g["name"] for g in groups if g["members"])
+        if local:
+            self.report.todos.append(
+                f"{', '.join(local)}: members were left out, because with an external identity provider tarmac "
+                "doesn't manage members. Manage them in the IdP or the Identity Center console."
+            )
+        admin = next((u for u in users if "admin" in u["username"].lower()), users[0] if users else None)
+        if admin is None:
+            self.report.todos.append("Identity Center has no user to use as identity_center.admin_user.")
+        return {
+            "identity_center": {
+                "region": region,
+                "identity_source": "external",
+                "admin_user": admin
+                or {
+                    "username": "REPLACE-ME",
+                    "email": "replace-me@example.com",
+                    "first_name": "User",
+                    "last_name": "Account",
+                },
+                "permission_sets": [p["definition"] for p in permission_sets.values()],
+                "groups": [{**g, "members": []} for g in groups],
+            }
+        }
+
     @staticmethod
-    def _list_users(store: Any, store_id: str) -> dict[str, dict[str, str]]:
-        users: dict[str, dict[str, str]] = {}
+    def _list_users(store: Any, store_id: str) -> dict[str, dict[str, Any]]:
+        users: dict[str, dict[str, Any]] = {}
         for page in store.get_paginator("list_users").paginate(IdentityStoreId=store_id):
             for u in page.get("Users", []):
                 emails = u.get("Emails") or []
                 primary = next((e for e in emails if e.get("Primary")), emails[0] if emails else {})
                 name = u.get("Name") or {}
                 users[u["UserId"]] = {
+                    "_external": bool(u.get("ExternalIds")),
                     "username": u["UserName"],
                     "email": primary.get("Value", ""),
                     "first_name": name.get("GivenName") or "User",
@@ -404,7 +447,7 @@ class ImportService:
         return sorted(groups, key=lambda g: g["name"])
 
     @staticmethod
-    def _members(store: Any, store_id: str, group_id: str, users: dict[str, dict[str, str]]) -> list[str]:
+    def _members(store: Any, store_id: str, group_id: str, users: dict[str, dict[str, Any]]) -> list[str]:
         members: list[str] = []
         for page in store.get_paginator("list_group_memberships").paginate(
             IdentityStoreId=store_id, GroupId=group_id

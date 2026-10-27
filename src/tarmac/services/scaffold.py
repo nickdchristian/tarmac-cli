@@ -173,6 +173,8 @@ accounts:
 DEFAULT_IDENTITY_YAML = """# IAM Identity Center (SSO) Configuration
 identity_center:
   # region: "us-east-1"  # Optional: specify if SSO instance is in a different region
+  # identity_source: external  # Okta, Entra ID... provision users and groups (SCIM): tarmac then only manages
+  #                            # permission sets and group assignments, and breakglass_user goes (use root with MFA)
   admin_user:
     username: "admin"
     email: "admin@myorg.example.com"

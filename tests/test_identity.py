@@ -801,7 +801,9 @@ def test_sync_identity_removes_what_identity_yaml_no_longer_declares(monkeypatch
         service, "sync_permission_sets_via_cloudformation", lambda *a, **k: {"Read": "arn:read"}
     )
     monkeypatch.setattr(service, "get_or_create_user", lambda user: f"u-{user.username}")
-    monkeypatch.setattr(service, "sync_groups_and_assignments", lambda *a: (0, {"Admins": "g-1"}, ["Admins"]))
+    monkeypatch.setattr(
+        service, "sync_groups_and_assignments", lambda *a, **_k: (0, {"Admins": "g-1"}, ["Admins"])
+    )
     monkeypatch.setattr(service, "sync_group_memberships", lambda *a: 0)
     removed: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -836,7 +838,9 @@ def test_an_assignment_that_cannot_be_removed_fails_the_sync(monkeypatch):
     service = _access_service(assignments=[("111", "arn:read")], members={})
     monkeypatch.setattr(service, "sync_permission_sets_via_cloudformation", lambda *a, **k: {})
     monkeypatch.setattr(service, "get_or_create_user", lambda user: "u")
-    monkeypatch.setattr(service, "sync_groups_and_assignments", lambda *a: (0, {"Admins": "g-1"}, ["Admins"]))
+    monkeypatch.setattr(
+        service, "sync_groups_and_assignments", lambda *a, **_k: (0, {"Admins": "g-1"}, ["Admins"])
+    )
     monkeypatch.setattr(service, "sync_group_memberships", lambda *a: 0)
     monkeypatch.setattr(service, "delete_account_assignment", lambda *a: False)
     cfg = IdentityCenterConfig(

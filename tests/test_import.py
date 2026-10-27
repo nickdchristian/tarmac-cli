@@ -544,10 +544,15 @@ def test_scim_groups_keep_their_members_in_the_idp(monkeypatch, tmp_path: Path):
     report = service.discover_and_write(tmp_path / "cfg")
 
     ident = yaml.safe_load((tmp_path / "cfg" / "identity.yaml").read_text())["identity_center"]
+    assert ident["identity_source"] == "external"
+    assert "breakglass_user" not in ident
+    assert "additional_users" not in ident
+    assert ident["admin_user"]["username"] == "alice-admin"  # looked up, never created
     assert ident["groups"][0]["members"] == []
     assert "_external" not in ident["groups"][0]
     assert report.adopted_groups == []
     assert any("provisioned by your identity provider" in todo for todo in report.todos)
+    assert not [e for e in report.validation_errors if "identity" in e.lower()]
 
 
 def _params(**values: str) -> list[dict[str, str]]:

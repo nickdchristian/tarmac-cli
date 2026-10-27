@@ -528,11 +528,66 @@ class GroupDef(StrictModel):
 
 class IdentityCenterConfig(StrictModel):
     region: str | None = None
-    admin_user: UserDef
-    breakglass_user: UserDef
+    identity_source: Literal["identity_center", "external"] = Field(
+        default="identity_center",
+        description=(
+            "Where users and groups come from. 'identity_center': tarmac creates the declared users and groups "
+            "and keeps their members. 'external': an identity provider such as Okta or Entra ID provisions them "
+            "(SCIM), and tarmac only manages permission sets and the declared groups' account assignments. It "
+            "never creates a user or group or changes members, which would make the directory drift from the IdP."
+        ),
+    )
+    admin_user: UserDef = Field(
+        description=(
+            "Gets tarmac's permission sets from `tarmac bootstrap`. With an external identity provider, provision "
+            "this user from it first: tarmac only looks it up."
+        )
+    )
+    breakglass_user: UserDef | None = Field(
+        default=None,
+        description=(
+            "Required with identity_source 'identity_center'. Not allowed with 'external': a user in the identity "
+            "provider fails when it does, so there the break-glass access is the root user with MFA."
+        ),
+    )
     additional_users: list[UserDef] = Field(default_factory=list)
     permission_sets: list[PermissionSetDef] = Field(default_factory=list)
     groups: list[GroupDef] = Field(default_factory=list)
+
+    @property
+    def external(self) -> bool:
+        return self.identity_source == "external"
+
+    @property
+    def users(self) -> list[UserDef]:
+        """The users tarmac creates and keeps; none with an external identity provider."""
+        if self.external:
+            return []
+        return [u for u in (self.admin_user, self.breakglass_user, *self.additional_users) if u is not None]
+
+    @model_validator(mode="after")
+    def users_match_the_identity_source(self) -> "IdentityCenterConfig":
+        if not self.external:
+            if self.breakglass_user is None:
+                raise ValueError(
+                    "identity_center.breakglass_user is required with identity_source 'identity_center'."
+                )
+            return self
+        problems = []
+        if self.breakglass_user is not None:
+            problems.append(
+                "breakglass_user: with an external identity provider, break-glass access is the root user with MFA"
+            )
+        if self.additional_users:
+            problems.append("additional_users: your identity provider provisions users")
+        problems += [
+            f"groups.{g.name}.members: your identity provider manages group members"
+            for g in self.groups
+            if g.members
+        ]
+        if problems:
+            raise ValueError("Not allowed with identity_source 'external': " + "; ".join(problems) + ".")
+        return self
 
 
 class IdentityConfigFile(StrictModel):

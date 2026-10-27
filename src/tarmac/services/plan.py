@@ -20,7 +20,7 @@ from ..core.audit import Outcome, audit
 from ..core.aws_client import AwsSessionManager
 from ..core.config_loader import ConfigBundle, normalize_account_name
 from ..core.config_schema import AccountDef, BaselineStackDef, GroupDef, OUDef, ServiceControlPoliciesConfig
-from ..core.exceptions import AWS_ERRORS, aws_error_code
+from ..core.exceptions import AWS_ERRORS, IdentityCenterError, aws_error_code
 from ..core.models import TAG_MANAGED_BY, AccountPlanItem, PreflightCheckStatus, TeardownItemReport
 from ..core.org_accounts import get_active_account_id_map
 from ..core.stack_names import Stack
@@ -968,6 +968,8 @@ class Planner:
         except AWS_ERRORS as e:
             phase.items.append(PlanItem("identity center", "instance", UNKNOWN, f"not readable: {e}"))
             return
+        if not cfg.external and self._provisioned_directory(phase, identity):
+            return
         if cfg.permission_sets:
             self._check(
                 phase,
@@ -976,7 +978,7 @@ class Planner:
                 lambda: self._permission_sets(identity, session, instance_arn),
             )
         users: dict[str, str | None] = {}
-        for user in [cfg.admin_user, cfg.breakglass_user, *cfg.additional_users]:
+        for user in cfg.users:
             users[user.username] = identity.get_user_id_by_username(user.username)
             phase.items.append(
                 PlanItem(
@@ -984,17 +986,11 @@ class Planner:
                 )
             )
         permission_sets = identity.list_permission_sets(instance_arn)
-        owned = set(self.recorded.get("identity-group"))
+        # With an external identity provider every declared group's assignments are kept exact; its members never.
+        owned = {g.name for g in cfg.groups} if cfg.external else set(self.recorded.get("identity-group"))
         adopted: list[str] = []
         for group in cfg.groups:
-            try:
-                group_id = identity.get_group_id_by_name(group.name)
-                phase.items.append(PlanItem("group", group.name, NO_CHANGE if group_id else "CREATE"))
-            except AWS_ERRORS as e:
-                group_id = None
-                phase.items.append(
-                    PlanItem("group", group.name, UNKNOWN, f"could not read the current state: {e}")
-                )
+            group_id = self._group(phase, identity, group.name, cfg.external)
             for assignment in group.assignments:
                 self._check(
                     phase,
@@ -1044,6 +1040,37 @@ class Planner:
             detail_from_item=True,
         )
 
+    @staticmethod
+    def _provisioned_directory(phase: PhasePlan, identity: IdentityService) -> bool:
+        """Whether an identity provider provisions the directory that identity.yaml calls tarmac's own."""
+        try:
+            identity.refuse_provisioned_directory()
+        except IdentityCenterError as e:
+            phase.items.append(
+                PlanItem("identity center", "directory", "BLOCKED", f"{e.message} {e.details}")
+            )
+            return True
+        except AWS_ERRORS as e:
+            phase.items.append(PlanItem("identity center", "directory", UNKNOWN, f"not readable: {e}"))
+        return False
+
+    @staticmethod
+    def _group(phase: PhasePlan, identity: IdentityService, name: str, external: bool) -> str | None:
+        """The group's row, and its ID when it exists. An identity provider creates its own groups."""
+        try:
+            group_id = identity.get_group_id_by_name(name)
+        except AWS_ERRORS as e:
+            phase.items.append(PlanItem("group", name, UNKNOWN, f"could not read the current state: {e}"))
+            return None
+        if group_id:
+            phase.items.append(PlanItem("group", name, NO_CHANGE))
+        elif external:
+            detail = "not in Identity Center: push it from your identity provider"
+            phase.items.append(PlanItem("group", name, "BLOCKED", detail))
+        else:
+            phase.items.append(PlanItem("group", name, "CREATE"))
+        return group_id
+
     def _undeclared_access(
         self,
         phase: PhasePlan,
@@ -1056,7 +1083,12 @@ class Planner:
         """What a deploy removes from the group because identity.yaml no longer declares it."""
         try:
             assignments, members = identity.undeclared_access(
-                instance_arn, group, group_id, permission_sets, self.declared_accounts
+                instance_arn,
+                group,
+                group_id,
+                permission_sets,
+                self.declared_accounts,
+                members=not self.bundle.identity.identity_center.external,
             )
         except AWS_ERRORS as e:
             phase.items.append(PlanItem("group", group.name, UNKNOWN, f"could not read its access: {e}"))
